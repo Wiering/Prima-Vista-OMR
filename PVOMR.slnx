@@ -1,0 +1,6 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/PVOMR.Cli/PVOMR.Cli.csproj" />
+    <Project Path="src/PVOMR.Core/PVOMR.Core.csproj" />
+  </Folder>
+</Solution>
