@@ -43,7 +43,7 @@ public static class BarlineDetector
                 if (c.Width > 0.8 * ss) continue;
                 int xc = (int)Math.Round(c.Xc);
                 if (!IsThinAlongRun(noStaff, bin, staff, c, xc)) continue;
-                if (!ComponentIsThin(cm, staff, c, xc)) continue;
+                if (!ComponentIsThin(cm, staff, c, xc, staves)) continue;
                 c.Thick = c.Width >= Math.Max(3, 0.28 * ss) && c.Width >= 2.5 * staff.LineThickness;
                 accepted.Add(c);
             }
@@ -98,6 +98,15 @@ public static class BarlineDetector
             staff.Barlines.Clear();
             staff.Barlines.AddRange(bars);
         }
+        // barlines much thinner than the typical barline of the page are stems (hollow heads that broke off)
+        var widths = staves.SelectMany(st => st.Barlines).Select(b => b.X1 - b.X0 + 1).OrderBy(w => w).ToList();
+        if (widths.Count >= 4)
+        {
+            int median = widths[widths.Count / 2];
+            if (median >= 3)
+                foreach (var st in staves)
+                    st.Barlines.RemoveAll(b => b.X1 - b.X0 + 1 < 0.55 * median);
+        }
         // spanning: a barline continues to the next staff when the ink is continuous in the gap and the next staff has a barline at the same x
         for (int si = 0; si < staves.Count; si++)
         {
@@ -114,6 +123,7 @@ public static class BarlineDetector
                     to++;
                 }
                 bar.StaffTo = to;
+                if (si > 0) bar.ConnectedUp = ConnectsDown(bin, staves[si - 1], staves[si], (int)Math.Round(bar.X), bar.X0, bar.X1);
                 // a vertical rule running far beyond both ends of the spanned staves is a page line, not a barline
                 var first = staves[si]; var last = staves[to];
                 double ss = first.Space;
@@ -196,7 +206,7 @@ public static class BarlineDetector
     private static bool ContinuesToOtherStaff(Staff staff, int xc, int yEnd, bool up) => true;
 
     /// <summary>The connected component (staff lines removed) that contains the candidate must itself be thin: a stem's component includes its head, flag or beam.</summary>
-    private static bool ComponentIsThin(ComponentMap cm, Staff staff, Candidate c, int xc)
+    private static bool ComponentIsThin(ComponentMap cm, Staff staff, Candidate c, int xc, List<Staff> staves)
     {
         double ss = staff.Space;
         double ymid = (staff.TopY(xc) + staff.BottomY(xc)) / 2;
@@ -216,7 +226,26 @@ public static class BarlineDetector
             for (int x = Math.Max(0, x0); x <= Math.Min(cm.Width - 1, x1); x++)
                 if (cm.Labels[y * cm.Width + x] == comp.Label) { if (x < minX) minX = x; if (x > maxX) maxX = x; }
         if (maxX < 0) return true;
-        return maxX - minX + 1 <= Math.Max(1.0 * ss, 3 * c.Width + 2);
+        if (maxX - minX + 1 > Math.Max(1.0 * ss, 3 * c.Width + 2)) return false;
+        // a stem whose (hollow) head broke off: foreign ink fragments right beside either end of the run
+        foreach (int yEnd in new[] { c.RunTop, c.RunBottom })
+        {
+            // barlines end on the outer staff lines (of this or another staff); a run ending elsewhere is suspect
+            bool onLine = staves.Any(st => xc >= st.Left - st.Space && xc <= st.Right + st.Space
+                                           && (Math.Abs(yEnd - st.TopY(xc)) <= 0.6 * ss || Math.Abs(yEnd - st.BottomY(xc)) <= 0.6 * ss));
+            if (onLine) continue;
+            int fy0 = (int)(yEnd - 0.7 * ss), fy1 = (int)(yEnd + 0.7 * ss);
+            int fx0 = (int)(xc - 1.4 * ss), fx1 = (int)(xc + 1.4 * ss);
+            int foreign = 0;
+            for (int y = Math.Max(0, fy0); y <= Math.Min(cm.Height - 1, fy1); y++)
+                for (int x = Math.Max(0, fx0); x <= Math.Min(cm.Width - 1, fx1); x++)
+                {
+                    int l = cm.Labels[y * cm.Width + x];
+                    if (l != 0 && l != comp.Label) foreign++;
+                }
+            if (foreign >= 0.12 * ss * ss) return false;
+        }
+        return true;
     }
 
     private static bool AnyBlack(BinaryImage bin, int x0, int x1, int y)

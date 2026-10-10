@@ -48,6 +48,7 @@ public sealed class SymbolAnalyzer
             if (IsBarlineComponent(c, staff)) continue;
             compsPerStaff[staff].Add(c);
         }
+        foreach (var staff in staves) ReuniteAcrossLines(compsPerStaff[staff], staff);
         _page.Notes.Add($"components: {_cm.Components.Count}, noise {noise}, outside staves {outside}");
 
         foreach (var staff in staves)
@@ -69,6 +70,7 @@ public sealed class SymbolAnalyzer
             MergeText(syms, staff);
             MergeDynamics(syms, staff);
             GroupDottedLines(syms, staff);
+            AttachDetachedStems(syms, staff);
             AttachDetachedFlags(syms, staff);
             AttachDotsAndAccidentals(syms, staff);
             DetectHairpinsAndSlurs(syms, staff);
@@ -78,6 +80,77 @@ public sealed class SymbolAnalyzer
                 if (m != null) m.Symbols.Add(s);
             }
         }
+    }
+
+    /// <summary>
+    /// Thin outlines of hollow heads break at binarisation and staff removal cuts heads that sit on a line, leaving
+    /// arcs, dots and halves. Clusters of small touching/near components whose union has the size and silhouette
+    /// of a note head are reunited into one component.
+    /// </summary>
+    private void ReuniteAcrossLines(List<Component> comps, Staff staff)
+    {
+        double ss = staff.Space;
+        int thick = (int)Math.Ceiling(staff.LineThickness);
+        var small = comps.Where(c => c.PixelCount > 0 && c.Width <= 1.3 * ss && c.Height <= 1.3 * ss && (c.Width >= 0.15 * ss || c.Height >= 0.15 * ss)).OrderBy(c => c.X0).ToList();
+        var done = new HashSet<Component>();
+        // whole-note halves: two thin arcs of head height facing each other, the thin top/bottom strokes gone
+        foreach (var a in small)
+        {
+            if (a.PixelCount == 0 || done.Contains(a) || a.Width > 0.6 * ss || a.Height < 0.8 * ss) continue;
+            var b = small.FirstOrDefault(o => o != a && o.PixelCount > 0 && !done.Contains(o) && o.Width <= 0.6 * ss && o.Height >= 0.8 * ss
+                                               && o.X0 > a.X1 && o.X0 - a.X1 <= 0.75 * ss
+                                               && Math.Min(a.Y1, o.Y1) - Math.Max(a.Y0, o.Y0) >= 0.8 * Math.Min(a.Height, o.Height));
+            if (b == null) continue;
+            int uw = b.X1 - a.X0 + 1;
+            if (uw < 1.1 * ss || uw > 2.0 * ss) continue;
+            _cm.Merge(a, b); comps.Remove(b); done.Add(a); done.Add(b);
+        }
+        foreach (var seed in small)
+        {
+            if (done.Contains(seed) || seed.PixelCount == 0) continue;
+            var cluster = new List<Component> { seed };
+            int x0 = seed.X0, y0 = seed.Y0, x1 = seed.X1, y1 = seed.Y1;
+            bool grown = true;
+            while (grown)
+            {
+                grown = false;
+                foreach (var b in small)
+                {
+                    if (b.PixelCount == 0 || done.Contains(b) || cluster.Contains(b)) continue;
+                    if (b.X0 > x1 + 0.45 * ss || b.X1 < x0 - 0.45 * ss) continue;
+                    if (b.Y0 > y1 + thick + 2 || b.Y1 < y0 - thick - 2) continue;
+                    int nx0 = Math.Min(x0, b.X0), ny0 = Math.Min(y0, b.Y0), nx1 = Math.Max(x1, b.X1), ny1 = Math.Max(y1, b.Y1);
+                    if (nx1 - nx0 + 1 > 2.0 * ss || ny1 - ny0 + 1 > 1.4 * ss) continue;
+                    cluster.Add(b); x0 = nx0; y0 = ny0; x1 = nx1; y1 = ny1; grown = true;
+                }
+            }
+            if (cluster.Count < 2) continue;
+            int uw = x1 - x0 + 1, uh = y1 - y0 + 1;
+            if (uw < 0.9 * ss || uw > 2.0 * ss || uh < 0.7 * ss || uh > 1.4 * ss) continue;
+            if (!EllipseLike(cluster, x0, y0, uw, uh)) continue;
+            // two filled blobs side by side are neighbouring heads, not fragments of one head
+            if (uw > 1.3 * ss && cluster.Count(p => p.Fill > 0.6 && p.Width >= 0.45 * ss && p.Height >= 0.6 * ss) >= 2) continue;
+            foreach (var b in cluster.Skip(1)) { _cm.Merge(seed, b); comps.Remove(b); done.Add(b); }
+            done.Add(seed);
+        }
+    }
+
+    /// <summary>Silhouette test for a union of fragments: ink concentrates inside the inscribed ellipse, little in the corners.</summary>
+    private bool EllipseLike(List<Component> parts, int x0, int y0, int w, int h)
+    {
+        double cx = x0 + (w - 1) / 2.0, cy = y0 + (h - 1) / 2.0, rx = w / 2.0, ry = h / 2.0;
+        int inside = 0, insideInk = 0, corner = 0, cornerInk = 0;
+        var labels = parts.Select(p => p.Label).ToHashSet();
+        for (int y = y0; y < y0 + h; y++)
+            for (int x = x0; x < x0 + w; x++)
+            {
+                double dx = (x - cx) / rx, dy = (y - cy) / ry;
+                bool ink = labels.Contains(_cm.Labels[y * _cm.Width + x]);
+                if (dx * dx + dy * dy <= 1.0) { inside++; if (ink) insideInk++; }
+                else { corner++; if (ink) cornerInk++; }
+            }
+        double fi = inside == 0 ? 0 : insideInk / (double)inside, fc = corner == 0 ? 0 : cornerInk / (double)corner;
+        return fi >= 0.18 && fc <= 0.3 && fi > 1.5 * fc;
     }
 
     /// <summary>
@@ -257,6 +330,29 @@ public sealed class SymbolAnalyzer
         }
     }
 
+    /// <summary>Isolated heads (template or hollow detection) get their stem back when a thin vertical component ends at their side.</summary>
+    private void AttachDetachedStems(List<MusicSymbol> syms, Staff staff)
+    {
+        double ss = staff.Space;
+        var heads = syms.Where(s => s.Kind == SymbolKind.Note && s.StemUp == null && s.Notes.Count == 1 && s.Notes[0].HeadType is "half" or "black").ToList();
+        if (heads.Count == 0) return;
+        var stems = syms.Where(s => s.Kind is SymbolKind.Unknown or SymbolKind.Text or SymbolKind.Ledger && s.Bounds.Width <= 0.35 * ss && s.Bounds.Height >= 1.8 * ss).ToList();
+        foreach (var h in heads)
+        {
+            var r = h.Notes[0].Head;
+            MusicSymbol? up = stems.FirstOrDefault(st => st.Bounds.X0 >= r.X1 - 0.4 * ss && st.Bounds.X0 <= r.X1 + 0.3 * ss && st.Bounds.Y1 >= r.Y0 - 0.3 * ss && st.Bounds.Y1 <= r.Y1 + 0.3 * ss && st.Bounds.Y0 < r.Y0);
+            MusicSymbol? down = up != null ? null : stems.FirstOrDefault(st => st.Bounds.X1 <= r.X0 + 0.4 * ss && st.Bounds.X1 >= r.X0 - 0.3 * ss && st.Bounds.Y0 <= r.Y1 + 0.3 * ss && st.Bounds.Y0 >= r.Y0 - 0.3 * ss && st.Bounds.Y1 > r.Y1);
+            var stem = up ?? down;
+            if (stem == null) continue;
+            h.StemUp = up != null;
+            h.Duration = h.Notes[0].HeadType == "half" ? "half" : "quarter";
+            h.Attributes["stemx"] = $"{stem.Bounds.X0},{stem.Bounds.X1},{(up != null ? stem.Bounds.Y0 : stem.Bounds.Y1)}";
+            h.Attributes["stem"] = "reattached";
+            h.Bounds = h.Bounds.Union(stem.Bounds);
+            syms.Remove(stem); stems.Remove(stem);
+        }
+    }
+
     /// <summary>Flags that are not connected to their stem (thin engraving, scan gaps) are attached to the nearest stem end.</summary>
     private void AttachDetachedFlags(List<MusicSymbol> syms, Staff staff)
     {
@@ -418,7 +514,7 @@ public sealed class SymbolAnalyzer
             }
             if (_opt.Verbose && clefMatches.Count > 0) sym.Attributes["clefscore"] = $"{clefMatches[0].Template.Name} {clefMatches[0].Score:0.00}";
             if (clefMatches.Count > 0 && clefMatches[0].Template.Name == "unpitchedPercussionClef1" && clefMatches[0].Score < 0.82) clefMatches.RemoveAt(0);
-            if (clefMatches.Count > 0 && clefMatches[0].Score >= (atStart ? 0.52 : Threshold(SymbolKind.Clef)))
+            if (clefMatches.Count > 0 && clefMatches[0].Score >= (atStart ? 0.52 : 0.74))
             {
                 if (unionBounds != null && unionParts != null)
                 {
@@ -478,6 +574,21 @@ public sealed class SymbolAnalyzer
             if (noteSym != null) return noteSym;
         }
 
+        // 1b. isolated hollow heads (whole notes, half-note heads whose stem broke off), also on ledger lines
+        if (stems.Count == 0 && w >= 0.85 && w <= 2.2 && h >= 0.75 && h <= 1.3)
+        {
+            var (fill, core, band, sideBand) = HollowStats(c, staff);
+            if ((band >= 0.45 || sideBand >= 0.5) && core <= 0.3 && fill >= 0.2 && fill <= 0.8)
+            {
+                var n = new Note { Head = sym.Bounds, HeadType = w >= 1.35 ? "whole" : "half" };
+                n.Step = (int)Math.Round(staff.StepAt(n.HeadX, n.HeadY));
+                sym.Kind = SymbolKind.Note; sym.Name = "note"; sym.Confidence = 0.7;
+                sym.Notes.Add(n);
+                sym.Duration = n.HeadType == "whole" ? "whole" : "half?";
+                return sym;
+            }
+        }
+
         // 2. template matching for isolated glyphs
         if (_lib != null && w <= 7 && h <= 9.5 && w >= 0.15 && h >= 0.15)
         {
@@ -520,6 +631,26 @@ public sealed class SymbolAnalyzer
         }
         sym.Description = $"{w:0.0}x{h:0.0}ss fill {c.Fill:0.00}";
         return sym;
+    }
+
+    /// <summary>Ink statistics of a component against its inscribed ellipse: overall fill, core fill (centre, ignoring a
+    /// horizontal band for a ledger line) and outer band fill.</summary>
+    private (double fill, double core, double band, double sideBand) HollowStats(Component c, Staff staff)
+    {
+        double cx = c.CenterX, cy = c.CenterY, rx = c.Width / 2.0, ry = c.Height / 2.0;
+        int lineBand = (int)Math.Ceiling(staff.LineThickness) + 1;
+        int n = 0, ink = 0, coreN = 0, coreInk = 0, bandN = 0, bandInk = 0, sideN = 0, sideInk = 0;
+        for (int y = c.Y0; y <= c.Y1; y++)
+            for (int x = c.X0; x <= c.X1; x++)
+            {
+                double dx = (x - cx) / rx, dy = (y - cy) / ry, r2 = dx * dx + dy * dy;
+                if (r2 > 1.0) continue;
+                bool on = _cm.Labels[y * _cm.Width + x] == c.Label;
+                n++; if (on) ink++;
+                if (r2 <= 0.2 && Math.Abs(y - cy) > lineBand) { coreN++; if (on) coreInk++; }
+                if (r2 >= 0.45) { bandN++; if (on) bandInk++; if (Math.Abs(dx) > 0.55) { sideN++; if (on) sideInk++; } }
+            }
+        return (n == 0 ? 0 : ink / (double)n, coreN == 0 ? 1 : coreInk / (double)coreN, bandN == 0 ? 0 : bandInk / (double)bandN, sideN == 0 ? 0 : sideInk / (double)sideN);
     }
 
     private static double Threshold(SymbolKind k) => k switch
@@ -766,6 +897,7 @@ public sealed class SymbolAnalyzer
                     // a thin horizontal band through the centre is ignored on the head side (ledger lines)
                     bool stemCol = x >= st.X0 - 1 && x <= st.X1 + 1;
                     if (stemCol) continue;
+                    if (Math.Abs(dx) < 0.75 && Math.Abs(dy) > 1.0) continue;   // directly above/below: other chord heads live there
                     bool farSide = side < 0 ? x > st.X1 + 1 : x < st.X0 - 1;
                     if (farSide) { if (Math.Abs(y - cy) > ry * 0.35) continue; }
                     else if (Math.Abs(y - cy) <= ry * 0.22) continue;

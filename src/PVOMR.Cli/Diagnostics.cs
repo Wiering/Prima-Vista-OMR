@@ -9,6 +9,7 @@ static class Diagnostics
         foreach (var st in p.Staves)
         {
             Console.WriteLine($"-- staff {st.Index + 1}: left {st.Left:0} right {st.Right:0} space {st.Space:0.0} thick {st.LineThickness:0.0}; line points: {string.Join(",", st.Lines.Select(l => l.Points.Count))}");
+            Console.WriteLine("   barlines: " + string.Join(" ", st.Barlines.Select(b => $"{b.Kind}@{b.X0}-{b.X1}{(b.Spanning ? "s" : "")}")));
             foreach (double f in new[] { 0.05, 0.5, 0.95 })
             {
                 int x = (int)(st.Left + f * (st.Right - st.Left));

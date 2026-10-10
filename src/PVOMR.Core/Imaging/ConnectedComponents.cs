@@ -28,6 +28,18 @@ public sealed class ComponentMap
 
     public bool Is(int x, int y, int label) => (uint)x < (uint)Width && (uint)y < (uint)Height && Labels[y * Width + x] == label;
 
+    /// <summary>Relabel all pixels of b as a and grow a's bounding box; b becomes empty (PixelCount 0).</summary>
+    public void Merge(Component a, Component b)
+    {
+        if (a == b || b.PixelCount == 0) return;
+        for (int y = b.Y0; y <= b.Y1; y++)
+            for (int x = b.X0; x <= b.X1; x++)
+                if (Labels[y * Width + x] == b.Label) Labels[y * Width + x] = a.Label;
+        a.X0 = Math.Min(a.X0, b.X0); a.Y0 = Math.Min(a.Y0, b.Y0); a.X1 = Math.Max(a.X1, b.X1); a.Y1 = Math.Max(a.Y1, b.Y1);
+        a.PixelCount += b.PixelCount;
+        b.PixelCount = 0;
+    }
+
     /// <summary>Extract the mask (1 = pixel of this component) of a component within its bounding box.</summary>
     public byte[] Mask(Component c)
     {

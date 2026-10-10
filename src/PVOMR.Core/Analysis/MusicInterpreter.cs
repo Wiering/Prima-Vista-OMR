@@ -19,15 +19,29 @@ public static class MusicInterpreter
                 var staff = sys.Staves[k];
                 // inherit from the staff at the same position in the previous system when nothing is found
                 Staff? prev = sys.Index > 0 && page.Systems[sys.Index - 1].Staves.Count == sys.Staves.Count ? page.Systems[sys.Index - 1].Staves[k] : null;
-                InterpretStaff(staff, prev);
+                InterpretStaff(staff, prev, null);
+            }
+            // staves of one system share the key signature: a staff whose key signature was not recognised adopts the
+            // key read on the other staves (the majority of those that have one), then its pitches are recomputed
+            var keyed = sys.Staves.Where(st => st.Measures.Any(m => m.Symbols.Any(sy => sy.Kind == SymbolKind.KeySignature))).Select(st => st.KeyFifths).ToList();
+            if (keyed.Count > 0)
+            {
+                int key = keyed.GroupBy(f => f).OrderByDescending(g => g.Count()).First().Key;
+                for (int k = 0; k < sys.Staves.Count; k++)
+                {
+                    var staff = sys.Staves[k];
+                    if (staff.Measures.Any(m => m.Symbols.Any(sy => sy.Kind == SymbolKind.KeySignature)) || staff.KeyFifths == key) continue;
+                    Staff? prev = sys.Index > 0 && page.Systems[sys.Index - 1].Staves.Count == sys.Staves.Count ? page.Systems[sys.Index - 1].Staves[k] : null;
+                    InterpretStaff(staff, prev, key);
+                }
             }
         }
     }
 
-    private static void InterpretStaff(Staff staff, Staff? prev)
+    private static void InterpretStaff(Staff staff, Staff? prev, int? forcedKey)
     {
         var clef = prev?.Clef ?? ClefKind.Unknown;
-        int fifths = prev?.KeyFifths ?? 0;
+        int fifths = forcedKey ?? prev?.KeyFifths ?? 0;
         string? time = prev?.TimeSignature;
         bool keyFromThisStaff = false;
         var measureAccidentals = new Dictionary<int, int>();
@@ -114,7 +128,7 @@ public static class MusicInterpreter
         staff.Clef = clef;
         staff.KeyFifths = fifths;
         staff.TimeSignature = time;
-        if (!keyFromThisStaff && prev != null) staff.KeyFifths = prev.KeyFifths;
+        if (!keyFromThisStaff && forcedKey == null && prev != null) staff.KeyFifths = prev.KeyFifths;
     }
 
     private static string Digit(MusicSymbol s) => s.Name.StartsWith("timeSig") && s.Name.Length == 8 && char.IsDigit(s.Name[7]) ? s.Name[7].ToString() : "?";

@@ -81,6 +81,8 @@ public sealed class Barline
     public int StaffFrom { get; set; }
     public int StaffTo { get; set; }
     public bool Spanning => StaffTo > StaffFrom;
+    /// <summary>The ink of this barline continues up into the staff above (bottom staff of a system).</summary>
+    public bool ConnectedUp { get; set; }
     public override string ToString() => $"{Kind}@x={X:0}";
 }
 

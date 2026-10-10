@@ -118,8 +118,10 @@ Baseline (12 generated pieces, 192 measures), 2026-10-10:
 
 | condition | measures found | measures exact | note P | note R | duration | rest P/R | clef/key/time |
 |---|---|---|---|---|---|---|---|
-| clean MuseScore render | 207/192 | 35% | 82.7% | 80.3% | 97% | 79% / 80% | 12 / 11 / 12 |
-| blur 1.0, noise 0.06, skew 0.8°, scale 0.7 | 208/192 | 11% | 64.2% | 66.2% | 87% | 64% / 50% | 12 / 5 / 8 |
+| clean MuseScore render (first baseline) | 207/192 | 35% | 82.7% | 80.3% | 97% | 79% / 80% | 12 / 11 / 12 |
+| degraded (blur 1.0, noise 0.06, skew 0.8°, scale 0.7), first baseline | 208/192 | 11% | 64.2% | 66.2% | 87% | 64% / 50% | 12 / 5 / 8 |
+| clean, after fragment reuniting / stem re-attachment / barline fixes | 192/192 | 50% | 93.6% | 84.3% | 99% | 84% / 85% | 12 / 11 / 11 |
+| degraded, same | 198/192 | 22% | 84.7% | 74.8% | 96% | 64% / 50% | 12 / 7 / 9 |
 
 ## Status and known limitations
 

@@ -106,7 +106,7 @@ public static class SystemBuilder
         foreach (var c in clusters)
         {
             int distinct = c.Select(e => e.staff).Distinct().Count();
-            if (distinct >= need || c.Any(e => e.spanning)) boundaries.Add(c.Average(e => e.x));
+            if (distinct >= need || c.Any(e => e.spanning || e.b.ConnectedUp)) boundaries.Add(c.Average(e => e.x));
         }
         sys.MeasureBoundaries.Clear();
         sys.MeasureBoundaries.AddRange(boundaries);
