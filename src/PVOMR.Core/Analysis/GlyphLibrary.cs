@@ -63,7 +63,7 @@ public sealed class GlyphLibrary
         ("breathMarkComma", 0xE4CE, SymbolKind.Breath), ("caesura", 0xE4D1, SymbolKind.Breath),
         ("brace", 0xE000, SymbolKind.Brace),
         ("stringsDownBow", 0xE610, SymbolKind.Articulation), ("stringsUpBow", 0xE612, SymbolKind.Articulation),
-        ("tuplet3", 0xE883, SymbolKind.Tuplet),
+        ("tuplet2", 0xE882, SymbolKind.Tuplet), ("tuplet3", 0xE883, SymbolKind.Tuplet), ("tuplet5", 0xE885, SymbolKind.Tuplet), ("tuplet6", 0xE886, SymbolKind.Tuplet), ("tuplet7", 0xE887, SymbolKind.Tuplet),
     };
 
     private static readonly string[] PreferredFonts = { "Bravura.otf", "Leland.otf", "Gootville.otf", "FinaleMaestro.otf", "MScore.otf", "Petaluma.otf", "Eugene.otf", "MuseJazz.otf" };

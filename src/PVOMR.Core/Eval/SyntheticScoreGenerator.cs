@@ -25,6 +25,8 @@ public sealed class SyntheticScoreGenerator
         /// <summary>Probability that a staff gets a second voice (stems down) in a measure.</summary>
         public double SecondVoiceProbability { get; set; } = 0.0;
         public double TieProbability { get; set; } = 0.0;
+        /// <summary>Probability that a quarter-note slot becomes a triplet of 8ths.</summary>
+        public double TripletProbability { get; set; } = 0.0;
     }
 
     public SyntheticScoreGenerator(int seed) { _rnd = new Random(seed); }
@@ -109,6 +111,20 @@ public sealed class SyntheticScoreGenerator
             if (pick.type == "whole" && time.Length != 384) continue;
             if (pick.dots == 1 && _rnd.NextDouble() < 0.5) continue;
             int dur = pick.div;
+            if (pick.type == "quarter" && pick.dots == 0 && s.TripletProbability > 0 && _rnd.NextDouble() < s.TripletProbability)
+            {
+                // a triplet of three 8ths in the time of one quarter
+                for (int k = 0; k < 3; k++)
+                {
+                    var te = new ScoreEvent { Type = "eighth", Duration = 32, X = x + k * 32, TupletActual = 3, TupletNormal = 2, TupletStart = k == 0, TupletStop = k == 2 };
+                    stepPos = Math.Clamp(stepPos + _rnd.Next(-2, 3), -4, 14);
+                    te.Notes.Add(MakeNote(clef, stepPos, fifths, s));
+                    te.StemUp = forcedStem > 0 ? true : forcedStem < 0 ? false : stepPos < 4;
+                    events.Add(te);
+                }
+                remaining -= 96; x += 96;
+                continue;
+            }
             var ev = new ScoreEvent { Type = pick.type, Dots = pick.dots, Duration = dur, X = x };
             if (_rnd.NextDouble() < s.RestProbability && pick.type != "whole") ev.IsRest = true;
             else

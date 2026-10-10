@@ -67,6 +67,13 @@ public static class MusicXmlReader
                                 Dots = el.Elements("dot").Count(),
                                 X = position,
                             };
+                            var tm = el.Element("time-modification");
+                            if (tm != null && int.TryParse(tm.Element("actual-notes")?.Value, out int ta) && int.TryParse(tm.Element("normal-notes")?.Value, out int tn)) { ev.TupletActual = ta; ev.TupletNormal = tn; }
+                            foreach (var tu in el.Elements("notations").Elements("tuplet"))
+                            {
+                                if (tu.Attribute("type")?.Value == "start") ev.TupletStart = true;
+                                if (tu.Attribute("type")?.Value == "stop") ev.TupletStop = true;
+                            }
                             var stem = el.Element("stem")?.Value;
                             if (stem == "up") ev.StemUp = true; else if (stem == "down") ev.StemUp = false;
                             if (!ev.IsRest)

@@ -66,7 +66,7 @@ public static class TextReport
                 sb.Append(NoteText(s));
                 break;
             case SymbolKind.NoteGroup:
-                sb.Append($"{s.Name} ({s.Children.Count} stems): ");
+                sb.Append($"{s.Name} ({s.Children.Count} stems{(s.Attributes.TryGetValue("tuplet", out var tup) ? $", tuplet {tup}" : "")}): ");
                 sb.Append(string.Join(" | ", s.Children.Select(NoteText)));
                 break;
             case SymbolKind.Rest:
@@ -99,7 +99,7 @@ public static class TextReport
         }
         if (s.Kind != SymbolKind.Note && s.Kind != SymbolKind.Chord && s.Kind != SymbolKind.NoteGroup && s.Confidence > 0) sb.Append($" [conf {s.Confidence:0.00}]");
         foreach (var kv in s.Attributes)
-            if (kv.Key is not ("clef" or "key" or "time" or "glyphs" or "best" or "alt" or "text" or "stemx")) sb.Append($" {kv.Key}={kv.Value}");
+            if (kv.Key is not ("clef" or "key" or "time" or "glyphs" or "best" or "alt" or "text" or "stemx" or "tuplet")) sb.Append($" {kv.Key}={kv.Value}");
         if (verbose) sb.Append($"  bbox {s.Bounds}");
         return sb.ToString();
     }

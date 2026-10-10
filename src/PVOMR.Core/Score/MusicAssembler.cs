@@ -284,6 +284,36 @@ public static class MusicAssembler
     {
         var children = group.Children.OrderBy(c => c.Notes.Min(n => n.HeadX)).ToList();
         var evs = children.Select(c => MakeNoteEvent(c, staff, staffNo, clef, fifths, sm)).ToList();
+        if (group.Attributes.TryGetValue("tuplet", out var tupletText))
+        {
+            // "3@1409;3@1480": each digit applies to the run of `actual` notes centred under it
+            var used = new bool[evs.Count];
+            foreach (var spec in tupletText.Split(';'))
+            {
+                var parts = spec.Split('@');
+                if (!int.TryParse(parts[0], out int actual) || actual < 2) continue;
+                double tx = parts.Length > 1 && double.TryParse(parts[1], out double txv) ? txv : group.Bounds.CenterX;
+                int normal = actual == 3 ? 2 : actual is 5 or 6 or 7 ? 4 : actual == 2 ? 3 : 2;
+                if (evs.Count < actual) { sm.Warnings.Add($"tuplet {actual} over a group of {evs.Count} notes at x={group.Bounds.X0}: ignored"); continue; }
+                int best = -1; double bestD = double.MaxValue;
+                for (int i = 0; i + actual <= evs.Count; i++)
+                {
+                    if (Enumerable.Range(i, actual).Any(k => used[k])) continue;
+                    double mean = Enumerable.Range(i, actual).Average(k => (double)evs[k].X);
+                    double d = Math.Abs(mean - tx);
+                    if (d < bestD) { bestD = d; best = i; }
+                }
+                if (best < 0) continue;
+                for (int k = 0; k < actual; k++)
+                {
+                    var e = evs[best + k];
+                    e.Duration = e.Duration * normal / actual;
+                    e.TupletActual = actual; e.TupletNormal = normal;
+                    e.TupletStart = k == 0; e.TupletStop = k == actual - 1;
+                    used[best + k] = true;
+                }
+            }
+        }
         if (group.Name.StartsWith("beamed"))
         {
             int maxLevels = children.Max(c => c.Flags);

@@ -168,6 +168,21 @@ public static class MusicXmlWriter
         w.WriteEndElement();
     }
 
+    private static void WriteTimeModification(XmlWriter w, ScoreEvent e)
+    {
+        if (e.TupletActual <= 0 || e.TupletNormal <= 0) return;
+        w.WriteStartElement("time-modification");
+        w.WriteElementString("actual-notes", e.TupletActual.ToString());
+        w.WriteElementString("normal-notes", e.TupletNormal.ToString());
+        w.WriteEndElement();
+    }
+
+    private static void WriteTupletNotation(XmlWriter w, ScoreEvent e)
+    {
+        if (e.TupletStart) { w.WriteStartElement("tuplet"); w.WriteAttributeString("type", "start"); w.WriteAttributeString("bracket", "no"); w.WriteEndElement(); }
+        if (e.TupletStop) { w.WriteStartElement("tuplet"); w.WriteAttributeString("type", "stop"); w.WriteEndElement(); }
+    }
+
     private static readonly HashSet<string> StandardDynamics = new() { "p", "pp", "ppp", "pppp", "f", "ff", "fff", "ffff", "mp", "mf", "sf", "sfp", "sfpp", "fp", "rf", "rfz", "sfz", "sffz", "fz", "n", "pf", "sfzp" };
     private static bool IsStandardDynamic(string t) => StandardDynamics.Contains(t);
 
@@ -182,8 +197,15 @@ public static class MusicXmlWriter
             w.WriteElementString("duration", e.Duration.ToString());
             w.WriteElementString("voice", e.Voice.ToString());
             if (!e.MeasureRest) { w.WriteElementString("type", e.Type); for (int i = 0; i < e.Dots; i++) w.WriteStartElement("dot"); for (int i = 0; i < e.Dots; i++) w.WriteEndElement(); }
+            WriteTimeModification(w, e);
             if (staffCount > 1) w.WriteElementString("staff", e.Staff.ToString());
-            if (e.Fermata) { w.WriteStartElement("notations"); w.WriteElementString("fermata", ""); w.WriteEndElement(); }
+            if (e.Fermata || e.TupletStart || e.TupletStop)
+            {
+                w.WriteStartElement("notations");
+                WriteTupletNotation(w, e);
+                if (e.Fermata) w.WriteElementString("fermata", "");
+                w.WriteEndElement();
+            }
             w.WriteEndElement();
             return;
         }
@@ -204,6 +226,7 @@ public static class MusicXmlWriter
             w.WriteElementString("type", e.Type);
             for (int i = 0; i < e.Dots; i++) w.WriteElementString("dot", "");
             if (n.AccidentalName != null) w.WriteElementString("accidental", n.AccidentalName);
+            WriteTimeModification(w, e);
             if (e.StemUp.HasValue) w.WriteElementString("stem", e.StemUp.Value ? "up" : "down");
             if (staffCount > 1) w.WriteElementString("staff", e.Staff.ToString());
             if (ni == 0)
@@ -215,7 +238,7 @@ public static class MusicXmlWriter
                     w.WriteString(e.Beams[b] switch { BeamState.Begin => "begin", BeamState.Continue => "continue", BeamState.End => "end", BeamState.ForwardHook => "forward hook", _ => "backward hook" });
                     w.WriteEndElement();
                 }
-            bool notations = n.TieStart || n.TieStop || (ni == 0 && (e.Articulations.Count > 0 || e.Fermata || e.SlurStarts.Count > 0 || e.SlurStops.Count > 0));
+            bool notations = n.TieStart || n.TieStop || (ni == 0 && (e.Articulations.Count > 0 || e.Fermata || e.SlurStarts.Count > 0 || e.SlurStops.Count > 0 || e.TupletStart || e.TupletStop));
             if (notations)
             {
                 w.WriteStartElement("notations");
@@ -223,6 +246,7 @@ public static class MusicXmlWriter
                 if (n.TieStop) { w.WriteStartElement("tied"); w.WriteAttributeString("type", "stop"); w.WriteEndElement(); }
                 if (ni == 0)
                 {
+                    WriteTupletNotation(w, e);
                     foreach (var s in e.SlurStops) { w.WriteStartElement("slur"); w.WriteAttributeString("type", "stop"); w.WriteAttributeString("number", s.ToString()); w.WriteEndElement(); }
                     foreach (var s in e.SlurStarts) { w.WriteStartElement("slur"); w.WriteAttributeString("type", "start"); w.WriteAttributeString("number", s.ToString()); w.WriteEndElement(); }
                     if (e.Articulations.Count > 0)

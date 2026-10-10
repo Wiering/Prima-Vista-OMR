@@ -125,6 +125,18 @@ Effect on the 12 test pieces (trained on 72 other pieces in Leland, Bravura and 
 | degraded, templates only | 22% | 84.7% | 74.8% | 64% / 50% |
 | degraded, both models | 45% | 81.6% | 85.1% | 78% / 82% |
 
+## Tuplets
+
+Triplets (and other tuplets) are supported end to end: the generator (`--style tuplets`, also part of `hard`)
+writes 8th-note triplets with `time-modification`, the score model, writer and reader carry the tuplet ratio and
+start/stop notations, the recogniser finds the small tuplet digit above or below a beamed group (tuplet digit
+templates; the models were not trained on them, so the template test runs even when the glyph model says
+"fragment") and the assembler applies the ratio to the run of notes centred under the digit, so measures add up
+again. A digit only counts as a tuplet when it sits on the beam side of the group and divides its note count, which
+keeps the fingering numbers of the Bach edition from becoming triplets. Tuplet test set (8 pieces,
+`--style tuplets`, seed 5): 128/128 measures, note P 98.4% / R 98.6%, durations 94% with strict duration
+comparison, 84% of measures entirely right. Rests recognised twice from a split glyph are merged.
+
 ## Harder synthetic set and real pages
 
 `pvomr gen --style hard` adds dense beamed rhythms (8ths/16ths), a second voice with stems down, ties, more
@@ -198,4 +210,5 @@ Baseline (12 generated pieces, 192 measures), 2026-10-10:
 * The models were trained on MuseScore renders only; on old engravings they occasionally see heads in beam ends
   (vetoed geometrically) or rests in text dashes (size/position checks). Real labelled pages would fix this at the source.
 * Rhythm reconstruction is per voice and measure; tuplets, grace notes and cross-staff beaming are
-  not handled, lyrics are not exported, and slur endpoints are only matched within one measure.
+  not handled (tuplets: only beamed groups with a digit), lyrics are not exported, and slur endpoints are only
+  matched within one measure.

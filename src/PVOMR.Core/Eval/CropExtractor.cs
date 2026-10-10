@@ -358,7 +358,8 @@ public sealed class ElementLabeller
                 "Clef" => "clef_g", "KeySig" => "acc_flat", "Accidental" => "acc_sharp", "TimeSig" => "digit", "NoteDot" => "dot",
                 "Dynamic" => "dynamic", "Text" or "MeasureNumber" or "InstrumentName" or "Title" or "Subtitle" or "Composer" or "Lyrics" or "Tempo" => "text",
                 "SlurSegment" or "TieSegment" => "slur", "Stem" or "BarLine" or "LedgerLine" => "line", "Beam" => "beam", "Hook" => "flag",
-                "Fermata" or "Articulation" or "Tuplet" or "HairpinSegment" => "other",
+                "Tuplet" => "digit",
+                "Fermata" or "Articulation" or "HairpinSegment" => "other",
                 _ => "other",
             };
         RefineFromTruth(truth);

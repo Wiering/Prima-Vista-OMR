@@ -134,7 +134,7 @@ public static class ScoreComparer
             {
                 var te = t[a - 1]; var re = rec[b - 1];
                 bool pitch = te.PitchKey == re.PitchKey;
-                bool dur = te.DurKey == re.DurKey || te.E.Duration == re.E.Duration;
+                bool dur = te.E.Duration == re.E.Duration;   // strict: a triplet 8th is not an 8th
                 if (te.E.IsRest && re.E.IsRest) { if (dur) r.MatchedRests++; else perfect = false; }
                 else if (!te.E.IsRest && !re.E.IsRest)
                 {
@@ -160,7 +160,7 @@ public static class ScoreComparer
     private static double Similarity(Ev a, Ev b)
     {
         if (a.E.IsRest != b.E.IsRest) return -0.5;
-        bool dur = a.DurKey == b.DurKey || a.E.Duration == b.E.Duration;
+        bool dur = a.E.Duration == b.E.Duration;
         if (a.E.IsRest) return dur ? 1 : 0.5;
         var shared = a.E.Notes.Select(x => x.Pitch.ToString()).Intersect(b.E.Notes.Select(x => x.Pitch.ToString())).Count();
         double pitch = shared / (double)Math.Max(a.E.Notes.Count, b.E.Notes.Count);

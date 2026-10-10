@@ -49,6 +49,7 @@ public sealed class SymbolAnalyzer
     private bool ApplyPrediction(MusicSymbol sym, Component c, Staff staff, GlyphClassifier.Prediction p)
     {
         double ss = staff.Space;
+        double h = c.Height / ss;
         string label = p.Label; double prob = p.Probability;
         if (prob < 0.5) return false;
         sym.Confidence = Math.Round(prob, 2);
@@ -89,6 +90,7 @@ public sealed class SymbolAnalyzer
                 return true;
             case "digit":
             {
+                if (h < 1.7 && TryTupletDigit(sym, c, staff)) return true;
                 sym.Kind = SymbolKind.TimeSignature; sym.Name = "timeSig?";
                 if (_lib != null)
                 {
@@ -110,7 +112,9 @@ public sealed class SymbolAnalyzer
                 }
                 return true;
             }
-            case "text": sym.Kind = SymbolKind.Text; sym.Name = "glyph"; return true;
+            case "text":
+                if (TryTupletDigit(sym, c, staff)) return true;
+                sym.Kind = SymbolKind.Text; sym.Name = "glyph"; return true;
             case "slur": sym.Kind = SymbolKind.Slur; sym.Name = "slur/tie/hairpin"; return true;
             case "line": sym.Kind = SymbolKind.Ledger; sym.Name = c.Width > c.Height ? "ledger line" : "vertical line"; return true;
             case "flag": sym.Kind = SymbolKind.Flag; sym.Name = "flag"; return true;
@@ -168,6 +172,8 @@ public sealed class SymbolAnalyzer
             MergeText(syms, staff);
             MergeDynamics(syms, staff);
             GroupDottedLines(syms, staff);
+            MergeDuplicateRests(syms, staff);
+            AttachTuplets(syms, staff);
             AttachDetachedStems(syms, staff);
             AttachDetachedFlags(syms, staff);
             AttachDotsAndAccidentals(syms, staff);
@@ -732,6 +738,7 @@ public sealed class SymbolAnalyzer
             if (p.Label.StartsWith("head_") && p.Probability >= 0.6) goto heuristics;   // a head rejected by the position prior: not a glyph either
             if (p.Label is "fragment" or "composite" or "other" && p.Probability >= 0.6)
             {
+                if (TryTupletDigit(sym, c, staff)) return sym;   // the models were not trained on tuplet digits
                 // trust the rejection: no template matching, straight to the shape heuristics
                 goto heuristics;
             }
@@ -857,6 +864,65 @@ public sealed class SymbolAnalyzer
                 sym.Step = (int)Math.Round(staff.StepAt(sym.Bounds.CenterX, AccidentalCenterY(sym)));
                 break;
         }
+    }
+
+    /// <summary>A small digit (about one staff space tall) outside the staff lines: a tuplet number if it matches the tuplet digit templates.</summary>
+    private bool TryTupletDigit(MusicSymbol sym, Component c, Staff staff)
+    {
+        if (_lib == null) return false;
+        double ss = staff.Space;
+        double h = c.Height / ss, w = c.Width / ss;
+        if (h < 0.7 || h > 1.7 || w < 0.4 || w > 1.3) return false;
+        double cy = c.CenterY;
+        if (cy > staff.TopY(c.CenterX) + 0.3 * ss && cy < staff.BottomY(c.CenterX) - 0.3 * ss) return false;   // inside the staff: fingering or text
+        var m = _lib.Match(_cm.Mask(c), c.Width, c.Height, ss, 0.4, t => t.Kind == SymbolKind.Tuplet);
+        if (m.Count == 0 || m[0].Score < 0.62) return false;
+        sym.Kind = SymbolKind.Tuplet; sym.Name = m[0].Template.Name; sym.Confidence = Math.Round(m[0].Score, 2);
+        sym.Attributes["tuplet"] = m[0].Template.Name[6..];
+        return true;
+    }
+
+    /// <summary>Tuplet digits are attached to the note group (or run of notes) they sit above or below.</summary>
+    private void AttachTuplets(List<MusicSymbol> syms, Staff staff)
+    {
+        double ss = staff.Space;
+        foreach (var t in syms.Where(s => s.Kind == SymbolKind.Tuplet).ToList())
+        {
+            double cx = t.Bounds.CenterX;
+            var group = syms.Where(s => s.Kind == SymbolKind.NoteGroup && cx >= s.Bounds.X0 - 0.5 * ss && cx <= s.Bounds.X1 + 0.5 * ss
+                                        && (Math.Abs(t.Bounds.Y1 - s.Bounds.Y0) <= 3.0 * ss || Math.Abs(t.Bounds.Y0 - s.Bounds.Y1) <= 3.0 * ss))
+                            .OrderBy(s => Math.Min(Math.Abs(t.Bounds.Y1 - s.Bounds.Y0), Math.Abs(t.Bounds.Y0 - s.Bounds.Y1))).FirstOrDefault();
+            if (group == null) continue;
+            // fingerings look the same: a tuplet digit sits on the beam side of the group and divides its note count
+            string digit = t.Attributes.TryGetValue("tuplet", out var dv) ? dv : t.Name.StartsWith("tuplet") ? t.Name[6..] : "";
+            if (!int.TryParse(digit, out int actual) || actual is not (3 or 5 or 6 or 7)) continue;
+            int count = group.Children.Count;
+            if (count < actual || count % actual != 0) continue;
+            bool stemsUp = group.Children.Count(ch => ch.StemUp == true) > group.Children.Count / 2;
+            bool above = t.Bounds.CenterY < group.Bounds.CenterY;
+            if (stemsUp != above) continue;
+            // several tuplets may sit over one beamed group: keep every digit with its x position
+            group.Attributes["tuplet"] = group.Attributes.TryGetValue("tuplet", out var prev) ? prev + ";" + digit + "@" + (int)cx : digit + "@" + (int)cx;
+            syms.Remove(t);
+        }
+    }
+
+    /// <summary>Rests recognised twice from a split glyph (two overlapping rest symbols of the same kind) are merged.</summary>
+    private static void MergeDuplicateRests(List<MusicSymbol> syms, Staff staff)
+    {
+        double ss = staff.Space;
+        var rests = syms.Where(s => s.Kind == SymbolKind.Rest).OrderBy(s => s.Bounds.X0).ToList();
+        for (int i = 0; i < rests.Count; i++)
+            for (int j = i + 1; j < rests.Count; j++)
+            {
+                var a = rests[i]; var b = rests[j];
+                if (!syms.Contains(a) || !syms.Contains(b)) continue;
+                if (b.Bounds.X0 > a.Bounds.X1 + 0.3 * ss) break;
+                if (Math.Min(a.Bounds.Y1, b.Bounds.Y1) - Math.Max(a.Bounds.Y0, b.Bounds.Y0) < -0.3 * ss) continue;
+                var keep = a.Confidence >= b.Confidence ? a : b; var drop = keep == a ? b : a;
+                keep.Bounds = keep.Bounds.Union(drop.Bounds);
+                syms.Remove(drop);
+            }
     }
 
     private static double AccidentalCenterY(MusicSymbol s)

@@ -92,6 +92,11 @@ public sealed class ScoreEvent
     public bool Fermata { get; set; }
     public List<int> SlurStarts { get; } = new();
     public List<int> SlurStops { get; } = new();
+    /// <summary>Tuplet ratio (actual:normal), 0 = none. Duration already reflects the tuplet.</summary>
+    public int TupletActual { get; set; }
+    public int TupletNormal { get; set; }
+    public bool TupletStart { get; set; }
+    public bool TupletStop { get; set; }
     public int X { get; set; }
     public int Y { get; set; }
     public double Confidence { get; set; }

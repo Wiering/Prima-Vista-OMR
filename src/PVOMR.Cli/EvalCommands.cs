@@ -55,6 +55,7 @@ static class EvalCommands
             };
             if (style is "dense" or "hard") { settings.Density = 3.0; settings.MinType = 4; settings.TieProbability = 0.12; settings.AccidentalProbability = 0.14; settings.ChordProbability += 0.08; }
             if (style is "voices" or "hard") { settings.SecondVoiceProbability = style == "hard" ? 0.35 : 0.6; }
+            if (style is "tuplets" or "hard") { settings.TripletProbability = style == "tuplets" ? 0.35 : 0.15; }
             string name = $"synth_{i + 1:00}";
             var score = gen.Generate(settings, name);
             string xml = Path.Combine(outDir, name + ".musicxml");
