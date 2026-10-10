@@ -92,8 +92,21 @@ staff-less binary image.
    MuseJazz): the templates and the component are normalised to 32×32 bit masks and compared with
    a tolerant overlap measure, gated by the absolute size in staff spaces. Fragments that stay
    unknown are merged with close neighbours and matched again (F clef plus its dots, broken glyphs).
+   Clefs, key signatures and time signatures at the start of a staff get a dedicated pass that works on the
+   *unremoved* binary image: on small staves (15 px staff space, thick lines) staff removal shreds the glyphs,
+   so instead the font templates are placed at the position the staff dictates (G clef on line 2, the n-th
+   flat/sharp of the key signature at its fixed step for the clef, time-signature digits in the upper and
+   lower half) and scored by tolerant overlap with the staff-line rows and bar-line/bracket columns treated
+   as unknown. The key signature grows accidental by accidental until a placement scores too low, is explained
+   better by a time-signature digit, or breaks the even spacing; the time signature is accepted only when
+   both digits (or the common/cut glyph) score very high and no stem crosses the digit's edge. Clefs are first
+   assembled from components and fall back to the same template placement (with stretched C clefs for old
+   editions).
 6. **Interpretation** (`MusicInterpreter`): clefs, key signatures (accidental runs at the start),
-   time signatures and pitch names with per-measure accidental memory.
+   time signatures and pitch names with per-measure accidental memory. Within a system, staves without a key
+   or time signature adopt the majority reading (the time only when at least a quarter of the staves have one);
+   across the systems of a page, a staff position whose key signature lost accidentals on one system (same
+   kind, fewer of them) is completed to the fuller reading. Partial time readings ("7/?") are discarded.
 
 ## Trained classifiers (models/)
 
@@ -124,6 +137,12 @@ Effect on the 12 test pieces (trained on 72 other pieces in Leland, Bravura and 
 | clean, both models, after the real-page fixes | 80% | 96.4% | 96.8% | 83% / 85% |
 | degraded, templates only | 22% | 84.7% | 74.8% | 64% / 50% |
 | degraded, both models | 45% | 81.6% | 85.1% | 78% / 82% |
+| clean, both models, after the small-staff key/time pass | 86% | 98.6% | 98.9% | 84% / 85% |
+| degraded, both models, after the small-staff key/time pass | 68% | 91.7% | 97.3% | 80% / 81% |
+
+The key/time pass helps the synthetic pages too because a misread key signature changes every pitch of a staff:
+keys and time signatures are now right on all 12 clean, degraded and hard pieces and the 8 tuplet pieces
+(hard set: 190/192 measures, note P 89.2% / R 90.6%; tuplets: P 99.0% / R 99.2%).
 
 ## Full scores over several pages
 
@@ -132,9 +151,12 @@ and `new-page`/`new-system` marks. Parts are the staves of the fullest system; a
 (instruments omitted) is aligned to it monotonically by clef kind, and a part absent from a system receives
 whole-measure rests so every part keeps the same measure count. Within a system all staves share the majority
 time signature and the key signature read on the other staves. Beethoven 5 pages 7–9 export as 12 parts with
-67 measures each and open in MuseScore; the Debussy Petite Suite score, whose systems have 2 to 12 staves,
-exports as 12 parts of 35 measures. Instrument names are not read (parts are numbered), and a grand staff
-inside an orchestral score is still treated as two parts.
+67 measures each in 2/4 and E♭ major (the clarinets in B♭ correctly with one flat) and open in MuseScore; the
+Debussy Petite Suite score, whose systems have 2 to 12 staves, exports as 12 parts of 35 measures. On the
+15 px staves of these scores the clefs (including alto and tenor), key signatures and time signatures are
+read by the template-placement pass described above; Beethoven 3 page 2 (jagged bilevel scan), Brahms 4 page 2
+and the Dover Bach Suite 3 page 3 read the right key on every staff but one. Instrument names are not read
+(parts are numbered), and a grand staff inside an orchestral score is still treated as two parts.
 
 ## Tuplets
 
@@ -206,8 +228,9 @@ Baseline (12 generated pieces, 192 measures), 2026-10-10:
   book scans with curvature, dense piano music, full scores, noisy copies, sideways pages).
 * Symbol recognition is heuristic and is the area to improve next: template matching confuses
   similar glyphs in old engravings (e.g. flags vs clef fragments, breath marks vs 8th rests, text
-  letters vs dynamics), chord heads next to beams can be missed, key signatures are sometimes
-  read as note accidentals, and durations of beamed notes depend on beam counting at the stem.
+  letters vs dynamics), chord heads next to beams can be missed, an accidental right after the key
+  signature at the next key-signature position is taken as part of it, and durations of beamed notes
+  depend on beam counting at the stem.
 * Lyrics, tuplet numbers, fingering and most text are reported only as "text".
 * Scans that were upscaled from a low resolution (doubled staff lines, e.g. "Full Scores/Dvorak -
   Symphony No. 8.pdf") still lose some staves.
@@ -218,6 +241,8 @@ Baseline (12 generated pieces, 192 measures), 2026-10-10:
 * `PVOMR_STRIPDUMP=<strip index>` (with `--verbose`) prints the candidate line segments and 5-line groups of
   one detection strip; `PVOMR_ROWS=<y0>-<y1>` additionally prints the thin-ink row projection of that strip.
 * `--verbose --debug --out dir` also writes the staff-less binary image (`*_nostaff.png`).
+* `PVOMR_KEYDUMP=1` prints every clef/key/time placement decision of the start-of-staff pass (hypothesis,
+  score, competing digit score, position); `PVOMR_KEYSCAN=1` adds the per-column scores of the scan.
 * The models were trained on MuseScore renders only; on old engravings they occasionally see heads in beam ends
   (vetoed geometrically) or rests in text dashes (size/position checks). Real labelled pages would fix this at the source.
 * Rhythm reconstruction is per voice and measure; tuplets, grace notes and cross-staff beaming are

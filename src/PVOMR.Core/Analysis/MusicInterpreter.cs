@@ -37,16 +37,60 @@ public static class MusicInterpreter
             }
             // staves of one system share the time signature: adopt the majority reading for staves without one
             var times = sys.Staves.Where(st => st.TimeSignature != null && !st.TimeSignature.Contains('?')).Select(st => st.TimeSignature!).ToList();
-            if (times.Count > 0 && sys.Staves.Count > 1)
+            if (times.Count > 0 && sys.Staves.Count > 1 && times.Count * 4 >= sys.Staves.Count)
             {
                 // all staves of a system carry the same time signature: the majority reading overrules misread digits
                 string time = times.GroupBy(t => t).OrderByDescending(g => g.Count()).First().Key;
                 foreach (var st in sys.Staves) st.TimeSignature = time;
             }
         }
+        CompleteKeysAcrossSystems(page);
     }
 
-    private static void InterpretStaff(Staff staff, Staff? prev, int? forcedKey)
+    private static int? SystemMajorityKey(StaffSystem sys)
+    {
+        var keyed = sys.Staves.Where(HasKeySignature).Select(st => st.KeyFifths).ToList();
+        return keyed.Count == 0 ? null : keyed.GroupBy(f => f).OrderByDescending(g => g.Count()).First().Key;
+    }
+
+    private static bool HasKeySignature(Staff st) => st.Measures.Any(m => m.Symbols.Any(sy => sy.Kind == SymbolKind.KeySignature));
+
+    /// <summary>
+    /// The same staff position holds the same instrument on every system of a page (when the staff counts agree). A key
+    /// signature read with fewer accidentals of the same kind than on another system lost some to fragments: it is
+    /// completed to the fuller reading (the majority, larger signature on a tie) and the pitches are recomputed.
+    /// </summary>
+    private static void CompleteKeysAcrossSystems(PageAnalysis page)
+    {
+        if (page.Systems.Count < 2) return;
+        int count = page.Systems[0].Staves.Count;
+        var systems = page.Systems.Where(s => s.Staves.Count == count).ToList();
+        if (systems.Count < 2) return;
+        for (int k = 0; k < count; k++)
+        {
+            var readings = systems.Select(s => s.Staves[k]).Where(HasKeySignature).Select(st => st.KeyFifths).ToList();
+            if (readings.Count < 2) continue;
+            // ties (two systems) go to the reading that agrees with its own system's majority, then to the larger signature
+            int target = readings.GroupBy(f => f)
+                .OrderByDescending(g => g.Count())
+                .ThenByDescending(g => systems.Count(s => HasKeySignature(s.Staves[k]) && s.Staves[k].KeyFifths == g.Key && SystemMajorityKey(s) == g.Key))
+                .ThenByDescending(g => Math.Abs(g.Key)).First().Key;
+            foreach (var sys in systems)
+            {
+                var staff = sys.Staves[k];
+                int own = staff.KeyFifths;
+                if (own == target) continue;
+                bool fix = HasKeySignature(staff) ? Math.Sign(own) == Math.Sign(target) && Math.Abs(own) < Math.Abs(target)
+                                                  : sys.Index > 0;   // no signature of its own: inherited an incomplete reading
+                if (!fix) continue;
+                Staff? prev = sys.Index > 0 && page.Systems[sys.Index - 1].Staves.Count == count ? page.Systems[sys.Index - 1].Staves[k] : null;
+                InterpretStaff(staff, prev, target, forcedOverrides: true);
+                page.Notes.Add($"system {sys.Index + 1} staff {k + 1}: key {own} completed to {target} from the other systems");
+            }
+        }
+    }
+
+    private static void InterpretStaff(Staff staff, Staff? prev, int? forcedKey, bool forcedOverrides = false)
     {
         var clef = prev?.Clef ?? ClefKind.Unknown;
         int fifths = forcedKey ?? prev?.KeyFifths ?? 0;
@@ -84,6 +128,9 @@ public static class MusicInterpreter
             }
             // 2. key signature: a run of >= 1 accidentals of one type before the first note (first measure of the system, or after a clef)
             // the key signature is the leading run of accidentals of one kind (sharps or flats); a differing one ends the run
+            // accidentals found by the key-signature zone pass are the key signature even when a slur or an early note sorts between them
+            var zoneAcc = ordered.Where(s => s.Kind == SymbolKind.Accidental && s.Attributes.ContainsKey("keyzone")).ToList();
+            if (zoneAcc.Count > 0) leadingAccidentals = zoneAcc;
             if (leadingAccidentals.Count > 0 && leadingAccidentals[0].Name is "accidentalSharp" or "accidentalFlat")
             {
                 int runLen = 1;
@@ -95,7 +142,8 @@ public static class MusicInterpreter
                 if (plausible && mi == 0 || plausible && ordered.Any(c => c.Kind == SymbolKind.Clef))
                 {
                     int n = leadingAccidentals.Count;
-                    fifths = leadingAccidentals[0].Name == "accidentalSharp" ? n : leadingAccidentals[0].Name == "accidentalFlat" ? -n : 0;
+                    if (!(forcedOverrides && forcedKey != null))
+                        fifths = leadingAccidentals[0].Name == "accidentalSharp" ? n : leadingAccidentals[0].Name == "accidentalFlat" ? -n : 0;
                     keyFromThisStaff = true;
                     foreach (var a in leadingAccidentals) { a.Kind = SymbolKind.KeySignature; a.Attributes["key"] = KeyName(fifths); }
                 }
@@ -118,6 +166,8 @@ public static class MusicInterpreter
                     if (upper.Count > 0 && lower.Count > 0) time = string.Concat(upper) + "/" + string.Concat(lower);
                     else if (upper.Count + lower.Count > 0) time = string.Concat(upper.Concat(lower)) + "/?";
                 }
+                // a partial reading (digits missing or unidentified) is no time signature: the system's other staves may supply one
+                if (time != null && time.Contains('?')) time = null;
                 foreach (var t in timeDigits) t.Attributes["time"] = time ?? "?";
             }
             // 4. pitches

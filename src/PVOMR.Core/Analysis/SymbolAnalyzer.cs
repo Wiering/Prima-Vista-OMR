@@ -159,6 +159,9 @@ public sealed class SymbolAnalyzer
             var syms = perStaff[staff];
             var consumed = GroupTextLines(comps, staff, syms);
             DetectClefAtStart(comps, staff, syms, consumed);
+            if (!syms.Any(s => s.Kind == SymbolKind.Clef)) DetectClefByTemplate(comps, staff, syms, consumed);
+            DetectKeySignature(comps, staff, syms, consumed);
+            DetectTimeSignature(comps, staff, syms, consumed);
             var classified = new List<(MusicSymbol sym, Component comp)>();
             foreach (var c in comps)
             {
@@ -272,10 +275,13 @@ public sealed class SymbolAnalyzer
                                     && !(c.Width > 1.2 * ss && c.Height < 0.5 * ss) && c.PixelCount >= 0.02 * ss * ss)
                         .OrderBy(c => c.X0).ToList();
         if (zone.Count == 0) return;
-        string? bestName = null; double bestScore = 0; int bestK = 0;
-        for (int k = zone.Count; k >= 1; k--)
+        string? bestName = null; double bestScore = 0; int bestK = 0, bestSkip = 0;
+        // leading small components (bracket bits, speckles) may precede the clef: try skipping up to two of them
+        for (int skip = 0; skip <= Math.Min(3, zone.Count - 1); skip++)
+        for (int k = zone.Count - skip; k >= 1; k--)
         {
-            var parts = zone.Take(k).ToList();
+            if (skip > 0 && zone.Take(skip).Any(c => c.Width > 1.5 * ss || c.Height > 1.5 * ss)) break;
+            var parts = zone.Skip(skip).Take(k).ToList();
             int x0 = parts.Min(c => c.X0), y0 = parts.Min(c => c.Y0), x1 = parts.Max(c => c.X1), y1 = parts.Max(c => c.Y1);
             int w = x1 - x0 + 1, h = y1 - y0 + 1;
             if (h < 2.4 * ss || h > 9.5 * ss || w < 0.9 * ss || w > 5 * ss) continue;
@@ -285,10 +291,10 @@ public sealed class SymbolAnalyzer
                     for (int x = c.X0; x <= c.X1; x++)
                         if (_cm.Labels[y * _cm.Width + x] == c.Label) mask[(y - y0) * w + (x - x0)] = 1;
             var (name, score) = ClefFor(mask, w, h, ss);
-            if (name != null && score > bestScore) { bestName = name; bestScore = score; bestK = k; }
+            if (name != null && score > bestScore) { bestName = name; bestScore = score; bestK = k; bestSkip = skip; }
         }
         if (bestName == null || bestScore < 0.55) return;
-        var used = zone.Take(bestK).ToList();
+        var used = zone.Skip(bestSkip).Take(bestK).ToList();
         var sym = new MusicSymbol
         {
             Kind = SymbolKind.Clef, Name = bestName, Staff = staff, Confidence = Math.Round(bestScore, 2),
@@ -299,6 +305,432 @@ public sealed class SymbolAnalyzer
         PostProcessTemplate(sym, fake, staff, false);
         syms.Add(sym);
         foreach (var c in used) consumed.Add(c);
+    }
+
+    // steps (0 = bottom line) of the n-th sharp / flat of a key signature in the treble clef; other clefs are offsets of these
+    private static readonly int[] SharpStepsTreble = { 8, 5, 9, 6, 3, 7, 4 };
+    private static readonly int[] FlatStepsTreble = { 4, 7, 3, 6, 2, 5, 1 };
+
+    private static int? ExpectedKeyStep(string? clefKind, bool sharp, int n)
+    {
+        if (n < 0 || n > 6) return null;
+        int t = sharp ? SharpStepsTreble[n] : FlatStepsTreble[n];
+        switch (clefKind)
+        {
+            case "treble": return t;
+            case "bass": return t - 2;
+            case "alto": return t - 1;
+            case "tenor": { int v = t + 1; return v > 8 ? v - 7 : v; }
+            default: return null;
+        }
+    }
+
+    private static string? ClefKindName(MusicSymbol clef) => clef.Name switch
+    {
+        "gClef" or "gClef8vb" or "gClef8va" => "treble",
+        "fClef" or "fClef8vb" => "bass",
+        "cClef" => clef.Attributes.TryGetValue("clef", out var k) && k is "alto" or "tenor" ? k : null,
+        _ => null,
+    };
+
+    private static readonly bool KeyDump = Environment.GetEnvironmentVariable("PVOMR_KEYDUMP") == "1";
+    private static readonly bool KeyScan = Environment.GetEnvironmentVariable("PVOMR_KEYSCAN") == "1";
+
+    /// <summary>A glyph template resampled to w x h pixels (a pixel is ink when at least half of the covered 32x32 cells are).</summary>
+    private static byte[] RenderTemplate(GlyphTemplate t, int w, int h)
+    {
+        int n = GlyphTemplate.N;
+        var m = new byte[w * h];
+        for (int y = 0; y < h; y++)
+        {
+            int j0 = y * n / h, j1 = Math.Max(j0 + 1, (y + 1) * n / h);
+            for (int x = 0; x < w; x++)
+            {
+                int i0 = x * n / w, i1 = Math.Max(i0 + 1, (x + 1) * n / w);
+                int tot = 0, ink = 0;
+                for (int j = j0; j < j1 && j < n; j++)
+                    for (int i = i0; i < i1 && i < n; i++) { tot++; int b = j * n + i; if ((t.Bits[b >> 6] & (1UL << (b & 63))) != 0) ink++; }
+                if (tot > 0 && ink * 2 >= tot) m[y * w + x] = 1;
+            }
+        }
+        return m;
+    }
+
+    /// <summary>
+    /// Tolerant overlap between a rendered template placed at (px, py) and the original binary image, ignoring the
+    /// rows covered by the staff lines (staff removal shreds small glyphs, so the unremoved image is compared and the
+    /// line rows are treated as unknown). Returns the mean of template recall and ink precision.
+    /// </summary>
+    private double StaffAwareScore(byte[] tmpl, int w, int h, int px, int py, Staff staff)
+    {
+        if (px < 1 || py < 1 || px + w + 1 >= _bin.Width || py + h + 1 >= _bin.Height) return 0;
+        double half = staff.LineThickness / 2 + 1, xc = px + w / 2.0;
+        var ignore = new bool[h];
+        foreach (var line in staff.Lines)
+        {
+            double ly = line.YAt(xc);
+            for (int y = 0; y < h; y++) if (Math.Abs(py + y - ly) <= half) ignore[y] = true;
+        }
+        int tol = Math.Max(1, (int)Math.Round(staff.Space / 16));
+        // columns of a barline or bracket (ink running well beyond the staff at both ends) are unknown too
+        var ignoreCol = new bool[w];
+        int ignoredCols = 0;
+        for (int x = 0; x < w; x++) if (ignoreCol[x] = IsBarlineColumn(px + x, staff)) ignoredCols++;
+        if (ignoredCols > 0.4 * w) return 0;
+        int tCount = 0, tHit = 0, oCount = 0, oHit = 0;
+        for (int y = 0; y < h; y++)
+        {
+            if (ignore[y]) continue;
+            for (int x = 0; x < w; x++)
+            {
+                if (ignoreCol[x]) continue;
+                bool t = tmpl[y * w + x] != 0, o = _bin[px + x, py + y];
+                if (!t && !o) continue;
+                if (t)
+                {
+                    tCount++;
+                    bool hit = false;
+                    for (int dy = -tol; dy <= tol && !hit; dy++) for (int dx = -tol; dx <= tol; dx++) if (_bin[px + x + dx, py + y + dy]) { hit = true; break; }
+                    if (hit) tHit++;
+                }
+                if (o)
+                {
+                    oCount++;
+                    bool hit = false;
+                    for (int dy = -tol; dy <= tol && !hit; dy++)
+                        for (int dx = -tol; dx <= tol; dx++)
+                        {
+                            int xx = x + dx, yy = y + dy;
+                            if (xx < 0 || yy < 0 || xx >= w || yy >= h) continue;
+                            if (tmpl[yy * w + xx] != 0) { hit = true; break; }
+                        }
+                    if (hit) oHit++;
+                }
+            }
+        }
+        if (tCount == 0 || oCount == 0) return 0;
+        return 0.5 * ((double)tHit / tCount + (double)oHit / oCount);
+    }
+
+    /// <summary>The right edge of the clef including the two dots of an F clef when they were not merged into it.</summary>
+    private int ClefRightEdge(MusicSymbol clef, Staff staff)
+    {
+        double ss = staff.Space;
+        if (clef.Name != "fClef") return clef.Bounds.X1;
+        // the two dots sit in the spaces either side of the fourth line (steps 5 and 7): a short run of columns with ink in both bands
+        int xFrom = clef.Bounds.X1 + 1, xTo = (int)Math.Round(clef.Bounds.X0 + 3.4 * ss);
+        int band = Math.Max(1, (int)Math.Round(0.2 * ss));
+        bool Both(int x)
+        {
+            double bottom = staff.BottomY(x);
+            bool a = false, b = false;
+            for (int dy = -band; dy <= band && !(a && b); dy++)
+            {
+                int y5 = (int)Math.Round(bottom - 2.5 * ss) + dy, y7 = (int)Math.Round(bottom - 3.5 * ss) + dy;
+                if (x >= 0 && x < _bin.Width && y7 >= 0 && y5 < _bin.Height) { a |= _bin[x, y5]; b |= _bin[x, y7]; }
+            }
+            return a && b;
+        }
+        int runStart = -1, runEnd = -1, gap = 0;
+        for (int x = Math.Max(0, xFrom); x < xTo && x < _bin.Width; x++)
+        {
+            if (Both(x)) { if (runStart < 0) runStart = x; runEnd = x; gap = 0; }
+            else if (runStart >= 0 && ++gap > 1) break;
+        }
+        if (runStart >= 0 && runEnd - runStart + 1 <= 0.8 * ss) return Math.Max(clef.Bounds.X1, runEnd + 1);
+        return Math.Max(clef.Bounds.X1, (int)Math.Round(clef.Bounds.X0 + 2.55 * ss));
+    }
+
+    /// <summary>Fraction of the columns [px, px+w) that carry ink in the rows [yFrom, yTo) of the original image.</summary>
+    private double InkColumns(int px, int w, int yFrom, int yTo)
+    {
+        if (w <= 0 || yTo <= yFrom) return 0;
+        int cols = 0;
+        for (int x = px; x < px + w; x++)
+        {
+            if (x < 0 || x >= _bin.Width) continue;
+            for (int y = Math.Max(0, yFrom); y < yTo && y < _bin.Height; y++) if (_bin[x, y]) { cols++; break; }
+        }
+        return (double)cols / w;
+    }
+
+    private static readonly HashSet<string> HandwrittenFonts = new() { "MuseJazz", "Petaluma" };
+
+    /// <summary>Best score of any time-signature glyph (digits above / below the middle line, common time) centred near cx.</summary>
+    private double BestTimeGlyphScore(Staff staff, int cx, int dyRange)
+    {
+        double ss = staff.Space, bottom = staff.BottomY(cx);
+        int span = Math.Max(1, (int)Math.Round(0.3 * ss));
+        double best = 0;
+        foreach (var (name, step) in new[] { ("timeSig2", 6), ("timeSig3", 6), ("timeSig4", 6), ("timeSig5", 6), ("timeSig6", 6), ("timeSig7", 6), ("timeSig8", 6), ("timeSig9", 6),
+                                             ("timeSig2", 2), ("timeSig4", 2), ("timeSig8", 2), ("timeSigCommon", 4), ("timeSigCutCommon", 4) })
+        {
+            var pl = BestPlacement(name, staff, bottom - step * ss / 2, cx - span, cx + span, dyRange, centred: true);
+            if (pl != null && pl.Score > best) best = pl.Score;
+        }
+        return best;
+    }
+
+    /// <summary>True when the ink run through the staff's middle line at column x reaches 0.8 staff spaces beyond both outer lines.</summary>
+    private bool IsBarlineColumn(int x, Staff staff)
+    {
+        if (x < 0 || x >= _bin.Width) return false;
+        double ss = staff.Space;
+        int yMid = (int)Math.Round(staff.Lines[2].YAt(x));
+        if (yMid < 0 || yMid >= _bin.Height || !_bin[x, yMid]) return false;
+        int top = (int)Math.Round(staff.TopY(x) - 0.8 * ss), bottom = (int)Math.Round(staff.BottomY(x) + 0.8 * ss);
+        int gap = 0;
+        for (int y = yMid; y > top; y--)
+        {
+            if (y < 0) return false;
+            if (_bin[x, y]) gap = 0; else if (++gap > 1) return false;
+        }
+        gap = 0;
+        for (int y = yMid; y < bottom; y++)
+        {
+            if (y >= _bin.Height) return false;
+            if (_bin[x, y]) gap = 0; else if (++gap > 1) return false;
+        }
+        return true;
+    }
+
+    /// <summary>True when some column in [px, px+w) has a vertical ink run of at least 0.8 staff spaces through row y.</summary>
+    private bool HasStemThrough(int px, int w, int y, double ss)
+    {
+        if (y < 0 || y >= _bin.Height) return false;
+        for (int x = px; x < px + w; x++)
+        {
+            if (x < 0 || x >= _bin.Width || !_bin[x, y]) continue;
+            int up = y, down = y;
+            while (up > 0 && _bin[x, up - 1]) up--;
+            while (down < _bin.Height - 1 && _bin[x, down + 1]) down++;
+            if (down - up + 1 >= 0.8 * ss) return true;
+        }
+        return false;
+    }
+
+    private sealed class Placement { public GlyphTemplate T = null!; public byte[] Mask = null!; public int X, Y, W, H; public double Score; }
+
+    /// <summary>Best placement of any template with the given name: the glyph origin's y is yOrigin (+-dyRange), its left edge scanned over [xFrom, xTo].</summary>
+    private Placement? BestPlacement(string name, Staff staff, double yOrigin, int xFrom, int xTo, int dyRange, bool centred = false)
+    {
+        Placement? best = null;
+        double ss = staff.Space;
+        foreach (var t in _lib!.Templates.Where(t => t.Name == name && !HandwrittenFonts.Contains(t.Font)))
+        {
+            int w = Math.Max(2, (int)Math.Round(t.WidthSS * ss)), h = Math.Max(2, (int)Math.Round(t.HeightSS * ss));
+            var mask = RenderTemplate(t, w, h);
+            int y0 = (int)Math.Round(yOrigin + t.TopSS * ss);
+            for (int x = xFrom; x <= xTo; x++)
+                for (int dy = -dyRange; dy <= dyRange; dy++)
+                {
+                    int px = centred ? x - w / 2 : x;
+                    double sc = StaffAwareScore(mask, w, h, px, y0 + dy, staff);
+                    if (best == null || sc > best.Score) best = new Placement { T = t, Mask = mask, X = px, Y = y0 + dy, W = w, H = h, Score = sc };
+                }
+        }
+        return best;
+    }
+
+    /// <summary>Components lying (by bounding-box area) mostly inside the rectangle are consumed.</summary>
+    private static void ConsumeInside(List<Component> comps, Rect r, HashSet<Component> consumed, double minFraction = 0.5)
+    {
+        foreach (var c in comps)
+        {
+            if (consumed.Contains(c)) continue;
+            int ox = Math.Min(c.X1, r.X1 + 1) - Math.Max(c.X0, r.X0 - 1) + 1, oy = Math.Min(c.Y1, r.Y1 + 1) - Math.Max(c.Y0, r.Y0 - 1) + 1;
+            if (ox <= 0 || oy <= 0) continue;
+            if ((double)ox * oy >= minFraction * c.Width * c.Height) consumed.Add(c);
+        }
+    }
+
+    /// <summary>
+    /// Clef fallback for small or badly scanned staves where the clef shatters into many fragments: the clef templates
+    /// are placed in the original image at the height the staff dictates (G clef on line 2, F clef on line 4, C clef
+    /// on line 3 or 4) and scored with the staff-line rows ignored.
+    /// </summary>
+    private void DetectClefByTemplate(List<Component> comps, Staff staff, List<MusicSymbol> syms, HashSet<Component> consumed)
+    {
+        if (_lib == null) return;
+        double ss = staff.Space;
+        // something clef-sized must be there: fragments of at least one staff space in height near the staff start
+        if (!comps.Any(c => !consumed.Contains(c) && c.X0 >= staff.Left - 1.0 * ss && c.X0 < staff.Left + 2.8 * ss && c.Height >= 0.8 * ss
+                            && c.Y1 > staff.TopY(c.CenterX) - 2.5 * ss && c.Y0 < staff.BottomY(c.CenterX) + 2.5 * ss)) return;
+        int xFrom = (int)Math.Round(staff.Left - 0.3 * ss), xTo = (int)Math.Round(staff.Left + 2.2 * ss);
+        double bottom = staff.BottomY(staff.Left + 1.5 * ss);
+        // C clefs of older editions are much wider than the font glyphs: try horizontally stretched templates too
+        var hypotheses = new (string name, int step, string kind, double stretch)[]
+        {
+            ("gClef", 2, "treble", 1), ("fClef", 6, "bass", 1), ("cClef", 4, "alto", 1), ("cClef", 6, "tenor", 1),
+            ("cClef", 4, "alto", 1.3), ("cClef", 6, "tenor", 1.3), ("cClef", 4, "alto", 1.6), ("cClef", 6, "tenor", 1.6),
+        };
+        Placement? best = null; string? bestKind = null;
+        int dyRange = Math.Max(1, (int)Math.Round(0.12 * ss));
+        foreach (var (name, step, kind, stretch) in hypotheses)
+        {
+            // coarse scan every other column, then refine around the best position
+            var coarse = BestPlacementStep(name, staff, bottom - step * ss / 2, xFrom, xTo, dyRange, 2, stretch);
+            if (coarse == null) continue;
+            var fine = BestPlacementStep(name, staff, bottom - step * ss / 2, coarse.X - 1, coarse.X + 1, dyRange, 1, stretch) ?? coarse;
+            if (KeyDump) Console.Error.WriteLine($"clefhyp staff@{staff.Left},{staff.TopY(staff.Left):0} {name}/{kind} {fine.Score:0.00} at x{fine.X} w{fine.W} ({fine.T.Font})");
+            if (best == null || fine.Score > best.Score) { best = fine; bestKind = kind; }
+        }
+        if (KeyDump && best != null) Console.Error.WriteLine($"clefzone staff@{staff.Left},{staff.TopY(staff.Left):0} {best.T.Name}/{bestKind} score {best.Score:0.00} at x{best.X} ({best.T.Font})");
+        if (best == null || best.Score < 0.75) return;
+        var rect = new Rect(best.X, best.Y, best.X + best.W - 1, best.Y + best.H - 1);
+        var sym = new MusicSymbol { Kind = SymbolKind.Clef, Name = best.T.Name, Staff = staff, Confidence = Math.Round(best.Score, 2), Bounds = rect };
+        sym.Attributes["clefzone"] = "1";
+        var fake = new Component { X0 = rect.X0, Y0 = rect.Y0, X1 = rect.X1, Y1 = rect.Y1, PixelCount = best.W * best.H / 3 };
+        PostProcessTemplate(sym, fake, staff, false);
+        if (best.T.Name == "cClef") sym.Attributes["clef"] = bestKind!;
+        syms.Add(sym);
+        ConsumeInside(comps, rect, consumed);
+    }
+
+    private Placement? BestPlacementStep(string name, Staff staff, double yOrigin, int xFrom, int xTo, int dyRange, int xStep, double stretch = 1)
+    {
+        Placement? best = null;
+        double ss = staff.Space;
+        foreach (var t in _lib!.Templates.Where(t => t.Name == name && !HandwrittenFonts.Contains(t.Font)))
+        {
+            int w = Math.Max(2, (int)Math.Round(t.WidthSS * ss * stretch)), h = Math.Max(2, (int)Math.Round(t.HeightSS * ss));
+            var mask = RenderTemplate(t, w, h);
+            int y0 = (int)Math.Round(yOrigin + t.TopSS * ss);
+            for (int x = xFrom; x <= xTo; x += xStep)
+                for (int dy = -dyRange; dy <= dyRange; dy += xStep)
+                {
+                    double sc = StaffAwareScore(mask, w, h, x, y0 + dy, staff);
+                    if (best == null || sc > best.Score) best = new Placement { T = t, Mask = mask, X = x, Y = y0 + dy, W = w, H = h, Score = sc };
+                }
+        }
+        return best;
+    }
+
+    /// <summary>
+    /// Key signature right after the clef. On small staves the sharps and flats are shredded by staff removal, so the
+    /// n-th accidental is searched as a whole in the original image at the position the clef dictates for it (both
+    /// kinds for the first one), with the staff-line rows ignored; the run ends at the first position without a match.
+    /// </summary>
+    private void DetectKeySignature(List<Component> comps, Staff staff, List<MusicSymbol> syms, HashSet<Component> consumed)
+    {
+        if (_lib == null) return;
+        var clef = syms.FirstOrDefault(s => s.Kind == SymbolKind.Clef);
+        if (clef == null) return;
+        string? clefKind = ClefKindName(clef);
+        if (clefKind == null) return;
+        double ss = staff.Space;
+        const double Threshold = 0.66;
+        int dyRange = Math.Max(1, (int)Math.Round(0.15 * ss));
+        string? kind = null;
+        var accepted = new List<Placement>();
+        int lastX1 = ClefRightEdge(clef, staff);
+        for (int n = 0; n < 7; n++)
+        {
+            int xFrom = lastX1 + (n == 0 ? (int)Math.Round(0.05 * ss) : -(int)Math.Round(0.1 * ss));
+            int xTo = lastX1 + (int)Math.Round((n == 0 ? 2.2 : 0.8) * ss);
+            Placement? best = null; string? bestKind = null;
+            foreach (var k in kind != null ? new[] { kind } : new[] { "accidentalFlat", "accidentalSharp" })
+            {
+                int? step = ExpectedKeyStep(clefKind, k == "accidentalSharp", n);
+                if (step == null) break;
+                double yOrigin = staff.BottomY(lastX1 + 0.5 * ss) - step.Value * ss / 2;
+                var pl = BestPlacement(k, staff, yOrigin, xFrom, xTo, dyRange);
+                if (pl != null && (best == null || pl.Score > best.Score)) { best = pl; bestKind = k; }
+                if (KeyScan && k == (kind ?? "accidentalFlat"))
+                    Console.Error.WriteLine($"keyscan staff@{staff.Left},{staff.TopY(staff.Left):0} x{xFrom}..{xTo}: " + string.Join(" ", Enumerable.Range(xFrom, xTo - xFrom + 1).Select(x => (BestPlacement(k, staff, yOrigin, x, x, dyRange)?.Score ?? 0).ToString("0.00"))));
+            }
+            // after a confident first accidental the following ones may be weaker (heavier ink, touching neighbours)
+            double thr = Threshold;
+            bool ok = best != null && best.Score >= thr;
+            // a time-signature digit explains the ink clearly better: the key signature ended before it
+            double digit = ok ? BestTimeGlyphScore(staff, best!.X + best.W / 2, dyRange) : 0;
+            if (ok && digit > best!.Score + 0.03) ok = false;
+            // accidentals of a key signature are evenly spaced
+            if (ok && accepted.Count >= 2)
+            {
+                double gap = best!.X - accepted[^1].X, prevGap = accepted[^1].X - accepted[^2].X;
+                if (gap < 0.6 * prevGap || gap > 1.6 * prevGap) ok = false;
+            }
+            if (KeyDump && best != null) Console.Error.WriteLine($"keyzone staff@{staff.Left},{staff.TopY(staff.Left):0} n={n} {bestKind} score {best.Score:0.00} digit {digit:0.00} at x{best.X} y{best.Y} ({best.T.Font}) -> {(ok ? "ok" : "stop")}");
+            if (!ok) break;
+            kind = bestKind; accepted.Add(best!); lastX1 = best.X + best.W - 1;
+        }
+        if (accepted.Count == 0) return;
+        foreach (var pl in accepted)
+        {
+            var rect = new Rect(pl.X, pl.Y, pl.X + pl.W - 1, pl.Y + pl.H - 1);
+            var sym = new MusicSymbol { Kind = SymbolKind.Accidental, Name = kind!, Staff = staff, Confidence = Math.Round(pl.Score, 2), Bounds = rect };
+            sym.Attributes["keyzone"] = "1";
+            var fake = new Component { X0 = rect.X0, Y0 = rect.Y0, X1 = rect.X1, Y1 = rect.Y1, PixelCount = pl.W * pl.H / 3 };
+            PostProcessTemplate(sym, fake, staff, false);
+            syms.Add(sym);
+            ConsumeInside(comps, rect, consumed);
+        }
+    }
+
+    /// <summary>
+    /// Time signature after the clef and key signature: digit templates (upper digit between the top and middle
+    /// line, lower digit below) and the common/cut-time glyphs are placed in the original image and scored with the
+    /// staff-line rows ignored; the best column wins when both halves match.
+    /// </summary>
+    private void DetectTimeSignature(List<Component> comps, Staff staff, List<MusicSymbol> syms, HashSet<Component> consumed)
+    {
+        if (_lib == null) return;
+        var clef = syms.FirstOrDefault(s => s.Kind == SymbolKind.Clef);
+        if (clef == null) return;
+        double ss = staff.Space;
+        var keyAcc = syms.Where(s => s.Kind == SymbolKind.Accidental && s.Attributes.ContainsKey("keyzone")).ToList();
+        int xStart = keyAcc.Count > 0 ? keyAcc.Max(s => s.Bounds.X1) : ClefRightEdge(clef, staff);
+        // nothing of glyph size in the zone: no time signature (saves the template scan on most staves)
+        if (!comps.Any(c => !consumed.Contains(c) && c.X0 >= xStart && c.X0 < xStart + 3 * ss && c.Height >= 0.8 * ss
+                            && c.CenterY > staff.TopY(c.CenterX) - 0.5 * ss && c.CenterY < staff.BottomY(c.CenterX) + 0.5 * ss)) return;
+        const double Threshold = 0.66;
+        int dyRange = Math.Max(1, (int)Math.Round(0.12 * ss));
+        int cxFrom = xStart + (int)Math.Round(0.5 * ss), cxTo = xStart + (int)Math.Round(2.6 * ss);
+        double xm = xStart + 1.5 * ss;
+        double yUpper = staff.BottomY(xm) - 3 * ss, yLower = staff.BottomY(xm) - 1 * ss, yMid = staff.BottomY(xm) - 2 * ss;
+        string[] uppers = { "timeSig1", "timeSig2", "timeSig3", "timeSig4", "timeSig5", "timeSig6", "timeSig7", "timeSig8", "timeSig9" };
+        string[] lowers = { "timeSig1", "timeSig2", "timeSig4", "timeSig8" };
+        Placement? bu = null, bl = null;
+        foreach (var u in uppers) { var pl = BestPlacement(u, staff, yUpper, cxFrom, cxTo, dyRange, centred: true); if (pl != null && (bu == null || pl.Score > bu.Score)) bu = pl; }
+        if (bu != null && bu.Score >= Threshold)
+        {
+            int cx = bu.X + bu.W / 2;
+            int span = Math.Max(1, (int)Math.Round(0.2 * ss));
+            foreach (var l in lowers) { var pl = BestPlacement(l, staff, yLower, cx - span, cx + span, dyRange, centred: true); if (pl != null && (bl == null || pl.Score > bl.Score)) bl = pl; }
+        }
+        Placement? bc = null;
+        foreach (var c in new[] { "timeSigCommon", "timeSigCutCommon" }) { var pl = BestPlacement(c, staff, yMid, cxFrom, cxTo, dyRange, centred: true); if (pl != null && (bc == null || pl.Score > bc.Score)) bc = pl; }
+        double digitScore = bu != null && bl != null ? 0.5 * (bu.Score + bl.Score) : 0;
+        // digits end at the outer staff lines: ink continuing above the upper or below the lower digit is a stem or a bar, not a digit
+        if (bu != null && bl != null)
+        {
+            int ext = (int)Math.Round(0.5 * ss), lineHalf = (int)Math.Ceiling(staff.LineThickness / 2) + 1;
+            double above = InkColumns(bu.X, bu.W, bu.Y - lineHalf - ext, bu.Y - lineHalf), below = InkColumns(bl.X, bl.W, bl.Y + bl.H + lineHalf, bl.Y + bl.H + lineHalf + ext);
+            if (above > 0.3 || below > 0.3) digitScore = 0;
+            // a stem through the digit's edge (a note, not a digit): a vertical ink run of a staff space crossing the boundary
+            if (HasStemThrough(bu.X, bu.W, bu.Y - lineHalf - 1, ss) || HasStemThrough(bl.X, bl.W, bl.Y + bl.H + lineHalf + 1, ss)) digitScore = 0;
+            if (bu.T.Name == "timeSig1" && bl.T.Name == "timeSig1") digitScore = 0;
+            else if (bu.T.Name == "timeSig1" || bl.T.Name == "timeSig1") digitScore -= 0.08;
+        }
+        double commonScore = bc?.Score ?? 0;
+        if (KeyDump) Console.Error.WriteLine($"timezone staff@{staff.Left},{staff.TopY(staff.Left):0} digits {bu?.T.Name}/{bl?.T.Name} {bu?.Score:0.00}/{bl?.Score:0.00} common {bc?.T.Name} {commonScore:0.00}");
+        MusicSymbol sym;
+        if (digitScore >= 0.85 && bu!.Score >= 0.78 && bl!.Score >= 0.78 && digitScore >= commonScore)
+        {
+            var rect = new Rect(Math.Min(bu.X, bl.X), bu.Y, Math.Max(bu.X + bu.W, bl.X + bl.W) - 1, bl.Y + bl.H - 1);
+            sym = new MusicSymbol { Kind = SymbolKind.TimeSignature, Name = "timeSigStack", Staff = staff, Confidence = Math.Round(digitScore, 2), Bounds = rect };
+            sym.Attributes["stack"] = $"{bu.T.Name[7..]}/{bl.T.Name[7..]}";
+        }
+        else if (commonScore >= 0.85)
+        {
+            var rect = new Rect(bc!.X, bc.Y, bc.X + bc.W - 1, bc.Y + bc.H - 1);
+            sym = new MusicSymbol { Kind = SymbolKind.TimeSignature, Name = bc.T.Name, Staff = staff, Confidence = Math.Round(commonScore, 2), Bounds = rect };
+        }
+        else return;
+        sym.Attributes["timezone"] = "1";
+        syms.Add(sym);
+        ConsumeInside(comps, sym.Bounds, consumed);
     }
 
     /// <summary>Groups runs of 4+ glyph-sized components outside the staff into text lines (titles, lyrics, "cresc.").</summary>
