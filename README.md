@@ -121,6 +121,7 @@ Effect on the 12 test pieces (trained on 72 other pieces in Leland, Bravura and 
 |---|---|---|---|---|
 | clean, templates only | 50% | 93.6% | 84.3% | 84% / 85% |
 | clean, both models | 77% | 96.2% | 96.0% | 83% / 85% |
+| clean, both models, after the real-page fixes | 80% | 96.4% | 96.8% | 83% / 85% |
 | degraded, templates only | 22% | 84.7% | 74.8% | 64% / 50% |
 | degraded, both models | 45% | 81.6% | 85.1% | 78% / 82% |
 
@@ -129,18 +130,24 @@ Effect on the 12 test pieces (trained on 72 other pieces in Leland, Bravura and 
 `pvomr gen --style hard` adds dense beamed rhythms (8ths/16ths), a second voice with stems down, ties, more
 chords and accidentals; `dense` and `voices` select one of the two. `testdata/` holds exact MusicXML truth for two
 real scanned pages, derived from the public-domain LilyPond source of BWV 1007 (Mutopia) with
-`tools/lilypond_to_truth.py` (a small parser for monophonic `elative` LilyPond; it stops before polyphony):
+`tools/lilypond_to_truth.py` (a small parser for monophonic `
+elative` LilyPond; it stops before polyphony):
 
 ```
 pvomr eval "D:\OMR\Scores\Bach - Cello Suite No 1 in G.pdf" testdata/bach-bwv1007-prelude-m1-19.musicxml --pages 1
 pvomr eval "D:\OMR\Scores\Bach - Cello Suite No 1 in G.pdf" testdata/bach-bwv1007-prelude-m20-32.musicxml --pages 2 --measures 1-13
 ```
 
-Results (both models, 2026-10-10): page 1 (19 measures) note P 100% / R 99.3%, durations 99.7%, 79% of measures
-entirely right; page 2 measures 20–32: note P 93.6% / R 92.2%, durations 99.5%. The remaining errors on the real
-pages are text below the staff read as low notes, a few missed notes next to accidentals, and ledger-line pitches
-off by one step. Hard synthetic set (12 pieces, `--style hard`, seed 3): 190/192 measures, note P 87.5% / R 86.6%
-clean; 69.0% / 73.1% degraded. Retraining the models with 45 hard-style pieces added did not move these numbers.
+Results (both models, 2026-10-10, after the fixes driven by these pages): page 1 (19 measures) note P 98.7% / R 100%,
+79% of measures entirely right; page 2 measures 20–32: note P 96.6% / R 97.6%, durations 99.5%, 62% of measures
+entirely right (before the fixes: 93.6% / 92.2%). The fixes: the beam veto for head candidates now requires beam-like
+thickness per column (it had been triggered by accidentals and ledger lines next to the head), heads outside the
+staff must have a ledger line (text letters below the staff were read as low notes), head centres are refined by
+a probability-weighted mean (ledger-line pitches off by one), a geometric fallback when the verifier finds no head
+at a stem, and a stricter "simultaneous" test for two voices. Remaining errors: a few heads next to accidentals,
+accidentals not attached to their note, and isolated false heads in dense text. Hard synthetic set (12 pieces,
+`--style hard`, seed 3): 190/192 measures, note P 86.9% / R 88.2% clean. Retraining the models with 45 hard-style
+pieces added did not move these numbers; the gap is structural (two voices, dense beams).
 
 ## Ground truth and metrics
 

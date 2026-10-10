@@ -404,7 +404,7 @@ public static class MusicAssembler
         int ups = notes.Count(n => n.StemUp == true), downs = notes.Count(n => n.StemUp == false);
         if (ups >= 2 && downs >= 2)
             foreach (var a in notes.Where(n => n.StemUp == true))
-                if (notes.Any(b => b.StemUp == false && Math.Abs(b.X - a.X) < 1.2 * ss)) { twoVoices = true; break; }
+                if (notes.Any(b => b.StemUp == false && Math.Abs(b.X - a.X) < 0.6 * ss)) { twoVoices = true; break; }   // simultaneous, not merely adjacent
         int baseVoice = (staffNo - 1) * 2 + 1;
         foreach (var e in events)
         {

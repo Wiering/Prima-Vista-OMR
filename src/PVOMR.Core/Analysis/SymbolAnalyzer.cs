@@ -57,6 +57,11 @@ public sealed class SymbolAnalyzer
         {
             case "head_black": case "head_half": case "head_whole":
                 if (prob < 0.6) return false;
+                // an isolated head well outside the staff must sit on a ledger line (which is part of its component); letters are not
+                {
+                    double stepHere = staff.StepAt(c.CenterX, c.CenterY);
+                    if ((stepHere < -2.5 || stepHere > 10.5) && c.Width < 1.45 * ss && _ns.HorizontalRunAt((int)c.CenterX, (int)Math.Round(c.CenterY), out _) < 1.4 * ss) return false;
+                }
                 sym.Kind = SymbolKind.Note; sym.Name = label == "head_black" ? "noteheadBlack" : label == "head_half" ? "noteheadHalf" : "noteheadWhole";
                 PostProcessTemplate(sym, c, staff, false);
                 return true;
@@ -724,6 +729,7 @@ public sealed class SymbolAnalyzer
             var p = _clf.Classify(_cm.Mask(c), c.Width, c.Height, ss);
             if (ApplyPrediction(sym, c, staff, p)) return sym;
             if (_opt.Verbose) sym.Attributes["cnn"] = $"{p.Label} {p.Probability:0.00}";
+            if (p.Label.StartsWith("head_") && p.Probability >= 0.6) goto heuristics;   // a head rejected by the position prior: not a glyph either
             if (p.Label is "fragment" or "composite" or "other" && p.Probability >= 0.6)
             {
                 // trust the rejection: no template matching, straight to the shape heuristics
@@ -934,7 +940,7 @@ public sealed class SymbolAnalyzer
         }
 
         var sym = new MusicSymbol { Bounds = ToRect(c), Staff = staff, Confidence = 0.7 };
-        if (_opt.Verbose) sym.Attributes["stems"] = string.Join(",", withHeads.Select(s => $"{s.X}:{s.Top}-{s.Bottom}{(s.Up ? "u" : "d")}f{s.Flags}h{s.Heads.Count}{s.Trace}"));
+        if (_opt.Verbose) sym.Attributes["stems"] = string.Join(",", stems.Select(s => $"{s.X}:{s.Top}-{s.Bottom}{(s.Up ? "u" : "d")}f{s.Flags}h{s.Heads.Count}{s.Trace}"));
         if (withHeads.Count == 1)
         {
             var st = withHeads[0];
@@ -969,7 +975,20 @@ public sealed class SymbolAnalyzer
 
     private void FindHeads(Stem st, Staff staff, double headW, double headH)
     {
-        if (_heads != null) { FindHeadsWithVerifier(st, staff, headW, headH); return; }
+        if (_heads != null)
+        {
+            FindHeadsWithVerifier(st, staff, headW, headH);
+            if (st.Heads.Count > 0) return;
+            // the verifier found nothing (e.g. a head touching an accidental): fall back to the geometric scorer with a strict threshold
+            FindHeadsGeometric(st, staff, headW, headH, 0.72);
+            if (_opt.Verbose && st.Heads.Count > 0) st.Trace += "[geometric fallback]";
+            return;
+        }
+        FindHeadsGeometric(st, staff, headW, headH, 0.52);
+    }
+
+    private void FindHeadsGeometric(Stem st, Staff staff, double headW, double headH, double minScore)
+    {
         double ss = staff.Space;
         double rx = headW / 2, ry = headH / 2;
         // candidate centres: left side and right side of the stem
@@ -986,7 +1005,7 @@ public sealed class SymbolAnalyzer
             }
             // non-maximum suppression
             int minSep = (int)(0.85 * ss);
-            var sorted = scores.Where(s => s.score >= 0.52).OrderByDescending(s => s.score).ToList();
+            var sorted = scores.Where(s => s.score >= minScore).OrderByDescending(s => s.score).ToList();
             var taken = new List<int>();
             foreach (var s in sorted)
             {
@@ -1045,14 +1064,20 @@ public sealed class SymbolAnalyzer
             {
                 if (taken.Any(t => Math.Abs(t - c.y) < minSep)) continue;
                 taken.Add(c.y);
-                found.Add((c.p, cx, c.y, c.hollow, sign));
+                // centre: probability-weighted mean of the positions around the maximum (the scan is coarse and the model saturates)
+                var near = cands.Where(o => Math.Abs(o.y - c.y) <= 0.5 * ss && o.p >= 0.8 * c.p).ToList();
+                double cyRef = near.Sum(o => o.y * o.p) / near.Sum(o => o.p);
+                found.Add((c.p, cx, cyRef, c.hollow, sign));
             }
         }
         foreach (var f in found.OrderByDescending(f => f.score))
         {
             if (st.Heads.Any(h => Math.Abs(h.HeadY - f.cy) < 0.4 * ss)) continue;
             bool beam = LooksLikeBeam(f.cx, f.cy, ss, -f.sign);
-            if (_opt.Verbose) st.Trace += $"[{f.cx:0},{f.cy:0} p{f.score:0.00} {(f.hollow ? "h" : "b")}{(beam ? " BEAM" : "")}]";
+            // outside the staff a real head sits on or next to ledger lines; text and stray marks do not
+            double stepF = staff.StepAt(f.cx, f.cy);
+            if ((stepF <= -2.5 || stepF >= 10.5) && !HasLedgerLine(f.cx, f.cy, ss)) { if (_opt.Verbose) st.Trace += $"[{f.cx:0},{f.cy:0} NOLEDGER]"; continue; }
+            if (_opt.Verbose) st.Trace += $"[{f.cx:0},{f.cy:0} p{f.score:0.00} {(f.hollow ? "h" : "b")}{(beam ? " BEAM" + _beamWhy : "")}]";
             if (beam) continue;
             var head = new Note
             {
@@ -1069,18 +1094,60 @@ public sealed class SymbolAnalyzer
     }
 
     /// <summary>A beam (or its end) under a head candidate: ink continues (within a band that tolerates the beam slope) for more than 1.5 staff spaces from the centre.</summary>
-    private bool LooksLikeBeam(double cx, double cy, double ss, int stemSide)
+    /// <summary>A ledger line through or right above/below the head: a thin horizontal run of at least 1.3 staff spaces within one space of the centre.</summary>
+    private bool HasLedgerLine(double cx, double cy, double ss)
     {
         int x = (int)Math.Round(cx);
+        for (int dy = -(int)Math.Round(0.6 * ss); dy <= (int)Math.Round(0.6 * ss); dy++)
+        {
+            int y = (int)Math.Round(cy) + dy;
+            foreach (int dx in new[] { 0, -3, 3 })
+            {
+                if (!_ns[x + dx, y]) continue;
+                if (_ns.HorizontalRunAt(x + dx, y, out _) >= 1.3 * ss) return true;
+            }
+        }
+        return false;
+    }
+
+    private string _beamWhy = "";
+
+    private bool LooksLikeBeam(double cx, double cy, double ss, int stemSide)
+    {
         int xStem = (int)Math.Round(cx + stemSide * 0.55 * ss);      // the stem column: beams start here and run away from the head
+        int xFar = (int)Math.Round(cx - stemSide * 0.7 * ss);        // just outside the head on the other side (an accidental sits there, a beam runs on)
         int reach = (int)Math.Round(1.5 * ss), half = (int)Math.Max(2, Math.Round(0.3 * ss));
-        int hits = 0;
+        int hitsStem = 0, hitsFar = 0;
+        int minThick = (int)Math.Max(3, Math.Round(0.28 * ss)), maxThick = (int)Math.Round(1.4 * ss);   // up to two touching beams
         foreach (double off in new[] { -0.2, 0.0, 0.2 })
         {
             int y = (int)Math.Round(cy + off * ss);
-            if (ContinuousBand(xStem, y, stemSide, reach, half) || ContinuousBand(x, y, -stemSide, reach, half)) hits++;
+            if (ContinuousBeam(xStem, y, stemSide, reach, half, minThick, maxThick)) hitsStem++;
+            if (ContinuousBeam(xFar, y, -stemSide, reach, half, minThick, maxThick)) hitsFar++;
         }
-        return hits >= 2;
+        _beamWhy = hitsStem >= 2 ? "s" : hitsFar >= 2 ? "f" : "";
+        return hitsStem >= 2 || hitsFar >= 2;
+    }
+
+    /// <summary>Beam-like ink along a walk: in (almost) every column a vertical run of beam thickness passes through the band.</summary>
+    private bool ContinuousBeam(int x, int y, int dir, int reach, int half, int minThick, int maxThick)
+    {
+        int gap = 0;
+        for (int i = 0; i <= reach; i++)
+        {
+            int xx = x + dir * i;
+            bool beamLike = false;
+            for (int dy = -half; dy <= half && !beamLike; dy++)
+            {
+                if (!_ns[xx, y + dy]) continue;
+                int len = _ns.VerticalRunAt(xx, y + dy, out int top);
+                beamLike = len >= minThick && len <= maxThick;
+                dy = top + len - y;   // skip the rest of this run
+            }
+            if (beamLike) gap = 0;
+            else if (++gap > 3) return false;
+        }
+        return true;
     }
 
     private bool ContinuousBand(int x, int y, int dir, int reach, int half)
@@ -1250,7 +1317,7 @@ public sealed class SymbolAnalyzer
         foreach (var a in accs)
         {
             double ay = AccidentalCenterY(a);
-            var cand = notes.Where(p => a.Bounds.X1 < p.note.Head.X0 + 0.15 * ss && a.Bounds.X1 > p.note.Head.X0 - 1.6 * ss && Math.Abs(ay - p.note.HeadY) <= 0.45 * ss)
+            var cand = notes.Where(p => a.Bounds.X1 < p.note.Head.X0 + 0.25 * ss && a.Bounds.X1 > p.note.Head.X0 - 1.6 * ss && Math.Abs(ay - p.note.HeadY) <= 0.6 * ss)
                             .OrderBy(p => p.note.Head.X0 - a.Bounds.X1).FirstOrDefault();
             if (cand.note != null)
             {
