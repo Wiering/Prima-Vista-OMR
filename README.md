@@ -125,6 +125,17 @@ Effect on the 12 test pieces (trained on 72 other pieces in Leland, Bravura and 
 | degraded, templates only | 22% | 84.7% | 74.8% | 64% / 50% |
 | degraded, both models | 45% | 81.6% | 85.1% | 78% / 82% |
 
+## Full scores over several pages
+
+`--pages 7-9 --musicxml out.musicxml` assembles all analysed pages into one score with continuous measure numbers
+and `new-page`/`new-system` marks. Parts are the staves of the fullest system; a system with fewer staves
+(instruments omitted) is aligned to it monotonically by clef kind, and a part absent from a system receives
+whole-measure rests so every part keeps the same measure count. Within a system all staves share the majority
+time signature and the key signature read on the other staves. Beethoven 5 pages 7–9 export as 12 parts with
+67 measures each and open in MuseScore; the Debussy Petite Suite score, whose systems have 2 to 12 staves,
+exports as 12 parts of 35 measures. Instrument names are not read (parts are numbered), and a grand staff
+inside an orchestral score is still treated as two parts.
+
 ## Tuplets
 
 Triplets (and other tuplets) are supported end to end: the generator (`--style tuplets`, also part of `hard`)

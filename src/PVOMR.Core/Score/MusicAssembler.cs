@@ -38,8 +38,10 @@ public static class MusicAssembler
         int partCount = grand ? 1 : maxStaves;
         for (int i = 0; i < partCount; i++)
             score.Parts.Add(new Part { Id = $"P{i + 1}", Name = grand ? "Piano" : partCount == 1 ? "Part" : $"Part {i + 1}", StaffCount = grand ? 2 : 1 });
+        // reference layout: the first system with the full staff count; other systems are aligned to it by clef
+        var reference = systems.First(s => s.sys.Staves.Count == maxStaves).sys;
         if (systems.Any(s => s.sys.Staves.Count != maxStaves))
-            score.Warnings.Add("systems have different staff counts; staves are mapped to parts by position from the top");
+            score.Warnings.Add("systems have different staff counts; staves are aligned to the fullest system by clef and order; absent parts get rest measures");
 
         var contexts = new StaffContext[partCount * (grand ? 2 : 1)];
         for (int i = 0; i < contexts.Length; i++) contexts[i] = new StaffContext();
@@ -51,6 +53,7 @@ public static class MusicAssembler
             bool newPage = pg != lastPage; lastPage = pg; if (newPage) page++;
             // measures of the system: by boundary index; each staff has its own Measure list aligned by x
             int measureCount = sys.Staves.Max(s => s.Measures.Count);
+            int[] partOfStaff = grand ? new[] { 0, 0 } : AlignStaves(sys, reference);
             for (int mi = 0; mi < measureCount; mi++)
             {
                 for (int pi = 0; pi < partCount; pi++)
@@ -61,8 +64,8 @@ public static class MusicAssembler
                     bool any = false;
                     for (int sIdx = 0; sIdx < staffCount; sIdx++)
                     {
-                        int staffPos = grand ? sIdx : pi;
-                        if (staffPos >= sys.Staves.Count) continue;
+                        int staffPos = grand ? sIdx : Array.IndexOf(partOfStaff, pi);
+                        if (staffPos < 0 || staffPos >= sys.Staves.Count) continue;
                         var staff = sys.Staves[staffPos];
                         if (mi >= staff.Measures.Count) continue;
                         var m = staff.Measures[mi];
@@ -70,7 +73,13 @@ public static class MusicAssembler
                         var ctx = contexts[grand ? sIdx : pi];
                         BuildMeasure(sm, m, staff, sIdx + 1, ctx, mi == 0, partMeasureCount[pi] == 0);
                     }
-                    if (!any) continue;
+                    if (!any)
+                    {
+                        // the part has no staff in this system (instrument omitted): a whole-measure rest keeps the parts aligned
+                        var ctx = contexts[pi];
+                        sm.Events.Add(new ScoreEvent { IsRest = true, MeasureRest = true, Type = "whole", Duration = ctx.Time?.Length ?? 4 * Score.Divisions, Voice = 1, Staff = 1 });
+                        if (partMeasureCount[pi] == 0) { sm.Clefs[0] = ClefSpec.Treble; sm.KeyFifths = 0; }
+                    }
                     partMeasureCount[pi]++;
                     sm.Number = partMeasureCount[pi];
                     part.Measures.Add(sm);
@@ -79,6 +88,41 @@ public static class MusicAssembler
         }
         foreach (var part in score.Parts) FinishPart(part, score);
         return score;
+    }
+
+    /// <summary>
+    /// Maps the staves of a system to part indices of the reference system. Equal counts map by position; a
+    /// system with fewer staves (instruments omitted) is aligned monotonically to the reference by clef kind.
+    /// </summary>
+    private static int[] AlignStaves(StaffSystem sys, StaffSystem reference)
+    {
+        int n = sys.Staves.Count, m = reference.Staves.Count;
+        if (n >= m) return Enumerable.Range(0, n).Select(i => Math.Min(i, m - 1)).ToArray();
+        // dynamic programming: cost 0 for matching clef, 1 for a different one, 0.6 when either clef is unknown; skipping reference staves is free
+        var cost = new double[n + 1, m + 1];
+        for (int i = 1; i <= n; i++) for (int j = 0; j <= m; j++) cost[i, j] = double.PositiveInfinity;
+        for (int i = 1; i <= n; i++)
+            for (int j = 1; j <= m; j++)
+            {
+                double c = ClefCost(sys.Staves[i - 1].Clef, reference.Staves[j - 1].Clef);
+                cost[i, j] = Math.Min(cost[i - 1, j - 1] + c, cost[i, j - 1]);
+            }
+        var result = new int[n];
+        int a = n, b = m;
+        while (a > 0 && b > 0)
+        {
+            double c = ClefCost(sys.Staves[a - 1].Clef, reference.Staves[b - 1].Clef);
+            if (Math.Abs(cost[a, b] - (cost[a - 1, b - 1] + c)) < 1e-9) { result[a - 1] = b - 1; a--; b--; }
+            else b--;
+        }
+        while (a > 0) { result[a - 1] = Math.Max(0, a - 1); a--; }
+        return result;
+    }
+
+    private static double ClefCost(ClefKind a, ClefKind b)
+    {
+        if (a == ClefKind.Unknown || b == ClefKind.Unknown) return 0.6;
+        return a == b ? 0 : 1;
     }
 
     private static bool LooksLikeGrandStaff(StaffSystem sys)
@@ -420,7 +464,8 @@ public static class MusicAssembler
         var parts = t.Split('/');
         if (parts.Length != 2 || !int.TryParse(parts[0], out int beats) || beats <= 0 || beats > 32) return null;
         if (!int.TryParse(parts[1], out int beatType) || beatType <= 0) beatType = 4;
-        if (beatType is not (1 or 2 or 4 or 8 or 16 or 32)) beatType = 4;
+        if (beatType == 1) beatType = 4;   // a "1" under the beats is almost always a misread "4" (x/1 metres are very rare)
+        if (beatType is not (2 or 4 or 8 or 16 or 32)) beatType = 4;
         return new TimeSpec(beats, beatType);
     }
 

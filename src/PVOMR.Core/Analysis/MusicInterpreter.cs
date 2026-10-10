@@ -35,6 +35,14 @@ public static class MusicInterpreter
                     InterpretStaff(staff, prev, key);
                 }
             }
+            // staves of one system share the time signature: adopt the majority reading for staves without one
+            var times = sys.Staves.Where(st => st.TimeSignature != null && !st.TimeSignature.Contains('?')).Select(st => st.TimeSignature!).ToList();
+            if (times.Count > 0 && sys.Staves.Count > 1)
+            {
+                // all staves of a system carry the same time signature: the majority reading overrules misread digits
+                string time = times.GroupBy(t => t).OrderByDescending(g => g.Count()).First().Key;
+                foreach (var st in sys.Staves) st.TimeSignature = time;
+            }
         }
     }
 
