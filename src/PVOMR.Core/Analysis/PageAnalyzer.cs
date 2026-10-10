@@ -117,12 +117,12 @@ public sealed class PageAnalyzer
         // 3. staff removal, barlines, systems
         var noStaff = StaffRemover.Remove(bin0, result.Staves);
         ctx.NoStaff = noStaff;
-        BarlineDetector.Detect(bin0, noStaff, result.Staves, result.Notes);
+        var comps = ConnectedComponents.Label(noStaff);
+        ctx.Components = comps;
+        BarlineDetector.Detect(bin0, noStaff, comps, result.Staves, result.Notes);
         result.Systems.AddRange(SystemBuilder.Build(bin0, result.Staves, result.Notes));
 
         // 4. symbols
-        var comps = ConnectedComponents.Label(noStaff);
-        ctx.Components = comps;
         var symbolAnalyzer = new SymbolAnalyzer(_glyphs, bin0, noStaff, comps, result, _opt);
         symbolAnalyzer.Run();
 

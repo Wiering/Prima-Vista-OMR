@@ -34,7 +34,6 @@ public sealed class GlyphLibrary
     public static readonly (string name, int cp, SymbolKind kind)[] GlyphSet =
     {
         ("gClef", 0xE050, SymbolKind.Clef), ("fClef", 0xE062, SymbolKind.Clef), ("cClef", 0xE05C, SymbolKind.Clef),
-        ("unpitchedPercussionClef1", 0xE069, SymbolKind.Clef),
         ("accidentalSharp", 0xE262, SymbolKind.Accidental), ("accidentalFlat", 0xE260, SymbolKind.Accidental),
         ("accidentalNatural", 0xE261, SymbolKind.Accidental), ("accidentalDoubleSharp", 0xE263, SymbolKind.Accidental),
         ("accidentalDoubleFlat", 0xE264, SymbolKind.Accidental),

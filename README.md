@@ -95,6 +95,32 @@ staff-less binary image.
 6. **Interpretation** (`MusicInterpreter`): clefs, key signatures (accidental runs at the start),
    time signatures and pitch names with per-measure accidental memory.
 
+## Ground truth and metrics
+
+`pvomr gen --out <dir> [--count 12] [--seed 1] [--measures 16] [--piano|--single]` generates random pieces
+with the score model (single staves in treble/bass/alto clef and two-staff piano, various keys and
+time signatures, chords, rests, dots, accidentals, dynamics, slurs), writes them as MusicXML and has
+MuseScore 4 render them to PDF, so every rendered page has an exact ground truth.
+
+`pvomr eval --dir <dir> [--augment <spec>] [--details] [--debug] [--out report.txt]` recognises each
+piece, assembles the score and compares it with the truth (`Eval/ScoreComparer`): measures are
+aligned (by index, or by similarity when the counts differ), events within a measure are aligned
+with a sequence alignment, and the table reports measures found/true and the share of measures
+that are entirely right, note precision/recall (pitch), duration accuracy of the matched notes,
+rest precision/recall, and whether clef, key and time signature of the first measure are right.
+`--details` lists the mismatches per measure. `pvomr eval <input> <truth.musicxml>` works for a
+single real score with a known transcription.
+
+`--augment` (also available for normal analysis) degrades the rendered page before recognition:
+`blur=1.2,noise=0.08,skew=1.5,scale=0.6,contrast=0.6,speckle=0.002,thin=1,thick=1`.
+
+Baseline (12 generated pieces, 192 measures), 2026-10-10:
+
+| condition | measures found | measures exact | note P | note R | duration | rest P/R | clef/key/time |
+|---|---|---|---|---|---|---|---|
+| clean MuseScore render | 207/192 | 35% | 82.7% | 80.3% | 97% | 79% / 80% | 12 / 11 / 12 |
+| blur 1.0, noise 0.06, skew 0.8°, scale 0.7 | 208/192 | 11% | 64.2% | 66.2% | 87% | 64% / 50% | 12 / 5 / 8 |
+
 ## Status and known limitations
 
 * Staff/system/bar line detection is robust on all tested material (clean parts, old engravings,

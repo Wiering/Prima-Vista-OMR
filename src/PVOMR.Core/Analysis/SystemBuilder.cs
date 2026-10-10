@@ -101,7 +101,7 @@ public static class SystemBuilder
             if (clusters.Count > 0 && e.x - clusters[^1][^1].x <= 0.8 * ss) clusters[^1].Add(e);
             else clusters.Add(new() { e });
         }
-        int need = Math.Max(1, (sys.Staves.Count + 1) / 2);
+        int need = sys.Staves.Count >= 2 ? Math.Max(2, (sys.Staves.Count + 1) / 2) : 1;
         var boundaries = new List<double>();
         foreach (var c in clusters)
         {

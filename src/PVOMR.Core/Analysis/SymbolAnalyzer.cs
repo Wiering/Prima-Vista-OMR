@@ -55,6 +55,7 @@ public sealed class SymbolAnalyzer
             var comps = compsPerStaff[staff];
             var syms = perStaff[staff];
             var consumed = GroupTextLines(comps, staff, syms);
+            DetectClefAtStart(comps, staff, syms, consumed);
             var classified = new List<(MusicSymbol sym, Component comp)>();
             foreach (var c in comps)
             {
@@ -77,6 +78,50 @@ public sealed class SymbolAnalyzer
                 if (m != null) m.Symbols.Add(s);
             }
         }
+    }
+
+    /// <summary>
+    /// The clef at the start of a staff is often broken into several components (C clef bars and curls, F clef dots,
+    /// thin strokes in old engravings). Union all fragments in the clef zone and match the union against the clef templates.
+    /// </summary>
+    private void DetectClefAtStart(List<Component> comps, Staff staff, List<MusicSymbol> syms, HashSet<Component> consumed)
+    {
+        if (_lib == null) return;
+        double ss = staff.Space;
+        double xm = staff.Left + 1.5 * ss;
+        double top = staff.TopY(xm), bot = staff.BottomY(xm);
+        var zone = comps.Where(c => !consumed.Contains(c) && c.X0 >= staff.Left - 1.0 * ss && c.X0 < staff.Left + 2.8 * ss
+                                    && c.Y1 > top - 2.5 * ss && c.Y0 < bot + 2.5 * ss
+                                    && !(c.Width > 1.2 * ss && c.Height < 0.5 * ss) && c.PixelCount >= 0.02 * ss * ss)
+                        .OrderBy(c => c.X0).ToList();
+        if (zone.Count == 0) return;
+        GlyphMatch? best = null; int bestK = 0;
+        for (int k = zone.Count; k >= 1; k--)
+        {
+            var parts = zone.Take(k).ToList();
+            int x0 = parts.Min(c => c.X0), y0 = parts.Min(c => c.Y0), x1 = parts.Max(c => c.X1), y1 = parts.Max(c => c.Y1);
+            int w = x1 - x0 + 1, h = y1 - y0 + 1;
+            if (h < 2.4 * ss || h > 9.5 * ss || w < 0.9 * ss || w > 5 * ss) continue;
+            var mask = new byte[w * h];
+            foreach (var c in parts)
+                for (int y = c.Y0; y <= c.Y1; y++)
+                    for (int x = c.X0; x <= c.X1; x++)
+                        if (_cm.Labels[y * _cm.Width + x] == c.Label) mask[(y - y0) * w + (x - x0)] = 1;
+            var m = _lib.Match(mask, w, h, ss, 0.35, t => t.Kind == SymbolKind.Clef);
+            if (m.Count > 0 && (best == null || m[0].Score > best.Score)) { best = m[0]; bestK = k; }
+        }
+        if (best == null || best.Score < 0.55) return;
+        var used = zone.Take(bestK).ToList();
+        var sym = new MusicSymbol
+        {
+            Kind = SymbolKind.Clef, Name = best.Template.Name, Staff = staff, Confidence = Math.Round(best.Score, 2),
+            Bounds = new Rect(used.Min(c => c.X0), used.Min(c => c.Y0), used.Max(c => c.X1), used.Max(c => c.Y1)),
+        };
+        if (used.Count > 1) sym.Attributes["merged"] = used.Count.ToString();
+        var fake = new Component { X0 = sym.Bounds.X0, Y0 = sym.Bounds.Y0, X1 = sym.Bounds.X1, Y1 = sym.Bounds.Y1, PixelCount = used.Sum(c => c.PixelCount) };
+        PostProcessTemplate(sym, fake, staff, false);
+        syms.Add(sym);
+        foreach (var c in used) consumed.Add(c);
     }
 
     /// <summary>Groups runs of 4+ glyph-sized components outside the staff into text lines (titles, lyrics, "cresc.").</summary>
@@ -154,6 +199,7 @@ public sealed class SymbolAnalyzer
                         for (int x = c.X0; x <= c.X1; x++)
                             if (_cm.Labels[y * _cm.Width + x] == c.Label) mask[(y - y0) * w + (x - x0)] = 1;
                 var matches = _lib.Match(mask, w, h, ss);
+                if (matches.Count > 0 && matches[0].Template.Name == "unpitchedPercussionClef1" && matches[0].Score < 0.82) matches.RemoveAt(0);
                 if (matches.Count == 0) continue;
                 var m = matches[0];
                 if (m.Score >= Threshold(m.Template.Kind) + 0.02 && m.Score > u.sym.Confidence + 0.02 && (bestMatch == null || m.Score > bestMatch.Score))
@@ -345,6 +391,7 @@ public sealed class SymbolAnalyzer
         if (_lib != null && h >= 2.6 && h <= 9.5 && w >= 1.0 && w <= 5)
         {
             bool atStart = c.X0 <= staff.Left + 3.5 * ss && h >= 2.6;
+            Rect? unionBounds = null; List<Component>? unionParts = null;
             var mask0 = _cm.Mask(c);
             var clefMatches = _lib.Match(mask0, c.Width, c.Height, ss, 0.35, t => t.Kind == SymbolKind.Clef);
             // the F clef's two dots (and broken clefs) are separate components: try the union with small neighbours to the right
@@ -365,20 +412,54 @@ public sealed class SymbolAnalyzer
                 if (um2.Count > 0 && (clefMatches.Count == 0 || um2[0].Score > clefMatches[0].Score + 0.03))
                 {
                     clefMatches = um2;
-                    sym.Bounds = new Rect(ux0, uy0, ux1, uy1);
-                    foreach (var o in dots) _consumed.Add(o);
-                    sym.Attributes["merged"] = all.Count.ToString();
+                    unionBounds = new Rect(ux0, uy0, ux1, uy1);
+                    unionParts = dots;
                 }
             }
             if (_opt.Verbose && clefMatches.Count > 0) sym.Attributes["clefscore"] = $"{clefMatches[0].Template.Name} {clefMatches[0].Score:0.00}";
             if (clefMatches.Count > 0 && clefMatches[0].Template.Name == "unpitchedPercussionClef1" && clefMatches[0].Score < 0.82) clefMatches.RemoveAt(0);
             if (clefMatches.Count > 0 && clefMatches[0].Score >= (atStart ? 0.52 : Threshold(SymbolKind.Clef)))
             {
+                if (unionBounds != null && unionParts != null)
+                {
+                    sym.Bounds = unionBounds.Value;
+                    foreach (var o in unionParts) _consumed.Add(o);
+                    sym.Attributes["merged"] = (unionParts.Count + 1).ToString();
+                }
                 sym.Kind = SymbolKind.Clef; sym.Name = clefMatches[0].Template.Name; sym.Confidence = Math.Round(clefMatches[0].Score, 2);
                 PostProcessTemplate(sym, c, staff, false);
                 return sym;
             }
         }
+        // 0a2. stacked time signature digits that touch (6/8, 3/4 ...): one component spanning the staff height; split at the middle line
+        if (_lib != null && h >= 3.4 && h <= 4.6 && w >= 0.8 && w <= 2.8 && c.X0 <= staff.Left + 12 * ss
+            && Math.Abs(c.Y0 - staff.TopY(c.CenterX)) <= 0.6 * ss && Math.Abs(c.Y1 - staff.BottomY(c.CenterX)) <= 0.6 * ss)
+        {
+            var full = _cm.Mask(c);
+            int split = (int)Math.Round(staff.Lines[2].YAt(c.CenterX)) - c.Y0;
+            if (split > 2 && split < c.Height - 2)
+            {
+                string? Digit(byte[] mask, int y0, int y1)
+                {
+                    int x0 = int.MaxValue, x1 = -1, yy0 = int.MaxValue, yy1 = -1;
+                    for (int y = y0; y < y1; y++) for (int x = 0; x < c.Width; x++) if (mask[y * c.Width + x] != 0) { x0 = Math.Min(x0, x); x1 = Math.Max(x1, x); yy0 = Math.Min(yy0, y); yy1 = Math.Max(yy1, y); }
+                    if (x1 < 0 || yy1 - yy0 < 0.8 * ss) return null;
+                    int sw = x1 - x0 + 1, sh = yy1 - yy0 + 1;
+                    var sub = new byte[sw * sh];
+                    for (int y = yy0; y <= yy1; y++) for (int x = x0; x <= x1; x++) sub[(y - yy0) * sw + (x - x0)] = mask[y * c.Width + x];
+                    var mm = _lib.Match(sub, sw, sh, ss, 0.4, t => t.Kind == SymbolKind.TimeSignature && t.Name.Length == 8);
+                    return mm.Count > 0 && mm[0].Score >= 0.6 ? mm[0].Template.Name[7..] : null;
+                }
+                string? upper = Digit(full, 0, split), lower = Digit(full, split, c.Height);
+                if (upper != null && lower != null)
+                {
+                    sym.Kind = SymbolKind.TimeSignature; sym.Name = "timeSigStack"; sym.Confidence = 0.7;
+                    sym.Attributes["stack"] = $"{upper}/{lower}";
+                    return sym;
+                }
+            }
+        }
+
         // 0b. whole / half rests: a solid bar hanging below or sitting on a staff line
         if (w >= 0.8 && w <= 2.0 && h >= 0.3 && h <= 0.8 && c.Fill > 0.75)
         {

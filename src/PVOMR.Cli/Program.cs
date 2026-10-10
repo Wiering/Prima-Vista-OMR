@@ -27,13 +27,30 @@ static int Usage()
           --binarize <m>      auto | otsu | sauvola (default auto)
           --no-deskew         skip skew correction
           --quiet             only print the summary line per page
+          --augment <spec>    degrade the image first, e.g. blur=1.2,noise=0.08,skew=1.5,scale=0.6,contrast=0.6,speckle=0.002
           --verbose           print analysis notes and bounding boxes
+
+        sub-commands:
+          pvomr gen --out <dir> [--count 12] [--seed 1] [--measures 16] [--piano|--single] [--musescore <exe>]
+                              generate synthetic pieces (MusicXML ground truth + PDF rendered by MuseScore)
+          pvomr eval --dir <dir> [--augment <spec>] [--details] [--debug] [--out report.txt]
+          pvomr eval <input> <truth.musicxml>
+                              recognise and compare with the ground truth; prints precision/recall metrics
         """);
     return 2;
 }
 
+if (args.Length > 0 && args[0] == "gen") return EvalCommands.Gen(args);
+if (args.Length > 0 && args[0] == "eval")
+{
+    var evalLog = new List<string>();
+    string? fontDir = null;
+    for (int i = 1; i + 1 < args.Length; i++) if (args[i] == "--fonts") fontDir = args[i + 1];
+    return EvalCommands.Eval(args.Where((a, i) => !(a == "--fonts" || (i > 0 && args[i - 1] == "--fonts"))).ToArray(), GlyphLibrary.Load(fontDir, evalLog));
+}
+
 var inputs = new List<string>();
-string? pages = null, outDir = null, fonts = null, musicXml = null;
+string? pages = null, outDir = null, fonts = null, musicXml = null, augment = null;
 bool? grandStaff = null;
 double dpi = 300;
 bool debug = false, json = false, quiet = false, verbose = false, deskew = true, diag = false;
@@ -50,6 +67,7 @@ for (int i = 0; i < args.Length; i++)
         case "--debug": debug = true; break;
         case "--json": json = true; break;
         case "--musicxml": musicXml = Next(); break;
+        case "--augment": augment = Next(); break;
         case "--grand-staff": grandStaff = true; break;
         case "--separate-staves": grandStaff = false; break;
         case "--fonts": fonts = Next(); break;
@@ -85,8 +103,10 @@ foreach (var input in inputs)
     {
         foreach (var page in PageSource.Enumerate(input, pages, dpi))
         {
-            Func<double, GrayImage>? rerender = page.FromPdf ? d => PageSource.RenderPdfPage(page.Source, page.PageNumber, d) : null;
-            var result = analyzer.Analyze(page.Image, page.Source, page.PageNumber, page.Dpi, rerender, out var ctx);
+            var img = page.Image;
+            if (augment != null) img = Augment.Apply(img, augment, page.PageNumber);
+            Func<double, GrayImage>? rerender = page.FromPdf && augment == null ? d => PageSource.RenderPdfPage(page.Source, page.PageNumber, d) : null;
+            var result = analyzer.Analyze(img, page.Source, page.PageNumber, page.Dpi, rerender, out var ctx);
             if (diag) Diagnostics.DumpStaves(result, ctx);
             string text = TextReport.Write(result, verbose);
             if (quiet) Console.WriteLine(text.Split('\n')[0] + (result.Staves.Count > 0 ? $"  staves={result.Staves.Count} systems={result.Systems.Count} measures={result.Staves.Sum(s => s.Measures.Count)}" : "  (no music)"));

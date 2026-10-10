@@ -61,8 +61,12 @@ public static class MusicInterpreter
                 }
             }
             // 2. key signature: a run of >= 1 accidentals of one type before the first note (first measure of the system, or after a clef)
-            if (leadingAccidentals.Count > 0 && leadingAccidentals.All(a => a.Name == leadingAccidentals[0].Name) && leadingAccidentals[0].Name is "accidentalSharp" or "accidentalFlat" or "accidentalNatural")
+            // the key signature is the leading run of accidentals of one kind (sharps or flats); a differing one ends the run
+            if (leadingAccidentals.Count > 0 && leadingAccidentals[0].Name is "accidentalSharp" or "accidentalFlat")
             {
+                int runLen = 1;
+                while (runLen < leadingAccidentals.Count && leadingAccidentals[runLen].Name == leadingAccidentals[0].Name) runLen++;
+                leadingAccidentals = leadingAccidentals.Take(runLen).ToList();
                 bool plausible = true;
                 var steps = leadingAccidentals.Select(a => a.Step ?? int.MinValue).ToList();
                 if (steps.Any(s => s == int.MinValue)) plausible = false;
@@ -78,7 +82,9 @@ public static class MusicInterpreter
             if (timeDigits.Count > 0)
             {
                 var common = timeDigits.FirstOrDefault(t => t.Name is "timeSigCommon" or "timeSigCutCommon");
-                if (common != null) time = common.Name == "timeSigCommon" ? "C (4/4)" : "cut C (2/2)";
+                var stack = timeDigits.FirstOrDefault(t => t.Attributes.ContainsKey("stack"));
+                if (stack != null) time = stack.Attributes["stack"];
+                else if (common != null) time = common.Name == "timeSigCommon" ? "C (4/4)" : "cut C (2/2)";
                 else
                 {
                     // stack digits: upper (numerator) and lower (denominator) by vertical position; several columns for multi-digit numbers

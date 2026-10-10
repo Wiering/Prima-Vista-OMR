@@ -7,7 +7,7 @@ public static class BarlineDetector
 {
     private sealed class Candidate { public int X0, X1; public double Xc => (X0 + X1) / 2.0; public int Width => X1 - X0 + 1; public bool Thick; public int RunTop, RunBottom; }
 
-    public static void Detect(BinaryImage bin, BinaryImage noStaff, List<Staff> staves, List<string> log)
+    public static void Detect(BinaryImage bin, BinaryImage noStaff, ComponentMap cm, List<Staff> staves, List<string> log)
     {
         for (int si = 0; si < staves.Count; si++)
         {
@@ -43,6 +43,7 @@ public static class BarlineDetector
                 if (c.Width > 0.8 * ss) continue;
                 int xc = (int)Math.Round(c.Xc);
                 if (!IsThinAlongRun(noStaff, bin, staff, c, xc)) continue;
+                if (!ComponentIsThin(cm, staff, c, xc)) continue;
                 c.Thick = c.Width >= Math.Max(3, 0.28 * ss) && c.Width >= 2.5 * staff.LineThickness;
                 accepted.Add(c);
             }
@@ -108,8 +109,8 @@ public static class BarlineDetector
                     var next = staves[to + 1];
                     double tol = Math.Max(3, 0.2 * next.Space);
                     var match = next.Barlines.FirstOrDefault(b => Math.Abs(b.X - bar.X) <= tol || (b.X0 <= bar.X1 + 2 && b.X1 >= bar.X0 - 2));
-                    if (match == null) break;
-                    if (!ConnectsDown(bin, staves[to], next, (int)Math.Round(bar.X), Math.Min(bar.X0, match.X0), Math.Max(bar.X1, match.X1))) break;
+                    int sx0 = match != null ? Math.Min(bar.X0, match.X0) : bar.X0, sx1 = match != null ? Math.Max(bar.X1, match.X1) : bar.X1;
+                    if (!ConnectsDown(bin, staves[to], next, (int)Math.Round(bar.X), sx0, sx1)) break;
                     to++;
                 }
                 bar.StaffTo = to;
@@ -193,6 +194,30 @@ public static class BarlineDetector
 
     // Any staff lies in the direction of the run end? (we only know this staff here, so accept long runs; they are validated by ConnectsDown)
     private static bool ContinuesToOtherStaff(Staff staff, int xc, int yEnd, bool up) => true;
+
+    /// <summary>The connected component (staff lines removed) that contains the candidate must itself be thin: a stem's component includes its head, flag or beam.</summary>
+    private static bool ComponentIsThin(ComponentMap cm, Staff staff, Candidate c, int xc)
+    {
+        double ss = staff.Space;
+        double ymid = (staff.TopY(xc) + staff.BottomY(xc)) / 2;
+        Component? comp = null;
+        for (int dy = 0; dy < 2 * ss && comp == null; dy++)
+            foreach (int x in new[] { xc, c.X0, c.X1 })
+            {
+                comp = cm.At(x, (int)(ymid + dy)) ?? cm.At(x, (int)(ymid - dy));
+                if (comp != null) break;
+            }
+        if (comp == null) return true;
+        // width of the component restricted to this staff's band and a 1.5 staff-space neighbourhood (a long barline may touch something elsewhere)
+        int y0 = (int)(staff.TopY(xc) - 0.5 * ss), y1 = (int)(staff.BottomY(xc) + 0.5 * ss);
+        int x0 = (int)(xc - 1.5 * ss), x1 = (int)(xc + 1.5 * ss);
+        int minX = int.MaxValue, maxX = -1;
+        for (int y = Math.Max(0, y0); y <= Math.Min(cm.Height - 1, y1); y++)
+            for (int x = Math.Max(0, x0); x <= Math.Min(cm.Width - 1, x1); x++)
+                if (cm.Labels[y * cm.Width + x] == comp.Label) { if (x < minX) minX = x; if (x > maxX) maxX = x; }
+        if (maxX < 0) return true;
+        return maxX - minX + 1 <= Math.Max(1.0 * ss, 3 * c.Width + 2);
+    }
 
     private static bool AnyBlack(BinaryImage bin, int x0, int x1, int y)
     {
