@@ -13,7 +13,7 @@ static class EvalCommands
 {
     public static int Gen(string[] args)
     {
-        string outDir = "synth"; int count = 12, seed = 1, measures = 16; bool? piano = null; string? font = null;
+        string outDir = "synth"; int count = 12, seed = 1, measures = 16; bool? piano = null; string? font = null; string style = "normal";
         string musescore = @"C:\Program Files\MuseScore 4\bin\MuseScore4.exe";
         for (int i = 1; i < args.Length; i++)
         {
@@ -29,6 +29,7 @@ static class EvalCommands
                 case "--single": piano = false; break;
                 case "--musescore": musescore = Next(); break;
                 case "--font": font = Next(); break;
+                case "--style": style = Next(); break;      // normal | dense | voices | hard
                 default: Console.Error.WriteLine($"unknown option {a}"); return 2;
             }
         }
@@ -52,6 +53,8 @@ static class EvalCommands
                 Measures = measures, Piano = isPiano, Clef = clefs[i % clefs.Length], Time = times[i % times.Length], KeyFifths = (i % 9) - 4,
                 MinType = i % 3 == 0 ? 3 : 4, ChordProbability = isPiano ? 0.2 : 0.08,
             };
+            if (style is "dense" or "hard") { settings.Density = 3.0; settings.MinType = 4; settings.TieProbability = 0.12; settings.AccidentalProbability = 0.14; settings.ChordProbability += 0.08; }
+            if (style is "voices" or "hard") { settings.SecondVoiceProbability = style == "hard" ? 0.35 : 0.6; }
             string name = $"synth_{i + 1:00}";
             var score = gen.Generate(settings, name);
             string xml = Path.Combine(outDir, name + ".musicxml");
@@ -131,7 +134,7 @@ static class EvalCommands
 
     public static int Eval(string[] args, GlyphLibrary? glyphs)
     {
-        string? dir = null, augment = null, outFile = null, single = null, truthFile = null, model = null;
+        string? dir = null, augment = null, outFile = null, single = null, truthFile = null, model = null, pageSpec = null, measureRange = null;
         double dpi = 300; bool details = false, debug = false; int seed = 1;
         for (int i = 1; i < args.Length; i++)
         {
@@ -147,6 +150,8 @@ static class EvalCommands
                 case "--debug": debug = true; break;
                 case "--seed": seed = int.Parse(Next()); break;
                 case "--model": model = Next(); break;
+                case "--pages": pageSpec = Next(); break;
+                case "--measures": measureRange = Next(); break;
                 default:
                     if (a.StartsWith("--")) { Console.Error.WriteLine($"unknown option {a}"); return 2; }
                     if (single == null) single = a; else truthFile = a;
@@ -175,7 +180,7 @@ static class EvalCommands
         foreach (var (name, input, truth) in pairs)
         {
             var pages = new List<PageAnalysis>();
-            foreach (var page in PageSource.Enumerate(input, null, dpi))
+            foreach (var page in PageSource.Enumerate(input, pageSpec, dpi))
             {
                 var img = page.Image;
                 if (augment != null) img = Augment.Apply(img, augment, seed + page.PageNumber);
@@ -186,6 +191,16 @@ static class EvalCommands
             }
             var truthScore = MusicXmlReader.Read(truth);
             var recognised = MusicAssembler.Build(pages, new MusicAssembler.Options { GrandStaff = truthScore.Parts.Count == 1 && truthScore.Parts[0].StaffCount == 2 ? true : null });
+            if (measureRange != null)
+            {
+                var mr = measureRange.Split('-');
+                int ma = int.Parse(mr[0]), mb = int.Parse(mr[1]);
+                foreach (var part in recognised.Parts)
+                {
+                    var keep = part.Measures.Skip(ma - 1).Take(mb - ma + 1).ToList();
+                    part.Measures.Clear(); part.Measures.AddRange(keep);
+                }
+            }
             var r = ScoreComparer.Compare(truthScore, recognised, name);
             results.Add(r);
             Console.WriteLine($"{name}: {r.Summary()}");

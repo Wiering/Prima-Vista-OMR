@@ -74,7 +74,7 @@ public static class StaffDetector
         {
             int x0 = s * stripW, x1 = Math.Min(bin.Width, x0 + stripW);
             var segs = FindSegments(bin, x0, x1, maxRun, ssGuess);
-            groupsPerStrip[s] = FindGroups(segs, s, ssGuess);
+            groupsPerStrip[s] = FindGroups(segs, s, ssGuess, x1 - x0);
         });
         var allGroups = groupsPerStrip.SelectMany(g => g).ToList();
         if (Environment.GetEnvironmentVariable("PVOMR_STRIPDUMP") is string sd && int.TryParse(sd, out int dumpStrip) && dumpStrip < strips)
@@ -185,6 +185,7 @@ public static class StaffDetector
             else result.Log.Add($"rejected staff candidate at y={st.CenterY:0} x={st.Left:0}-{st.Right:0}: thin-ink coverage {thin:0.00}, long-run coverage {longRuns:0.00}");
         }
         keep = valid;
+        foreach (var st in keep) ShiftIfOutsideLineIsBetter(bin, st, maxRun, result.Log);
         // Short candidates right next to a much longer staff with the same spacing are ledger-line structures.
         double maxWidth = keep.Count == 0 ? 0 : keep.Max(st => st.Right - st.Left);
         keep = keep.Where(st =>
@@ -302,6 +303,58 @@ public static class StaffDetector
         return total / st.Lines.Count;
     }
 
+    /// <summary>
+    /// A staff whose weakest outer line is covered much worse than the line one spacing outside the staff was built
+    /// from a row of ledger lines or a beam: shift it by one line and re-refine.
+    /// </summary>
+    private static void ShiftIfOutsideLineIsBetter(BinaryImage bin, Staff st, int maxRun, List<string> log)
+    {
+        int thinRun = Math.Max(maxRun, (int)Math.Round(2.5 * st.LineThickness));
+        double[] cover = st.Lines.Select(l => LongRunCoverageOfLine(bin, st, l, 0)).ToArray();
+        double above = LongRunCoverageOfLine(bin, st, st.Lines[0], -st.Space);
+        double below = LongRunCoverageOfLine(bin, st, st.Lines[4], +st.Space);
+        bool shiftUp = above > cover[4] + 0.3 && above > 0.6 && cover[4] < Math.Min(cover[1], cover[2]) - 0.2;
+        bool shiftDown = below > cover[0] + 0.3 && below > 0.6 && cover[0] < Math.Min(cover[2], cover[3]) - 0.2;
+        if (!shiftUp && !shiftDown) return;
+        var lines = new List<StaffLine>();
+        if (shiftUp)
+        {
+            var top = new StaffLine { Thickness = st.LineThickness };
+            foreach (var pt in st.Lines[0].Points) top.Points.Add((pt.X, pt.Y - st.Space));
+            lines.Add(top); lines.AddRange(st.Lines.Take(4));
+        }
+        else
+        {
+            var bottom = new StaffLine { Thickness = st.LineThickness };
+            foreach (var pt in st.Lines[4].Points) bottom.Points.Add((pt.X, pt.Y + st.Space));
+            lines.AddRange(st.Lines.Skip(1)); lines.Add(bottom);
+        }
+        st.Lines.Clear(); st.Lines.AddRange(lines);
+        foreach (var line in st.Lines) Refine(bin, line, st, thinRun);
+        log.Add($"staff at y={st.CenterY:0} shifted one line {(shiftUp ? "up" : "down")}: outside line coverage {(shiftUp ? above : below):0.00} vs weakest outer line {(shiftUp ? cover[4] : cover[0]):0.00}");
+    }
+
+    private static double LongRunCoverageOfLine(BinaryImage bin, Staff st, StaffLine line, double dy)
+    {
+        int tol = (int)Math.Max(1, Math.Round(st.LineThickness * 0.6 + 0.5));
+        int minRun = (int)Math.Max(4, 0.8 * st.Space);
+        int x0 = (int)st.Left, x1 = (int)st.Right;
+        if (x1 - x0 < 4) return 0;
+        int covered = 0, run = 0;
+        for (int x = x0; x <= x1 + 1; x++)
+        {
+            bool on = false;
+            if (x <= x1)
+            {
+                int yc = (int)Math.Round(line.YAt(x) + dy);
+                for (int d = -tol; d <= tol && !on; d++) on = bin[x, yc + d];
+            }
+            if (on) run++;
+            else { if (run >= minRun) covered += run; run = 0; }
+        }
+        return covered / (double)(x1 - x0 + 1);
+    }
+
     /// <summary>Fraction of the staff width covered by horizontal ink runs of at least 0.8 staff spaces lying on the modelled lines.</summary>
     public static double LongRunCoverage(BinaryImage bin, Staff st)
     {
@@ -403,7 +456,7 @@ public static class StaffDetector
         return segs;
     }
 
-    private static List<Group> FindGroups(List<Segment> segs, int strip, double ssGuess)
+    private static List<Group> FindGroups(List<Segment> segs, int strip, double ssGuess, int stripWidth)
     {
         var groups = new List<Group>();
         int n = segs.Count;
@@ -453,11 +506,13 @@ public static class StaffDetector
                     var ys2 = new double[] { ys[0] - sp, ys[0], ys[1], ys[2], ys[3] };
                     var idx2 = new[] { -1, idx[0], idx[1], idx[2], idx[3] };
                     double thick2 = idx2.Where(t => t >= 0).Average(t => (double)segs[t].Thickness);
-                    candidates.Add((idx2, ys2, 1, dev / d + Math.Abs(Math.Log(sp / ssGuess)) * 0.3 + 0.5, sp, thick2));
+                    double minCover2 = idx2.Where(t => t >= 0).Min(t => segs[t].Weight / (double)Math.Max(1, stripWidth));
+                    candidates.Add((idx2, ys2, 1, dev / d + Math.Abs(Math.Log(sp / ssGuess)) * 0.3 + 0.5 + (1 - Math.Min(1, minCover2)) * 1.2, sp, thick2));
                 }
                 double spacing = (ys[4] - ys[0]) / 4.0;
                 double thick = idx.Where(t => t >= 0).Average(t => (double)segs[t].Thickness);
-                double score = dev / d + Math.Abs(Math.Log(spacing / ssGuess)) * 0.3 + (missing > 0 ? 0.5 : 0);
+                double minCover = idx.Where(t => t >= 0).Min(t => segs[t].Weight / (double)Math.Max(1, stripWidth));
+                double score = dev / d + Math.Abs(Math.Log(spacing / ssGuess)) * 0.3 + (missing > 0 ? 0.5 : 0) + (1 - Math.Min(1, minCover)) * 1.2;
                 candidates.Add((idx, ys, missing, score, spacing, thick));
             }
         }

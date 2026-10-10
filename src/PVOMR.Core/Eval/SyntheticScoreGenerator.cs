@@ -20,6 +20,11 @@ public sealed class SyntheticScoreGenerator
         public double DynamicsProbability { get; set; } = 0.15;
         public double SlurProbability { get; set; } = 0.15;
         public int MinType { get; set; } = 4;       // 1 = whole ... 4 = 16th: fastest note value used
+        /// <summary>Weight of short values (8ths/16ths): 1 = uniform, higher = denser beamed rhythms.</summary>
+        public double Density { get; set; } = 1.0;
+        /// <summary>Probability that a staff gets a second voice (stems down) in a measure.</summary>
+        public double SecondVoiceProbability { get; set; } = 0.0;
+        public double TieProbability { get; set; } = 0.0;
     }
 
     public SyntheticScoreGenerator(int seed) { _rnd = new Random(seed); }
@@ -57,9 +62,17 @@ public sealed class SyntheticScoreGenerator
             for (int st = 0; st < clefs.Length; st++)
             {
                 int voice = st * 2 + 1;
-                var events = FillVoice(s, time, clefs[st], ref stepPos[st], fifths);
+                bool twoVoices = _rnd.NextDouble() < s.SecondVoiceProbability;
+                var events = FillVoice(s, time, clefs[st], ref stepPos[st], fifths, twoVoices ? 1 : 0);
                 foreach (var e in events) { e.Staff = st + 1; e.Voice = voice; }
                 m.Events.AddRange(events);
+                if (twoVoices)
+                {
+                    int low = Math.Max(-4, stepPos[st] - 5);
+                    var events2 = FillVoice(s, time, clefs[st], ref low, fifths, -1);
+                    foreach (var e in events2) { e.Staff = st + 1; e.Voice = voice + 1; }
+                    m.Events.AddRange(events2);
+                }
                 if (st == 0 && _rnd.NextDouble() < s.DynamicsProbability)
                     m.Directions.Add(new Direction { Kind = DirectionKind.Dynamics, Text = Pick("p", "f", "mf", "pp", "ff", "mp"), Staff = 1, X = 0 });
             }
@@ -69,7 +82,7 @@ public sealed class SyntheticScoreGenerator
 
     private static readonly (string type, int div)[] Types = { ("whole", 384), ("half", 192), ("quarter", 96), ("eighth", 48), ("16th", 24) };
 
-    private List<ScoreEvent> FillVoice(Settings s, TimeSpec time, ClefSpec clef, ref int stepPos, int fifths)
+    private List<ScoreEvent> FillVoice(Settings s, TimeSpec time, ClefSpec clef, ref int stepPos, int fifths, int forcedStem = 0)
     {
         var events = new List<ScoreEvent>();
         int remaining = time.Length;
@@ -86,8 +99,13 @@ public sealed class SyntheticScoreGenerator
                 if (div * 3 / 2 <= remaining && div >= 48 && (remaining % beat == 0 || div * 3 / 2 <= remaining % beat || remaining % beat == 0)) choices.Add((type, div * 3 / 2, 1));
             }
             if (choices.Count == 0) break;
-            // prefer shorter notes a bit more in common time, rhythmic pairs for dotted values
+            // density > 1 favours 8ths and 16ths (beamed runs)
             var pick = choices[_rnd.Next(choices.Count)];
+            if (s.Density > 1 && _rnd.NextDouble() < 1 - 1 / s.Density)
+            {
+                var shortOnes = choices.Where(c => c.div <= 72).ToList();
+                if (shortOnes.Count > 0) pick = shortOnes[_rnd.Next(shortOnes.Count)];
+            }
             if (pick.type == "whole" && time.Length != 384) continue;
             if (pick.dots == 1 && _rnd.NextDouble() < 0.5) continue;
             int dur = pick.div;
@@ -104,12 +122,21 @@ public sealed class SyntheticScoreGenerator
                     int second = stepPos + Pick(2, 3, 4, 5, 7);
                     if (second <= 14) ev.Notes.Add(MakeNote(clef, second, fifths, s));
                 }
-                ev.StemUp = stepPos < 4;
+                ev.StemUp = forcedStem > 0 ? true : forcedStem < 0 ? false : stepPos < 4;
+                if (forcedStem > 0) stepPos = Math.Max(stepPos, 4); else if (forcedStem < 0) stepPos = Math.Min(stepPos, 3);
             }
             events.Add(ev);
             remaining -= dur; x += dur;
         }
         if (remaining > 0) events.Add(new ScoreEvent { IsRest = true, Type = TypeFor(remaining), Duration = remaining, X = x });
+        // ties between consecutive notes of equal pitch (same voice)
+        if (s.TieProbability > 0)
+            for (int i = 0; i + 1 < events.Count; i++)
+            {
+                var a = events[i]; var b = events[i + 1];
+                if (a.IsRest || b.IsRest || a.Notes.Count != 1 || b.Notes.Count != 1) continue;
+                if (_rnd.NextDouble() < s.TieProbability) { b.Notes[0].Pitch = a.Notes[0].Pitch; b.Notes[0].AccidentalName = null; a.Notes[0].TieStart = true; b.Notes[0].TieStop = true; }
+            }
         // occasional slur over 2-4 notes
         if (_rnd.NextDouble() < s.SlurProbability)
         {

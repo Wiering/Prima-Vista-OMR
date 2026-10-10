@@ -124,6 +124,24 @@ Effect on the 12 test pieces (trained on 72 other pieces in Leland, Bravura and 
 | degraded, templates only | 22% | 84.7% | 74.8% | 64% / 50% |
 | degraded, both models | 45% | 81.6% | 85.1% | 78% / 82% |
 
+## Harder synthetic set and real pages
+
+`pvomr gen --style hard` adds dense beamed rhythms (8ths/16ths), a second voice with stems down, ties, more
+chords and accidentals; `dense` and `voices` select one of the two. `testdata/` holds exact MusicXML truth for two
+real scanned pages, derived from the public-domain LilyPond source of BWV 1007 (Mutopia) with
+`tools/lilypond_to_truth.py` (a small parser for monophonic `elative` LilyPond; it stops before polyphony):
+
+```
+pvomr eval "D:\OMR\Scores\Bach - Cello Suite No 1 in G.pdf" testdata/bach-bwv1007-prelude-m1-19.musicxml --pages 1
+pvomr eval "D:\OMR\Scores\Bach - Cello Suite No 1 in G.pdf" testdata/bach-bwv1007-prelude-m20-32.musicxml --pages 2 --measures 1-13
+```
+
+Results (both models, 2026-10-10): page 1 (19 measures) note P 100% / R 99.3%, durations 99.7%, 79% of measures
+entirely right; page 2 measures 20–32: note P 93.6% / R 92.2%, durations 99.5%. The remaining errors on the real
+pages are text below the staff read as low notes, a few missed notes next to accidentals, and ledger-line pitches
+off by one step. Hard synthetic set (12 pieces, `--style hard`, seed 3): 190/192 measures, note P 87.5% / R 86.6%
+clean; 69.0% / 73.1% degraded. Retraining the models with 45 hard-style pieces added did not move these numbers.
+
 ## Ground truth and metrics
 
 `pvomr gen --out <dir> [--count 12] [--seed 1] [--measures 16] [--piano|--single]` generates random pieces
