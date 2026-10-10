@@ -95,6 +95,35 @@ staff-less binary image.
 6. **Interpretation** (`MusicInterpreter`): clefs, key signatures (accidental runs at the start),
    time signatures and pitch names with per-measure accidental memory.
 
+## Trained classifiers (models/)
+
+Two small CNNs (PyTorch, exported to ONNX, run with ONNX Runtime) replace the weakest hand-written tests:
+
+* `models/glyphs.onnx`: classifies an isolated component (40×40 ink grid plus width/height in staff spaces)
+  into 26 classes (note head types, rest types, clefs, accidentals, digits, dot, dynamic, text, slur, line,
+  beam, flag, fragment, composite, other). Used for isolated glyphs, fragment unions and the clef at the staff start.
+* `models/heads.onnx`: verifies note-head candidates: a 2×2 staff-space window around a position beside a stem is
+  classified as black head, half head or none. Windows are scanned along both sides of every stem in one batch,
+  followed by non-maximum suppression and a geometric beam veto.
+
+Training data comes from the synthetic pages: `pvomr gen` also writes MuseScore's SVG export, whose elements
+(`Note`, `Rest`, `Clef`, `KeySig`, `Stem`, ...) give exact boxes; head and rest types are taken from the MusicXML
+truth measure by measure. `pvomr crops --dir <gen dir>... --out crops` writes labelled component crops (plus glyphs
+rendered from the SMuFL fonts with random degradations); `pvomr crops --heads ...` writes head windows and
+negatives. `python tools/train_glyphs.py --crops crops --out models/glyphs.onnx` and
+`python tools/train_glyphs.py --crops heads --out models/heads.onnx --labels head_black,head_half,none` train and
+export (CPU, a few minutes each). `pvomr gen --font Bravura|Petaluma|...` renders with another engraving font.
+`--model none` disables both models (template matching and the ellipse scorer are used instead).
+
+Effect on the 12 test pieces (trained on 72 other pieces in Leland, Bravura and Petaluma):
+
+| condition | measures exact | note P | note R | rest P/R |
+|---|---|---|---|---|
+| clean, templates only | 50% | 93.6% | 84.3% | 84% / 85% |
+| clean, both models | 77% | 96.2% | 96.0% | 83% / 85% |
+| degraded, templates only | 22% | 84.7% | 74.8% | 64% / 50% |
+| degraded, both models | 45% | 81.6% | 85.1% | 78% / 82% |
+
 ## Ground truth and metrics
 
 `pvomr gen --out <dir> [--count 12] [--seed 1] [--measures 16] [--piano|--single]` generates random pieces
@@ -141,5 +170,7 @@ Baseline (12 generated pieces, 192 measures), 2026-10-10:
 * `PVOMR_STRIPDUMP=<strip index>` (with `--verbose`) prints the candidate line segments and 5-line groups of
   one detection strip; `PVOMR_ROWS=<y0>-<y1>` additionally prints the thin-ink row projection of that strip.
 * `--verbose --debug --out dir` also writes the staff-less binary image (`*_nostaff.png`).
+* The models were trained on MuseScore renders only; on old engravings they occasionally see heads in beam ends
+  (vetoed geometrically) or rests in text dashes (size/position checks). Real labelled pages would fix this at the source.
 * Rhythm reconstruction is per voice and measure; tuplets, grace notes and cross-staff beaming are
   not handled, lyrics are not exported, and slur endpoints are only matched within one measure.

@@ -24,6 +24,7 @@ static int Usage()
           --musicxml <file>   assemble all analysed pages into a score and write MusicXML
           --grand-staff       force two-staff systems to be one piano part (default: automatic)
           --fonts <dir>       directory with SMuFL fonts (default: ./fonts or D:\OMR\fonts)
+          --model <file>      ONNX glyph classifier (default: models/glyphs.onnx if present; "none" = templates only)
           --binarize <m>      auto | otsu | sauvola (default auto)
           --no-deskew         skip skew correction
           --quiet             only print the summary line per page
@@ -33,7 +34,9 @@ static int Usage()
         sub-commands:
           pvomr gen --out <dir> [--count 12] [--seed 1] [--measures 16] [--piano|--single] [--musescore <exe>]
                               generate synthetic pieces (MusicXML ground truth + PDF rendered by MuseScore)
-          pvomr eval --dir <dir> [--augment <spec>] [--details] [--debug] [--out report.txt]
+          pvomr crops --dir <synth dir> [--dir ...] --out <crops dir> [--fonts <dir>] [--variants 30] [--no-augment]
+                              labelled training crops from synthetic pages (needs the SVG export) and from the SMuFL fonts
+          pvomr eval --dir <dir> [--augment <spec>] [--details] [--debug] [--out report.txt] [--model <file>|none]
           pvomr eval <input> <truth.musicxml>
                               recognise and compare with the ground truth; prints precision/recall metrics
         """);
@@ -41,6 +44,7 @@ static int Usage()
 }
 
 if (args.Length > 0 && args[0] == "gen") return EvalCommands.Gen(args);
+if (args.Length > 0 && args[0] == "crops") return EvalCommands.Crops(args);
 if (args.Length > 0 && args[0] == "eval")
 {
     var evalLog = new List<string>();
@@ -50,7 +54,7 @@ if (args.Length > 0 && args[0] == "eval")
 }
 
 var inputs = new List<string>();
-string? pages = null, outDir = null, fonts = null, musicXml = null, augment = null;
+string? pages = null, outDir = null, fonts = null, musicXml = null, augment = null, model = null;
 bool? grandStaff = null;
 double dpi = 300;
 bool debug = false, json = false, quiet = false, verbose = false, deskew = true, diag = false;
@@ -68,6 +72,7 @@ for (int i = 0; i < args.Length; i++)
         case "--json": json = true; break;
         case "--musicxml": musicXml = Next(); break;
         case "--augment": augment = Next(); break;
+        case "--model": model = Next(); break;
         case "--grand-staff": grandStaff = true; break;
         case "--separate-staves": grandStaff = false; break;
         case "--fonts": fonts = Next(); break;
@@ -87,9 +92,11 @@ if (inputs.Count == 0) return Usage();
 var log = new List<string>();
 var options = new AnalysisOptions { Dpi = dpi, Deskew = deskew, Binarization = binMethod, FontDirectory = fonts, Verbose = verbose, DebugImages = debug };
 var glyphs = GlyphLibrary.Load(fonts, log);
+var classifier = model == "none" ? null : GlyphClassifier.Load(model, log);
+var headVerifier = model == "none" ? null : GlyphClassifier.Load(null, log, "heads");
 if (verbose) foreach (var l in log) Console.WriteLine("note: " + l);
 if (outDir != null) Directory.CreateDirectory(outDir);
-var analyzer = new PageAnalyzer(options, glyphs);
+var analyzer = new PageAnalyzer(options, glyphs, classifier, headVerifier);
 var jsonOptions = new JsonSerializerOptions { WriteIndented = true, DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull, ReferenceHandler = ReferenceHandler.IgnoreCycles, Converters = { new JsonStringEnumConverter() } };
 
 int exit = 0;

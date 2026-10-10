@@ -17,11 +17,15 @@ public sealed class PageAnalyzer
 {
     private readonly AnalysisOptions _opt;
     private readonly GlyphLibrary? _glyphs;
+    private readonly GlyphClassifier? _classifier;
+    private readonly GlyphClassifier? _headVerifier;
 
-    public PageAnalyzer(AnalysisOptions opt, GlyphLibrary? glyphs)
+    public PageAnalyzer(AnalysisOptions opt, GlyphLibrary? glyphs, GlyphClassifier? classifier = null, GlyphClassifier? headVerifier = null)
     {
         _opt = opt;
         _glyphs = glyphs;
+        _classifier = classifier;
+        _headVerifier = headVerifier;
     }
 
     /// <summary>Analyse a page. <paramref name="rerender"/> may be used to obtain the page at a higher DPI.</summary>
@@ -123,7 +127,7 @@ public sealed class PageAnalyzer
         result.Systems.AddRange(SystemBuilder.Build(bin0, result.Staves, result.Notes));
 
         // 4. symbols
-        var symbolAnalyzer = new SymbolAnalyzer(_glyphs, bin0, noStaff, comps, result, _opt);
+        var symbolAnalyzer = new SymbolAnalyzer(_glyphs, bin0, noStaff, comps, result, _opt, _classifier, _headVerifier);
         symbolAnalyzer.Run();
 
         // 5. musical interpretation (clefs, key signatures, pitches)

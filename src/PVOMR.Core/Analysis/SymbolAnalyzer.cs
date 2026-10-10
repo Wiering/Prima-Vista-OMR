@@ -15,10 +15,103 @@ public sealed class SymbolAnalyzer
     private readonly ComponentMap _cm;
     private readonly PageAnalysis _page;
     private readonly AnalysisOptions _opt;
+    private readonly GlyphClassifier? _clf;
+    private readonly GlyphClassifier? _heads;
 
-    public SymbolAnalyzer(GlyphLibrary? lib, BinaryImage bin, BinaryImage noStaff, ComponentMap cm, PageAnalysis page, AnalysisOptions opt)
+    public SymbolAnalyzer(GlyphLibrary? lib, BinaryImage bin, BinaryImage noStaff, ComponentMap cm, PageAnalysis page, AnalysisOptions opt, GlyphClassifier? classifier = null, GlyphClassifier? headVerifier = null)
     {
-        _lib = lib; _bin = bin; _ns = noStaff; _cm = cm; _page = page; _opt = opt;
+        _lib = lib; _bin = bin; _ns = noStaff; _cm = cm; _page = page; _opt = opt; _clf = classifier; _heads = headVerifier;
+    }
+
+    /// <summary>Clef decision for a mask: the classifier when available (probability mass of the clef classes), else templates.</summary>
+    private (string? name, double score) ClefFor(byte[] mask, int w, int h, double ss)
+    {
+        if (_clf != null)
+        {
+            var p = _clf.Classify(mask, w, h, ss);
+            double pg = Prob(p, "clef_g"), pf = Prob(p, "clef_f"), pc = Prob(p, "clef_c");
+            double best = Math.Max(pg, Math.Max(pf, pc));
+            if (pg + pf + pc < 0.35) return (null, best);
+            return (best == pg ? "gClef" : best == pf ? "fClef" : "cClef", best);
+        }
+        if (_lib == null) return (null, 0);
+        var m = _lib.Match(mask, w, h, ss, 0.35, t => t.Kind == SymbolKind.Clef);
+        return m.Count == 0 ? (null, 0) : (m[0].Template.Name, m[0].Score);
+    }
+
+    private static double Prob(GlyphClassifier.Prediction p, string label)
+    {
+        for (int i = 0; i < p.Probabilities.Length; i++) if (i < Eval.CropExtractor.Labels.Length && Eval.CropExtractor.Labels[i] == label) return p.Probabilities[i];
+        return 0;
+    }
+
+    /// <summary>Turns a classifier prediction into a symbol. Returns false for fragments/composites/other (caller falls back to heuristics).</summary>
+    private bool ApplyPrediction(MusicSymbol sym, Component c, Staff staff, GlyphClassifier.Prediction p)
+    {
+        double ss = staff.Space;
+        string label = p.Label; double prob = p.Probability;
+        if (prob < 0.5) return false;
+        sym.Confidence = Math.Round(prob, 2);
+        if (_opt.Verbose) sym.Attributes["cnn"] = $"{p.Label} {p.Probability:0.00} / {p.Second} {p.SecondProbability:0.00}";
+        switch (label)
+        {
+            case "head_black": case "head_half": case "head_whole":
+                if (prob < 0.6) return false;
+                sym.Kind = SymbolKind.Note; sym.Name = label == "head_black" ? "noteheadBlack" : label == "head_half" ? "noteheadHalf" : "noteheadWhole";
+                PostProcessTemplate(sym, c, staff, false);
+                return true;
+            case "rest_whole": case "rest_half": case "rest_quarter": case "rest_8th": case "rest_16th":
+            {
+                // rests live inside the staff; whole/half rests are solid bars of at least 0.8 x 0.3 staff spaces
+                double cy = c.CenterY, top = staff.TopY(c.CenterX), bot = staff.BottomY(c.CenterX);
+                if (cy < top - 1.0 * ss || cy > bot + 1.0 * ss) return false;
+                if (label is "rest_whole" or "rest_half" && (c.Width < 0.8 * ss || c.Height < 0.3 * ss || c.Fill < 0.7)) return false;
+                if (prob < 0.6) return false;
+                sym.Kind = SymbolKind.Rest; sym.Name = label switch { "rest_whole" => "restWhole", "rest_half" => "restHalf", "rest_quarter" => "restQuarter", "rest_8th" => "rest8th", _ => "rest16th" };
+                PostProcessTemplate(sym, c, staff, false);
+                return true;
+            }
+            case "clef_g": case "clef_f": case "clef_c":
+                sym.Kind = SymbolKind.Clef; sym.Name = label == "clef_g" ? "gClef" : label == "clef_f" ? "fClef" : "cClef";
+                PostProcessTemplate(sym, c, staff, false);
+                return true;
+            case "acc_sharp": case "acc_flat": case "acc_natural":
+                sym.Kind = SymbolKind.Accidental; sym.Name = label == "acc_sharp" ? "accidentalSharp" : label == "acc_flat" ? "accidentalFlat" : "accidentalNatural";
+                PostProcessTemplate(sym, c, staff, false);
+                return true;
+            case "timesig_common":
+                sym.Kind = SymbolKind.TimeSignature; sym.Name = "timeSigCommon";
+                return true;
+            case "digit":
+            {
+                sym.Kind = SymbolKind.TimeSignature; sym.Name = "timeSig?";
+                if (_lib != null)
+                {
+                    var m = _lib.Match(_cm.Mask(c), c.Width, c.Height, ss, 0.45, t => t.Kind == SymbolKind.TimeSignature && t.Name.Length == 8);
+                    if (m.Count > 0) sym.Name = m[0].Template.Name;
+                }
+                return true;
+            }
+            case "dot":
+                sym.Kind = SymbolKind.Dot; sym.Name = "dot";
+                return true;
+            case "dynamic":
+            {
+                sym.Kind = SymbolKind.Dynamic; sym.Name = "dynamic";
+                if (_lib != null)
+                {
+                    var m = _lib.Match(_cm.Mask(c), c.Width, c.Height, ss, 0.4, t => t.Kind == SymbolKind.Dynamic);
+                    if (m.Count > 0 && m[0].Score >= 0.5) sym.Name = m[0].Template.Name;
+                }
+                return true;
+            }
+            case "text": sym.Kind = SymbolKind.Text; sym.Name = "glyph"; return true;
+            case "slur": sym.Kind = SymbolKind.Slur; sym.Name = "slur/tie/hairpin"; return true;
+            case "line": sym.Kind = SymbolKind.Ledger; sym.Name = c.Width > c.Height ? "ledger line" : "vertical line"; return true;
+            case "flag": sym.Kind = SymbolKind.Flag; sym.Name = "flag"; return true;
+            case "beam": sym.Kind = SymbolKind.Beam; sym.Name = "beam"; return true;
+            default: return false;   // fragment, composite, other
+        }
     }
 
     private sealed class Zone { public Staff Staff = null!; public double Top, Bottom; }
@@ -159,7 +252,7 @@ public sealed class SymbolAnalyzer
     /// </summary>
     private void DetectClefAtStart(List<Component> comps, Staff staff, List<MusicSymbol> syms, HashSet<Component> consumed)
     {
-        if (_lib == null) return;
+        if (_lib == null && _clf == null) return;
         double ss = staff.Space;
         double xm = staff.Left + 1.5 * ss;
         double top = staff.TopY(xm), bot = staff.BottomY(xm);
@@ -168,7 +261,7 @@ public sealed class SymbolAnalyzer
                                     && !(c.Width > 1.2 * ss && c.Height < 0.5 * ss) && c.PixelCount >= 0.02 * ss * ss)
                         .OrderBy(c => c.X0).ToList();
         if (zone.Count == 0) return;
-        GlyphMatch? best = null; int bestK = 0;
+        string? bestName = null; double bestScore = 0; int bestK = 0;
         for (int k = zone.Count; k >= 1; k--)
         {
             var parts = zone.Take(k).ToList();
@@ -180,14 +273,14 @@ public sealed class SymbolAnalyzer
                 for (int y = c.Y0; y <= c.Y1; y++)
                     for (int x = c.X0; x <= c.X1; x++)
                         if (_cm.Labels[y * _cm.Width + x] == c.Label) mask[(y - y0) * w + (x - x0)] = 1;
-            var m = _lib.Match(mask, w, h, ss, 0.35, t => t.Kind == SymbolKind.Clef);
-            if (m.Count > 0 && (best == null || m[0].Score > best.Score)) { best = m[0]; bestK = k; }
+            var (name, score) = ClefFor(mask, w, h, ss);
+            if (name != null && score > bestScore) { bestName = name; bestScore = score; bestK = k; }
         }
-        if (best == null || best.Score < 0.55) return;
+        if (bestName == null || bestScore < 0.55) return;
         var used = zone.Take(bestK).ToList();
         var sym = new MusicSymbol
         {
-            Kind = SymbolKind.Clef, Name = best.Template.Name, Staff = staff, Confidence = Math.Round(best.Score, 2),
+            Kind = SymbolKind.Clef, Name = bestName, Staff = staff, Confidence = Math.Round(bestScore, 2),
             Bounds = new Rect(used.Min(c => c.X0), used.Min(c => c.Y0), used.Max(c => c.X1), used.Max(c => c.Y1)),
         };
         if (used.Count > 1) sym.Attributes["merged"] = used.Count.ToString();
@@ -243,7 +336,7 @@ public sealed class SymbolAnalyzer
     /// <summary>Unknown fragments are merged with close neighbours and matched again (F clef + dots, broken glyphs).</summary>
     private void MergeAndRematch(List<(MusicSymbol sym, Component comp)> items, Staff staff)
     {
-        if (_lib == null) return;
+        if (_lib == null && _clf == null) return;
         double ss = staff.Space;
         var unknown = items.Where(p => p.sym.Kind == SymbolKind.Unknown || (p.sym.Kind == SymbolKind.Text && p.sym.Attributes.Count == 0)
                                     || (p.sym.Kind is SymbolKind.Flag or SymbolKind.Articulation or SymbolKind.Breath or SymbolKind.Ornament && p.sym.Confidence < 0.85)).ToList();
@@ -258,7 +351,7 @@ public sealed class SymbolAnalyzer
             if (neighbours.Count == 0) continue;
             // try the union of the fragment with 1..n nearest neighbours
             var group = new List<(MusicSymbol sym, Component comp)> { u };
-            GlyphMatch? bestMatch = null; List<(MusicSymbol sym, Component comp)>? bestGroup = null;
+            GlyphMatch? bestMatch = null; GlyphClassifier.Prediction? bestPred = null; List<(MusicSymbol sym, Component comp)>? bestGroup = null;
             foreach (var nb in neighbours)
             {
                 group.Add(nb);
@@ -271,6 +364,14 @@ public sealed class SymbolAnalyzer
                     for (int y = c.Y0; y <= c.Y1; y++)
                         for (int x = c.X0; x <= c.X1; x++)
                             if (_cm.Labels[y * _cm.Width + x] == c.Label) mask[(y - y0) * w + (x - x0)] = 1;
+                if (_clf != null)
+                {
+                    var pr = _clf.Classify(mask, w, h, ss);
+                    if (pr.Probability >= 0.7 && pr.Probability > u.sym.Confidence + 0.05 && pr.Label is not ("fragment" or "composite" or "other" or "line" or "text" or "slur" or "beam")
+                        && (bestPred == null || pr.Probability > bestPred.Probability))
+                    { bestPred = pr; bestGroup = new List<(MusicSymbol, Component)>(group); }
+                    continue;
+                }
                 var matches = _lib.Match(mask, w, h, ss);
                 if (matches.Count > 0 && matches[0].Template.Name == "unpitchedPercussionClef1" && matches[0].Score < 0.82) matches.RemoveAt(0);
                 if (matches.Count == 0) continue;
@@ -280,16 +381,24 @@ public sealed class SymbolAnalyzer
                     bestMatch = m; bestGroup = new List<(MusicSymbol, Component)>(group);
                 }
             }
-            if (bestMatch == null || bestGroup == null) continue;
+            if ((bestMatch == null && bestPred == null) || bestGroup == null) continue;
             var cs = bestGroup.Select(p => p.comp).ToList();
             var merged = new MusicSymbol
             {
-                Kind = bestMatch.Template.Kind, Name = bestMatch.Template.Name, Staff = staff, Confidence = Math.Round(bestMatch.Score, 2),
+                Staff = staff,
                 Bounds = new Rect(cs.Min(c => c.X0), cs.Min(c => c.Y0), cs.Max(c => c.X1), cs.Max(c => c.Y1)),
             };
             merged.Attributes["merged"] = bestGroup.Count.ToString();
-            var fake = new Component { X0 = merged.Bounds.X0, Y0 = merged.Bounds.Y0, X1 = merged.Bounds.X1, Y1 = merged.Bounds.Y1, PixelCount = cs.Sum(c => c.PixelCount) };
-            PostProcessTemplate(merged, fake, staff, false);
+            var fake = new Component { X0 = merged.Bounds.X0, Y0 = merged.Bounds.Y0, X1 = merged.Bounds.X1, Y1 = merged.Bounds.Y1, PixelCount = cs.Sum(c => c.PixelCount), Label = cs[0].Label };
+            if (bestPred != null)
+            {
+                if (!ApplyPrediction(merged, fake, staff, bestPred)) continue;
+            }
+            else
+            {
+                merged.Kind = bestMatch!.Template.Kind; merged.Name = bestMatch.Template.Name; merged.Confidence = Math.Round(bestMatch.Score, 2);
+                PostProcessTemplate(merged, fake, staff, false);
+            }
             foreach (var p in bestGroup) items.Remove(p);
             items.Add((merged, fake));
         }
@@ -566,6 +675,26 @@ public sealed class SymbolAnalyzer
             if (botOnLine && !topOnLine) { sym.Kind = SymbolKind.Rest; sym.Name = "restHalf"; sym.Duration = "half"; sym.Confidence = 0.7; return sym; }
         }
 
+        // 0c. accidental-sized components: sharps and naturals have vertical strokes that look like stems
+        if (w >= 0.45 && w <= 1.4 && h >= 1.8 && h <= 3.4)
+        {
+            if (_clf != null)
+            {
+                var pa = _clf.Classify(_cm.Mask(c), c.Width, c.Height, ss);
+                if (pa.Label.StartsWith("acc_") && pa.Probability >= 0.6 && ApplyPrediction(sym, c, staff, pa)) return sym;
+            }
+            else if (_lib != null)
+            {
+                var ma = _lib.Match(_cm.Mask(c), c.Width, c.Height, ss, 0.35, t => t.Kind == SymbolKind.Accidental);
+                if (ma.Count > 0 && ma[0].Score >= 0.7)
+                {
+                    sym.Kind = SymbolKind.Accidental; sym.Name = ma[0].Template.Name; sym.Confidence = Math.Round(ma[0].Score, 2);
+                    PostProcessTemplate(sym, c, staff, false);
+                    return sym;
+                }
+            }
+        }
+
         // 1. stems -> note structures
         var stems = FindStems(c, staff);
         if (stems.Count > 0)
@@ -586,6 +715,19 @@ public sealed class SymbolAnalyzer
                 sym.Notes.Add(n);
                 sym.Duration = n.HeadType == "whole" ? "whole" : "half?";
                 return sym;
+            }
+        }
+
+        // 2a. trained classifier for isolated glyphs
+        if (_clf != null && w <= 7 && h <= 9.5 && w >= 0.15 && h >= 0.15)
+        {
+            var p = _clf.Classify(_cm.Mask(c), c.Width, c.Height, ss);
+            if (ApplyPrediction(sym, c, staff, p)) return sym;
+            if (_opt.Verbose) sym.Attributes["cnn"] = $"{p.Label} {p.Probability:0.00}";
+            if (p.Label is "fragment" or "composite" or "other" && p.Probability >= 0.6)
+            {
+                // trust the rejection: no template matching, straight to the shape heuristics
+                goto heuristics;
             }
         }
 
@@ -616,6 +758,7 @@ public sealed class SymbolAnalyzer
             }
         }
 
+        heuristics:
         // 3. shape heuristics
         if (w >= 2.5 && h <= 0.5 && c.Fill > 0.6) { sym.Kind = SymbolKind.Ledger; sym.Name = "horizontal line"; sym.Confidence = 0.5; return sym; }
         if (w >= 1.2 && w <= 3.0 && h <= 0.35 && c.Fill > 0.6) { sym.Kind = SymbolKind.Ledger; sym.Name = "ledger line"; sym.Confidence = 0.6; return sym; }
@@ -724,6 +867,7 @@ public sealed class SymbolAnalyzer
         public int X0, X1;      // column range
         public int Top, Bottom; // vertical extent of the stem run
         public List<Note> Heads = new();
+        public string Trace = "";
         public bool Up;
         public int Flags;
         public int Length => Bottom - Top + 1;
@@ -790,7 +934,7 @@ public sealed class SymbolAnalyzer
         }
 
         var sym = new MusicSymbol { Bounds = ToRect(c), Staff = staff, Confidence = 0.7 };
-        if (_opt.Verbose) sym.Attributes["stems"] = string.Join(",", withHeads.Select(s => $"{s.X}:{s.Top}-{s.Bottom}{(s.Up ? "u" : "d")}f{s.Flags}h{s.Heads.Count}"));
+        if (_opt.Verbose) sym.Attributes["stems"] = string.Join(",", withHeads.Select(s => $"{s.X}:{s.Top}-{s.Bottom}{(s.Up ? "u" : "d")}f{s.Flags}h{s.Heads.Count}{s.Trace}"));
         if (withHeads.Count == 1)
         {
             var st = withHeads[0];
@@ -825,6 +969,7 @@ public sealed class SymbolAnalyzer
 
     private void FindHeads(Stem st, Staff staff, double headW, double headH)
     {
+        if (_heads != null) { FindHeadsWithVerifier(st, staff, headW, headH); return; }
         double ss = staff.Space;
         double rx = headW / 2, ry = headH / 2;
         // candidate centres: left side and right side of the stem
@@ -870,6 +1015,85 @@ public sealed class SymbolAnalyzer
         st.Up = avgY > stemMid;
         // sanity: heads must be within the stem's vertical extent (+ half a head)
         st.Heads.RemoveAll(h => h.HeadY < st.Top - 0.7 * ss || h.HeadY > st.Bottom + 0.7 * ss);
+    }
+
+    /// <summary>Head detection with the trained verifier: windows along both sides of the stem, batch-classified, non-maximum suppression.</summary>
+    private void FindHeadsWithVerifier(Stem st, Staff staff, double headW, double headH)
+    {
+        double ss = staff.Space;
+        double rx = headW / 2;
+        int iBlack = _heads!.LabelIndex("head_black"), iHalf = _heads.LabelIndex("head_half");
+        var sides = new (int sign, double cx)[] { (-1, st.X0 - rx + 0.08 * ss), (+1, st.X1 + rx - 0.08 * ss) };
+        int step = Math.Max(2, (int)Math.Round(0.18 * ss));
+        int yFrom = (int)(st.Top - 0.6 * ss), yTo = (int)(st.Bottom + 0.6 * ss);
+        var found = new List<(double score, double cx, double cy, bool hollow, int sign)>();
+        foreach (var (sign, cx) in sides)
+        {
+            var grids = new List<float[]>(); var ys = new List<int>();
+            for (int cy = yFrom; cy <= yTo; cy += step) { grids.Add(Eval.CropExtractor.WindowGrid(_ns, cx, cy, ss)); ys.Add(cy); }
+            var probs = _heads.ClassifyGrids(grids, (float)Eval.CropExtractor.HeadWindow, (float)Eval.CropExtractor.HeadWindow);
+            var cands = new List<(int y, double p, bool hollow)>();
+            for (int i = 0; i < ys.Count; i++)
+            {
+                double pb = iBlack >= 0 ? probs[i][iBlack] : 0, ph = iHalf >= 0 ? probs[i][iHalf] : 0;
+                double p = pb + ph;
+                if (p >= 0.5) cands.Add((ys[i], p, ph > pb));
+            }
+            int minSep = (int)(0.85 * ss);
+            var taken = new List<int>();
+            foreach (var c in cands.OrderByDescending(c => c.p))
+            {
+                if (taken.Any(t => Math.Abs(t - c.y) < minSep)) continue;
+                taken.Add(c.y);
+                found.Add((c.p, cx, c.y, c.hollow, sign));
+            }
+        }
+        foreach (var f in found.OrderByDescending(f => f.score))
+        {
+            if (st.Heads.Any(h => Math.Abs(h.HeadY - f.cy) < 0.4 * ss)) continue;
+            bool beam = LooksLikeBeam(f.cx, f.cy, ss, -f.sign);
+            if (_opt.Verbose) st.Trace += $"[{f.cx:0},{f.cy:0} p{f.score:0.00} {(f.hollow ? "h" : "b")}{(beam ? " BEAM" : "")}]";
+            if (beam) continue;
+            var head = new Note
+            {
+                Head = new Rect((int)Math.Round(f.cx - rx), (int)Math.Round(f.cy - headH / 2), (int)Math.Round(f.cx + rx), (int)Math.Round(f.cy + headH / 2)),
+                HeadType = f.hollow ? "half" : "black",
+            };
+            head.Step = (int)Math.Round(staff.StepAt(f.cx, f.cy));
+            st.Heads.Add(head);
+        }
+        if (st.Heads.Count == 0) return;
+        double stemMid = (st.Top + st.Bottom) / 2.0;
+        st.Up = st.Heads.Average(h => h.HeadY) > stemMid;
+        st.Heads.RemoveAll(h => h.HeadY < st.Top - 0.7 * ss || h.HeadY > st.Bottom + 0.7 * ss);
+    }
+
+    /// <summary>A beam (or its end) under a head candidate: ink continues (within a band that tolerates the beam slope) for more than 1.5 staff spaces from the centre.</summary>
+    private bool LooksLikeBeam(double cx, double cy, double ss, int stemSide)
+    {
+        int x = (int)Math.Round(cx);
+        int xStem = (int)Math.Round(cx + stemSide * 0.55 * ss);      // the stem column: beams start here and run away from the head
+        int reach = (int)Math.Round(1.5 * ss), half = (int)Math.Max(2, Math.Round(0.3 * ss));
+        int hits = 0;
+        foreach (double off in new[] { -0.2, 0.0, 0.2 })
+        {
+            int y = (int)Math.Round(cy + off * ss);
+            if (ContinuousBand(xStem, y, stemSide, reach, half) || ContinuousBand(x, y, -stemSide, reach, half)) hits++;
+        }
+        return hits >= 2;
+    }
+
+    private bool ContinuousBand(int x, int y, int dir, int reach, int half)
+    {
+        int gap = 0;
+        for (int i = 0; i <= reach; i++)
+        {
+            bool ink = false;
+            for (int dy = -half; dy <= half && !ink; dy++) ink = _ns[x + dir * i, y + dy];
+            if (ink) gap = 0;
+            else if (++gap > 3) return false;
+        }
+        return true;
     }
 
     /// <summary>Score an elliptical note head hypothesis centred at (cx,cy). Returns (score, hollow).</summary>

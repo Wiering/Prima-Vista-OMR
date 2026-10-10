@@ -12,4 +12,6 @@ public sealed class AnalysisOptions
     /// <summary>Minimum staff space (px) we are comfortable with; a PDF page is re-rendered at a higher DPI when below this.</summary>
     public double MinStaffSpace { get; set; } = 14;
     public bool DebugImages { get; set; }
+    /// <summary>Path of the ONNX glyph classifier (null = search the default locations).</summary>
+    public string? ModelPath { get; set; }
 }

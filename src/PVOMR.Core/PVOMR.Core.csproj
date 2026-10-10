@@ -9,6 +9,7 @@
 
   <ItemGroup>
     <PackageReference Include="BitMiracle.LibTiff.NET" Version="2.4.660" />
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.31.0" />
     <PackageReference Include="PDFtoImage" Version="5.4.0" />
     <PackageReference Include="SkiaSharp" Version="4.153.1" />
   </ItemGroup>

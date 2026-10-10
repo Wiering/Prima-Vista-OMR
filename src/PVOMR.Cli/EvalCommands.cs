@@ -13,7 +13,7 @@ static class EvalCommands
 {
     public static int Gen(string[] args)
     {
-        string outDir = "synth"; int count = 12, seed = 1, measures = 16; bool? piano = null;
+        string outDir = "synth"; int count = 12, seed = 1, measures = 16; bool? piano = null; string? font = null;
         string musescore = @"C:\Program Files\MuseScore 4\bin\MuseScore4.exe";
         for (int i = 1; i < args.Length; i++)
         {
@@ -28,10 +28,18 @@ static class EvalCommands
                 case "--piano": piano = true; break;
                 case "--single": piano = false; break;
                 case "--musescore": musescore = Next(); break;
+                case "--font": font = Next(); break;
                 default: Console.Error.WriteLine($"unknown option {a}"); return 2;
             }
         }
         Directory.CreateDirectory(outDir);
+        Directory.CreateDirectory(Path.Combine(outDir, "svg"));
+        string? stylePath = null;
+        if (font != null)
+        {
+            stylePath = Path.Combine(outDir, "style.mss");
+            File.WriteAllText(stylePath, $"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<museScore version=\"4.70\"><Style><musicalSymbolFont>{font}</musicalSymbolFont><musicalTextFont>{font} Text</musicalTextFont></Style></museScore>\n");
+        }
         var jobs = new List<object>();
         string[] clefs = { "treble", "bass", "alto", "treble", "bass" };
         string[] times = { "4/4", "3/4", "2/4", "6/8", "C", "4/4" };
@@ -48,13 +56,14 @@ static class EvalCommands
             var score = gen.Generate(settings, name);
             string xml = Path.Combine(outDir, name + ".musicxml");
             MusicXmlWriter.Write(score, xml);
-            jobs.Add(new { @in = Path.GetFullPath(xml), @out = Path.GetFullPath(Path.Combine(outDir, name + ".pdf")) });
+            jobs.Add(new { @in = Path.GetFullPath(xml), @out = new[] { Path.GetFullPath(Path.Combine(outDir, name + ".pdf")), Path.GetFullPath(Path.Combine(outDir, "svg", name + ".svg")) } });
             Console.WriteLine($"{name}: {(isPiano ? "piano" : settings.Clef)} {settings.Time} key {settings.KeyFifths} {measures} measures, {score.Parts.Sum(p => p.Measures.Sum(m => m.Events.Count))} events");
         }
         if (!File.Exists(musescore)) { Console.Error.WriteLine($"MuseScore not found at {musescore}; MusicXML files written, render them to PDF yourself (--musescore <path>)"); return 1; }
         string job = Path.Combine(outDir, "render-job.json");
         File.WriteAllText(job, JsonSerializer.Serialize(jobs));
-        var psi = new ProcessStartInfo(musescore, $"-j \"{Path.GetFullPath(job)}\"") { UseShellExecute = false, RedirectStandardError = true, RedirectStandardOutput = true };
+        string styleArg = stylePath != null ? $" -S \"{Path.GetFullPath(stylePath)}\"" : "";
+        var psi = new ProcessStartInfo(musescore, $"-j \"{Path.GetFullPath(job)}\"{styleArg}") { UseShellExecute = false, RedirectStandardError = true, RedirectStandardOutput = true };
         var sw = Stopwatch.StartNew();
         using var proc = Process.Start(psi)!;
         proc.StandardOutput.ReadToEnd(); proc.StandardError.ReadToEnd();
@@ -64,9 +73,65 @@ static class EvalCommands
         return rendered == count ? 0 : 1;
     }
 
+    public static int Crops(string[] args)
+    {
+        var dirs = new List<string>(); string outDir = "crops"; string? fontDir = null; int variants = 30; bool augment = true; int seed = 1; bool heads = false;
+        for (int i = 1; i < args.Length; i++)
+        {
+            string a = args[i];
+            string Next() => i + 1 < args.Length ? args[++i] : throw new ArgumentException($"missing value for {a}");
+            switch (a)
+            {
+                case "--dir": dirs.Add(Next()); break;
+                case "--out": outDir = Next(); break;
+                case "--fonts": fontDir = Next(); break;
+                case "--variants": variants = int.Parse(Next()); break;
+                case "--no-augment": augment = false; break;
+                case "--seed": seed = int.Parse(Next()); break;
+                case "--heads": heads = true; break;
+                default: Console.Error.WriteLine($"unknown option {a}"); return 2;
+            }
+        }
+        var log = new List<string>();
+        var glyphs = GlyphLibrary.Load(null, log);
+        if (heads)
+        {
+            var an = new PageAnalyzer(new AnalysisOptions { Dpi = 300 }, glyphs, null);
+            var rnd2 = new Random(seed);
+            var tot = new CropExtractor.Stats();
+            foreach (var d in dirs)
+            {
+                var st = CropExtractor.ExtractHeadWindows(d, outDir, an, 300, rnd2, augment);
+                Console.WriteLine($"{d}: {st.Pages} pages, {st.Counts.Values.Sum()} windows");
+                foreach (var kv in st.Counts) tot.Counts[kv.Key] = tot.Counts.GetValueOrDefault(kv.Key) + kv.Value;
+            }
+            foreach (var kv in tot.Counts.OrderByDescending(kv => kv.Value)) Console.WriteLine($"  {kv.Key,-16} {kv.Value}");
+            return 0;
+        }
+        var analyzer = new PageAnalyzer(new AnalysisOptions { Dpi = 300 }, glyphs, null);
+        var rnd = new Random(seed);
+        var total = new CropExtractor.Stats();
+        var sw = Stopwatch.StartNew();
+        foreach (var d in dirs)
+        {
+            var st = CropExtractor.ExtractFromPages(d, outDir, analyzer, 300, rnd, augment);
+            Console.WriteLine($"{d}: {st.Pages} pages, {st.Counts.Values.Sum()} crops");
+            foreach (var kv in st.Counts) total.Counts[kv.Key] = total.Counts.GetValueOrDefault(kv.Key) + kv.Value;
+        }
+        if (fontDir != null || Directory.Exists(@"D:\OMR\fonts"))
+        {
+            var st = CropExtractor.ExtractFromFonts(fontDir ?? @"D:\OMR\fonts", outDir, variants, rnd);
+            Console.WriteLine($"fonts: {st.Counts.Values.Sum()} crops");
+            foreach (var kv in st.Counts) total.Counts[kv.Key] = total.Counts.GetValueOrDefault(kv.Key) + kv.Value;
+        }
+        Console.WriteLine($"total {total.Counts.Values.Sum()} crops in {sw.Elapsed.TotalSeconds:0}s:");
+        foreach (var kv in total.Counts.OrderByDescending(kv => kv.Value)) Console.WriteLine($"  {kv.Key,-16} {kv.Value}");
+        return 0;
+    }
+
     public static int Eval(string[] args, GlyphLibrary? glyphs)
     {
-        string? dir = null, augment = null, outFile = null, single = null, truthFile = null;
+        string? dir = null, augment = null, outFile = null, single = null, truthFile = null, model = null;
         double dpi = 300; bool details = false, debug = false; int seed = 1;
         for (int i = 1; i < args.Length; i++)
         {
@@ -81,6 +146,7 @@ static class EvalCommands
                 case "--details": details = true; break;
                 case "--debug": debug = true; break;
                 case "--seed": seed = int.Parse(Next()); break;
+                case "--model": model = Next(); break;
                 default:
                     if (a.StartsWith("--")) { Console.Error.WriteLine($"unknown option {a}"); return 2; }
                     if (single == null) single = a; else truthFile = a;
@@ -98,7 +164,12 @@ static class EvalCommands
         else if (single != null && truthFile != null) pairs.Add((Path.GetFileNameWithoutExtension(single), single, truthFile));
         else { Console.Error.WriteLine("usage: pvomr eval --dir <dir> [--augment spec] [--details] | pvomr eval <input> <truth.musicxml>"); return 2; }
 
-        var analyzer = new PageAnalyzer(new AnalysisOptions { Dpi = dpi }, glyphs);
+        var log = new List<string>();
+        var classifier = model == "none" ? null : GlyphClassifier.Load(model, log);
+        var headVerifier = model == "none" || model == "glyphs-only" ? null : GlyphClassifier.Load(null, log, "heads");
+        if (model == "glyphs-only") classifier = GlyphClassifier.Load(null, log);
+        foreach (var l in log) Console.WriteLine("note: " + l);
+        var analyzer = new PageAnalyzer(new AnalysisOptions { Dpi = dpi }, glyphs, classifier, headVerifier);
         var results = new List<ComparisonResult>();
         var sw = Stopwatch.StartNew();
         foreach (var (name, input, truth) in pairs)
