@@ -21,6 +21,8 @@ static int Usage()
           --out <dir>         write report (.txt), JSON (.json) and debug overlays (.png) to this directory
           --debug             write debug overlay images (requires --out)
           --json              also write a JSON file with everything detected (requires --out)
+          --musicxml <file>   assemble all analysed pages into a score and write MusicXML
+          --grand-staff       force two-staff systems to be one piano part (default: automatic)
           --fonts <dir>       directory with SMuFL fonts (default: ./fonts or D:\OMR\fonts)
           --binarize <m>      auto | otsu | sauvola (default auto)
           --no-deskew         skip skew correction
@@ -31,7 +33,8 @@ static int Usage()
 }
 
 var inputs = new List<string>();
-string? pages = null, outDir = null, fonts = null;
+string? pages = null, outDir = null, fonts = null, musicXml = null;
+bool? grandStaff = null;
 double dpi = 300;
 bool debug = false, json = false, quiet = false, verbose = false, deskew = true, diag = false;
 var binMethod = BinarizationMethod.Auto;
@@ -46,6 +49,9 @@ for (int i = 0; i < args.Length; i++)
         case "--out": outDir = Next(); break;
         case "--debug": debug = true; break;
         case "--json": json = true; break;
+        case "--musicxml": musicXml = Next(); break;
+        case "--grand-staff": grandStaff = true; break;
+        case "--separate-staves": grandStaff = false; break;
         case "--fonts": fonts = Next(); break;
         case "--binarize": binMethod = Enum.Parse<BinarizationMethod>(Next(), true); break;
         case "--no-deskew": deskew = false; break;
@@ -69,6 +75,7 @@ var analyzer = new PageAnalyzer(options, glyphs);
 var jsonOptions = new JsonSerializerOptions { WriteIndented = true, DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull, ReferenceHandler = ReferenceHandler.IgnoreCycles, Converters = { new JsonStringEnumConverter() } };
 
 int exit = 0;
+var allPages = new List<PageAnalysis>();
 foreach (var input in inputs)
 {
     if (!File.Exists(input)) { Console.Error.WriteLine($"not found: {input}"); exit = 1; continue; }
@@ -86,6 +93,7 @@ foreach (var input in inputs)
             else Console.Write(text);
             reportSb.Append(text).AppendLine();
             pageResults.Add(result);
+            allPages.Add(result);
             if (outDir != null && debug)
             {
                 string name = $"{Path.GetFileNameWithoutExtension(input)}_p{page.PageNumber:000}";
@@ -105,5 +113,13 @@ foreach (var input in inputs)
         File.WriteAllText(Path.Combine(outDir, baseName + ".txt"), reportSb.ToString());
         if (json) File.WriteAllText(Path.Combine(outDir, baseName + ".json"), JsonSerializer.Serialize(pageResults, jsonOptions));
     }
+}
+if (musicXml != null)
+{
+    var score = PVOMR.Core.Score.MusicAssembler.Build(allPages, new PVOMR.Core.Score.MusicAssembler.Options { GrandStaff = grandStaff, Title = Path.GetFileNameWithoutExtension(inputs[0]) });
+    PVOMR.Core.Score.MusicXmlWriter.Write(score, musicXml);
+    Console.WriteLine($"MusicXML written to {musicXml}: {score.Parts.Count} part(s), {score.Parts.Sum(p => p.Measures.Count)} measures, {score.Parts.Sum(p => p.Measures.Sum(m => m.Events.Count))} events, {score.Warnings.Count} warnings");
+    if (!quiet) foreach (var wmsg in score.Warnings.Take(verbose ? int.MaxValue : 40)) Console.WriteLine("  warning: " + wmsg);
+    if (!quiet && !verbose && score.Warnings.Count > 40) Console.WriteLine($"  ... {score.Warnings.Count - 40} more warnings (use --verbose)");
 }
 return exit;

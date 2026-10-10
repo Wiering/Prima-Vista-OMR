@@ -13,6 +13,9 @@ pvomr <input.pdf | image ...> [options]
   --out <dir>         write report (.txt), JSON (.json) and debug overlays (.png) to this directory
   --debug             write debug overlay images (requires --out)
   --json              also write a JSON file with everything detected (requires --out)
+  --musicxml <file>   assemble all analysed pages into a score and write MusicXML
+  --grand-staff       force two-staff systems to be one piano part (default: automatic)
+  --separate-staves   never merge staves into a grand staff
   --fonts <dir>       directory with SMuFL fonts (default: ./fonts or D:\OMR\fonts)
   --binarize <m>      auto | otsu | sauvola (default auto)
   --no-deskew         skip skew correction
@@ -25,6 +28,19 @@ Example:
 ```
 dotnet run --project src/PVOMR.Cli -c Release -- "D:\OMR\Scores\Bach - Cello Suite No 1 in G.pdf" --pages 1 --out out --debug
 ```
+
+## MusicXML export
+
+`--musicxml <file>` assembles all analysed pages into a score and writes MusicXML 4.0 (score-partwise).
+The `Score` namespace holds a semantic model (parts, measures, voices, events with durations in
+divisions, directions, slurs/ties), `MusicAssembler` builds it from the page analyses (staff-to-part
+mapping, automatic grand staff for two-staff systems, voice assignment by stem direction, beams,
+dots, accidentals, fermatas, articulations, dynamics, hairpins, slurs vs ties, barline styles and
+repeats, measure numbering across systems and pages, pickup measures) and validates every voice
+against the time signature: a missing time signature is inferred from the most common measure
+length, and uncertain events (isolated note heads, unsure durations) are dropped when that makes a
+too-long measure add up. Remaining inconsistencies are reported as warnings. `MusicXmlWriter`
+writes the file; it opens in MuseScore 4 (`MuseScore4.exe -o out.pdf in.musicxml` renders it).
 
 ## What the report contains
 
@@ -97,4 +113,5 @@ staff-less binary image.
 * `PVOMR_STRIPDUMP=<strip index>` (with `--verbose`) prints the candidate line segments and 5-line groups of
   one detection strip; `PVOMR_ROWS=<y0>-<y1>` additionally prints the thin-ink row projection of that strip.
 * `--verbose --debug --out dir` also writes the staff-less binary image (`*_nostaff.png`).
-* No rhythm/voice reconstruction and no MusicXML output yet.
+* Rhythm reconstruction is per voice and measure; tuplets, grace notes and cross-staff beaming are
+  not handled, lyrics are not exported, and slur endpoints are only matched within one measure.
