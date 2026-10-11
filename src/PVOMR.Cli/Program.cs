@@ -30,6 +30,7 @@ static int Usage()
           --quiet             only print the summary line per page
           --augment <spec>    degrade the image first, e.g. blur=1.2,noise=0.08,skew=1.5,scale=0.6,contrast=0.6,speckle=0.002
           --verbose           print analysis notes and bounding boxes
+          --fit               per page: how many measures add up to the time signature (the misfits with --verbose)
 
         sub-commands:
           pvomr gen --out <dir> [--count 12] [--seed 1] [--measures 16] [--piano|--single] [--musescore <exe>]
@@ -57,7 +58,7 @@ var inputs = new List<string>();
 string? pages = null, outDir = null, fonts = null, musicXml = null, augment = null, model = null;
 bool? grandStaff = null;
 double dpi = 300;
-bool debug = false, json = false, quiet = false, verbose = false, deskew = true, diag = false;
+bool debug = false, json = false, quiet = false, verbose = false, deskew = true, diag = false, fit = false;
 var binMethod = BinarizationMethod.Auto;
 for (int i = 0; i < args.Length; i++)
 {
@@ -81,6 +82,7 @@ for (int i = 0; i < args.Length; i++)
         case "--quiet": quiet = true; break;
         case "--verbose": verbose = true; break;
         case "--diag": diag = true; break;
+        case "--fit": fit = true; break;
         case "-h": case "--help": return Usage();
         default:
             if (a.StartsWith("--")) { Console.Error.WriteLine($"unknown option {a}"); return Usage(); }
@@ -115,6 +117,7 @@ foreach (var input in inputs)
             Func<double, GrayImage>? rerender = page.FromPdf && augment == null ? d => PageSource.RenderPdfPage(page.Source, page.PageNumber, d) : null;
             var result = analyzer.Analyze(img, page.Source, page.PageNumber, page.Dpi, rerender, out var ctx);
             if (diag) Diagnostics.DumpStaves(result, ctx);
+            if (fit) Diagnostics.PrintFit(result, verbose);
             string text = TextReport.Write(result, verbose);
             if (quiet) Console.WriteLine(text.Split('\n')[0] + (result.Staves.Count > 0 ? $"  staves={result.Staves.Count} systems={result.Systems.Count} measures={result.Staves.Sum(s => s.Measures.Count)}" : "  (no music)"));
             else Console.Write(text);

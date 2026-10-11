@@ -58,6 +58,8 @@ public sealed class SymbolAnalyzer
         {
             case "head_black": case "head_half": case "head_whole":
                 if (prob < 0.6) return false;
+                // head sizes: a whole note is wider but never taller than about 1.3 spaces
+                if (label == "head_whole" ? h > 1.45 || c.Width > 2.1 * ss || c.Width < 1.0 * ss : h > 1.6 || c.Width > 2.0 * ss) return false;
                 // an isolated head well outside the staff must sit on a ledger line (which is part of its component); letters are not
                 {
                     double stepHere = staff.StepAt(c.CenterX, c.CenterY);
@@ -71,7 +73,8 @@ public sealed class SymbolAnalyzer
                 // rests live inside the staff; whole/half rests are solid bars of at least 0.8 x 0.3 staff spaces
                 double cy = c.CenterY, top = staff.TopY(c.CenterX), bot = staff.BottomY(c.CenterX);
                 if (cy < top - 1.0 * ss || cy > bot + 1.0 * ss) return false;
-                if (label is "rest_whole" or "rest_half" && (c.Width < 0.8 * ss || c.Height < 0.3 * ss || c.Fill < 0.7)) return false;
+                // whole and half rests are solid bars inside the staff; ledger-line remnants below or above it are not rests
+                if (label is "rest_whole" or "rest_half" && !WholeHalfRestPlausible(c, staff)) return false;
                 if (prob < 0.6) return false;
                 sym.Kind = SymbolKind.Rest; sym.Name = label switch { "rest_whole" => "restWhole", "rest_half" => "restHalf", "rest_quarter" => "restQuarter", "rest_8th" => "rest8th", _ => "rest16th" };
                 PostProcessTemplate(sym, c, staff, false);
@@ -121,6 +124,13 @@ public sealed class SymbolAnalyzer
             case "beam": sym.Kind = SymbolKind.Beam; sym.Name = "beam"; return true;
             default: return false;   // fragment, composite, other
         }
+    }
+
+    /// <summary>Whole and half rests are solid bars at least 0.8 x 0.4 staff spaces inside the staff; slur pieces sliced by the staff lines and ledger-line remnants are thinner or outside.</summary>
+    private static bool WholeHalfRestPlausible(Component c, Staff staff)
+    {
+        double ss = staff.Space, cy = c.CenterY;
+        return c.Width >= 0.8 * ss && c.Height >= 0.4 * ss && c.Fill >= 0.7 && cy >= staff.TopY(c.CenterX) - 0.2 * ss && cy <= staff.BottomY(c.CenterX) + 0.2 * ss;
     }
 
     private sealed class Zone { public Staff Staff = null!; public double Top, Bottom; }
@@ -1147,7 +1157,7 @@ public sealed class SymbolAnalyzer
         }
 
         // 0b. whole / half rests: a solid bar hanging below or sitting on a staff line
-        if (w >= 0.8 && w <= 2.0 && h >= 0.3 && h <= 0.8 && c.Fill > 0.75)
+        if (w >= 0.8 && w <= 2.0 && h >= 0.4 && h <= 0.8 && c.Fill > 0.75)
         {
             double stepTop = staff.StepAt(c.CenterX, c.Y0), stepBot = staff.StepAt(c.CenterX, c.Y1 + 1);
             bool topOnLine = Math.Abs(stepTop - Math.Round(stepTop)) < 0.3 && ((int)Math.Round(stepTop)) % 2 == 0 && stepTop >= -0.5 && stepTop <= 8.5;
@@ -1232,6 +1242,8 @@ public sealed class SymbolAnalyzer
                     double cy = c.CenterY;
                     if (cy > staff.TopY(c.CenterX) - 0.5 * ss && cy < staff.BottomY(c.CenterX) + 0.5 * ss) thr = 0.85;
                 }
+                // a bar-shaped match (whole/half rest, tenuto) must have the body of a rest to be one; thinner bars are slur pieces
+                if (m.Score >= thr && m.Template.Name is "restWhole" or "restHalf" && !WholeHalfRestPlausible(c, staff)) thr = double.MaxValue;
                 if (m.Score >= thr)
                 {
                     sym.Kind = m.Template.Kind; sym.Name = m.Template.Name; sym.Confidence = Math.Round(m.Score, 2);
@@ -1373,8 +1385,15 @@ public sealed class SymbolAnalyzer
             bool stemsUp = group.Children.Count(ch => ch.StemUp == true) > group.Children.Count / 2;
             bool above = t.Bounds.CenterY < group.Bounds.CenterY;
             if (stemsUp != above) continue;
-            // several tuplets may sit over one beamed group: keep every digit with its x position
-            group.Attributes["tuplet"] = group.Attributes.TryGetValue("tuplet", out var prev) ? prev + ";" + digit + "@" + (int)cx : digit + "@" + (int)cx;
+            // several tuplets may sit over one beamed group (two triplets under one beam): keep every digit with its x position;
+            // different digits over one group are fingerings, not tuplets
+            if (group.Attributes.TryGetValue("tuplet", out var prev))
+            {
+                if (!prev.Split(';').All(sp => sp.Split('@')[0] == digit)) { group.Attributes.Remove("tuplet"); group.Attributes["fingering"] = "1"; syms.Remove(t); continue; }
+                group.Attributes["tuplet"] = prev + ";" + digit + "@" + (int)cx;
+            }
+            else if (group.Attributes.ContainsKey("fingering")) { syms.Remove(t); continue; }
+            else group.Attributes["tuplet"] = digit + "@" + (int)cx;
             syms.Remove(t);
         }
     }
@@ -1464,10 +1483,33 @@ public sealed class SymbolAnalyzer
     {
         double ss = staff.Space;
         double headW = 1.18 * ss, headH = 1.0 * ss;
+        // a flag or a thick stem can split one stem into two neighbouring runs: keep the longer one
+        for (int i = stems.Count - 1; i > 0; i--)
+        {
+            var a = stems[i - 1]; var b = stems[i];
+            if (b.X - a.X > 0.35 * ss || Math.Min(a.Bottom, b.Bottom) - Math.Max(a.Top, b.Top) < 0.5 * ss) continue;
+            var keep = a.Length >= b.Length ? a : b; var drop = keep == a ? b : a;
+            keep.X0 = Math.Min(a.X0, b.X0); keep.X1 = Math.Max(a.X1, b.X1);
+            keep.Top = Math.Min(a.Top, b.Top); keep.Bottom = Math.Max(a.Bottom, b.Bottom);
+            stems.Remove(drop);
+        }
+        _stemLabel = c.Label;
         foreach (var st in stems) FindHeads(st, staff, headW, headH);
+        _stemLabel = -1;
         foreach (var st in stems) st.Heads.RemoveAll(h => Math.Abs(h.Step) > 20);
         var withHeads = stems.Where(s => s.Heads.Count > 0).ToList();
         if (withHeads.Count == 0) return null;
+        // in a group of black heads a stem whose heads are all hollow is an accidental or a stem end taken for a head
+        if (withHeads.Count >= 2)
+        {
+            int blackStems = withHeads.Count(s => s.Heads.Any(h => h.HeadType == "black"));
+            if (blackStems >= 1)
+                foreach (var st in withHeads.Where(s => s.Heads.All(h => h.HeadType == "half") && (blackStems >= 2 || s.Heads.Max(h => h.Confidence) < 0.9)).ToList())
+                {
+                    if (_opt.Verbose) st.Trace += "[hollow in black group: dropped]";
+                    st.Heads.Clear(); withHeads.Remove(st);
+                }
+        }
 
         // beams between consecutive stems?
         var beamed = new bool[withHeads.Count - 1 < 0 ? 0 : withHeads.Count - 1];
@@ -1479,12 +1521,24 @@ public sealed class SymbolAnalyzer
             st.Flags = CountFlagsOrBeams(st, c, staff);
         }
         if (withHeads.Count >= 2) RepairGroup(stems, withHeads, c, staff);
+        if (withHeads.Count == 0) return null;
 
         var sym = new MusicSymbol { Bounds = ToRect(c), Staff = staff, Confidence = 0.7 };
         if (_opt.Verbose) sym.Attributes["stems"] = string.Join(",", stems.Select(s => $"{s.X}:{s.Top}-{s.Bottom}{(s.Up ? "u" : "d")}f{s.Flags}h{s.Heads.Count}{s.Trace}"));
         if (withHeads.Count == 1)
         {
             var st = withHeads[0];
+            // a "head" at the flag end of a flagged stem that also has a normal head is the flag's blob
+            if (st.Flags > 0 && st.Heads.Count >= 2)
+            {
+                double end = st.Up ? st.Top : st.Bottom;
+                var atEnd = st.Heads.Where(h => Math.Abs(h.HeadY - end) <= 1.0 * ss).ToList();
+                if (atEnd.Count > 0 && st.Heads.Any(h => Math.Abs(h.HeadY - end) >= 2.0 * ss))
+                {
+                    foreach (var h in atEnd) st.Heads.Remove(h);
+                    if (_opt.Verbose) st.Trace += $"[{atEnd.Count} flag-end blob(s) dropped]";
+                }
+            }
             // a hollow head with beams/flags found with little confidence is usually ledger lines or a slur crossing a stem
             if (st.Flags > 0 && st.Heads.All(h => h.HeadType == "half") && st.Heads.Max(h => h.Confidence) < 0.7) return null;
             FillNoteSymbol(sym, st, staff);
@@ -1562,19 +1616,64 @@ public sealed class SymbolAnalyzer
         }
 
         // 3. a "head" at the beam end of a stem that also carries a normal head is the beam's end blob, not a chord
-        //    member; it also hid the beams from the count, so the stem takes the majority beam count
+        //    member; it also hid the beams from the count, so the stem takes the majority beam count. A hollow head
+        //    near the beam line on any stem is the same blob (the curl of a flag, the thick end of a beam).
         if (majority >= 1)
-            foreach (var st in withHeads)
+            foreach (var st in withHeads.ToList())
             {
-                if (st.Heads.Count < 2) continue;
                 double end = st.Up ? st.Top : st.Bottom;
                 var atBeam = st.Heads.Where(h => Math.Abs(h.HeadY - end) <= 1.0 * ss).ToList();
                 var normal = st.Heads.Where(h => Math.Abs(h.HeadY - end) >= 2.0 * ss).ToList();
-                if (atBeam.Count == 0 || normal.Count == 0) continue;
-                foreach (var h in atBeam) st.Heads.Remove(h);
-                if (st.Flags < majority) st.Flags = majority;
-                if (_opt.Verbose) st.Trace += $"[{atBeam.Count} beam-end blob(s) dropped]";
+                if (atBeam.Count > 0 && normal.Count > 0)
+                {
+                    foreach (var h in atBeam) st.Heads.Remove(h);
+                    if (st.Flags < majority) st.Flags = majority;
+                    if (_opt.Verbose) st.Trace += $"[{atBeam.Count} beam-end blob(s) dropped]";
+                }
+                if (!double.IsNaN(intercept))
+                {
+                    var hollowBlobs = st.Heads.Where(h => h.HeadType == "half" && Math.Abs(h.HeadY - BeamAt(h.HeadX)) <= 1.5 * ss).ToList();
+                    if (hollowBlobs.Count > 0 && hollowBlobs.Count < withHeads.Sum(s => s.Heads.Count))
+                    {
+                        foreach (var h in hollowBlobs) st.Heads.Remove(h);
+                        if (_opt.Verbose) st.Trace += $"[{hollowBlobs.Count} hollow blob(s) at the beam dropped]";
+                    }
+                }
+                if (st.Heads.Count == 0) withHeads.Remove(st);
+                else
+                {
+                    // the direction follows the heads that are left
+                    double stemMid = (st.Top + st.Bottom) / 2.0;
+                    st.Up = st.Heads.Average(h => h.HeadY) > stemMid;
+                }
             }
+
+        // 3b. a head claimed by two neighbouring stems that both extend to the same side of it (a flag's vertical part,
+        //     a thick stem split in two): the shorter stem goes. Two voices sharing a head have stems on opposite sides.
+        static bool ExtendsDown(Stem s, Note h) => (s.Bottom - h.HeadY) > (h.HeadY - s.Top);
+        for (int i = withHeads.Count - 1; i >= 0; i--)
+        {
+            var b = withHeads[i];
+            Stem? a = null;
+            foreach (var o in withHeads.Take(i))
+            {
+                if (Math.Abs(o.X - b.X) > 1.6 * ss) continue;
+                var shared = o.Heads.FirstOrDefault(h => b.Heads.Any(k => Math.Abs(k.HeadX - h.HeadX) <= 0.6 * ss && Math.Abs(k.HeadY - h.HeadY) <= 0.4 * ss));
+                if (shared == null) continue;
+                var sharedB = b.Heads.First(k => Math.Abs(k.HeadX - shared.HeadX) <= 0.6 * ss && Math.Abs(k.HeadY - shared.HeadY) <= 0.4 * ss);
+                if (ExtendsDown(o, shared) != ExtendsDown(b, sharedB)) continue;   // genuine two voices
+                a = o; break;
+            }
+            if (a == null) continue;
+            var drop = (b.Bottom - b.Top) <= (a.Bottom - a.Top) ? b : a;
+            var keep = drop == a ? b : a;
+            foreach (var h in drop.Heads) if (!keep.Heads.Any(k => Math.Abs(k.HeadY - h.HeadY) <= 0.4 * ss)) keep.Heads.Add(h);
+            if (keep.Flags < drop.Flags) keep.Flags = drop.Flags;
+            if (_opt.Verbose) keep.Trace += "[duplicate stem merged]";
+            drop.Heads.Clear(); withHeads.Remove(drop);
+            i = Math.Min(i, withHeads.Count);
+        }
+        if (withHeads.Count == 0) return;
 
         // 4. a wide gap between stems: look for a head whose stem broke off the beam
         if (_heads != null && withHeads.Count >= 3)
@@ -1715,6 +1814,19 @@ public sealed class SymbolAnalyzer
     }
 
     /// <summary>Head detection with the trained verifier: windows along both sides of the stem, batch-classified, non-maximum suppression.</summary>
+    private int _stemLabel = -1;
+
+    /// <summary>True when a pixel of the given component label lies within r of (cx, cy) in the staff-less image.</summary>
+    private bool TouchesLabel(double cx, double cy, double r, int label)
+    {
+        int ir = (int)Math.Ceiling(r);
+        int x0 = (int)Math.Round(cx) - ir, y0 = (int)Math.Round(cy) - ir;
+        for (int y = Math.Max(0, y0); y <= Math.Min(_cm.Height - 1, y0 + 2 * ir); y++)
+            for (int x = Math.Max(0, x0); x <= Math.Min(_cm.Width - 1, x0 + 2 * ir); x++)
+                if (_cm.Labels[y * _cm.Width + x] == label) return true;
+        return false;
+    }
+
     private void FindHeadsWithVerifier(Stem st, Staff staff, double headW, double headH)
     {
         FindHeadsWithVerifier(st, staff, headW, headH, 0.6);
@@ -1758,6 +1870,8 @@ public sealed class SymbolAnalyzer
         foreach (var f in found.OrderByDescending(f => f.score))
         {
             if (st.Heads.Any(h => Math.Abs(h.HeadY - f.cy) < 0.4 * ss)) continue;
+            // a head that is not part of the stem's component (accidental box or text next to a bare stroke) must be very sure
+            if (f.score < 0.9 && _stemLabel >= 0 && !TouchesLabel(f.cx, f.cy, 0.35 * ss, _stemLabel)) { if (_opt.Verbose) st.Trace += $"[{f.cx:0},{f.cy:0} p{f.score:0.00} DETACHED]"; continue; }
             bool beam = LooksLikeBeam(f.cx, f.cy, ss, -f.sign);
             // outside the staff a real head sits on or next to ledger lines; text and stray marks do not
             double stepF = staff.StepAt(f.cx, f.cy);

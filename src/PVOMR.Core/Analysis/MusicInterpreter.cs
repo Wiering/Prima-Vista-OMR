@@ -123,7 +123,10 @@ public static class MusicInterpreter
                 if (s.Kind == SymbolKind.TimeSignature && !seenNote)
                 {
                     double cy = s.Bounds.CenterY, cx = s.Bounds.CenterX;
-                    if (cy > staff.TopY(cx) - 0.3 * staff.Space && cy < staff.BottomY(cx) + 0.3 * staff.Space) timeDigits.Add(s);
+                    // single digits of a time signature fill half the staff; smaller ones are fingerings or text
+                    bool bigEnough = s.Attributes.ContainsKey("stack") || s.Name is "timeSigCommon" or "timeSigCutCommon" || s.Bounds.Height >= 1.6 * staff.Space;
+                    if (!bigEnough) s.Attributes["time"] = "too small (ignored)";
+                    else if (cy > staff.TopY(cx) - 0.3 * staff.Space && cy < staff.BottomY(cx) + 0.3 * staff.Space) timeDigits.Add(s);
                     else s.Attributes["time"] = "outside staff (ignored)";
                 }
             }
@@ -167,8 +170,13 @@ public static class MusicInterpreter
                     if (upper.Count > 0 && lower.Count > 0) time = string.Concat(upper) + "/" + string.Concat(lower);
                     else if (upper.Count + lower.Count > 0) time = string.Concat(upper.Concat(lower)) + "/?";
                 }
-                // a partial reading (digits missing or unidentified) is no time signature: the system's other staves may supply one
+                // a partial reading (digits missing or unidentified) or an impossible denominator is no time signature
                 if (time != null && time.Contains('?')) time = null;
+                if (time != null && time.Contains('/') && !time.StartsWith("C") && !time.StartsWith("cut"))
+                {
+                    var parts = time.Split('/');
+                    if (!int.TryParse(parts[1], out int den) || den is not (1 or 2 or 4 or 8 or 16 or 32) || !int.TryParse(parts[0], out int num) || num < 1 || num > 24) time = null;
+                }
                 if (staff.ForcedTime != null) time = staff.ForcedTime;
                 foreach (var t in timeDigits) t.Attributes["time"] = time ?? "?";
             }

@@ -93,8 +93,14 @@ staff-less binary image.
    natural) whose cross strokes must not count as beams; a "head" found at the beam end of a stem that also has
    a normal head is the beam's end blob, not a chord member; a wide gap between stems is searched for a head whose
    stem broke off; a stem without any head is searched again a little further out; and a stemless black head
-   lying inside a group's span joins the group. A hollow head with beams found with little confidence is dropped
-   (ledger lines around a stem), and hollow heads outside the staff need a ledger line.
+   lying inside a group's span joins the group. Two neighbouring stems that extend to the same side of a shared
+   head (a flag's vertical part, a split thick stem) are merged; a hollow "head" near the beam line is the curl of
+   a flag or the thick end of a beam and is dropped, as is a stem whose heads are all hollow inside a group of
+   black heads (a sharp or natural taken for a note); a head candidate that is not part of the stem's component
+   needs a very confident detector. A hollow head with beams found with little confidence is dropped (ledger
+   lines around a stem), hollow heads outside the staff need a ledger line, whole and half rests must be solid
+   bars at least 0.4 spaces thick inside the staff (slurs sliced by the staff lines and ledger remnants are not),
+   and different digits over one beamed group are fingerings rather than tuplet numbers.
    Everything else is classified by template matching against glyphs rendered from the SMuFL
    fonts in `D:\OMR\fonts` (Bravura, Leland, Gootville, Finale Maestro, MScore, Petaluma, Eugene,
    MuseJazz): the templates and the component are normalised to 32×32 bit masks and compared with
@@ -149,6 +155,8 @@ Effect on the 12 test pieces (trained on 72 other pieces in Leland, Bravura and 
 | clean, both models, after the small-staff key/time pass | 86% | 98.6% | 98.9% | 84% / 85% |
 | degraded, both models, after the small-staff key/time pass | 68% | 91.7% | 97.3% | 80% / 81% |
 | degraded, both models, after the beamed-group repairs | 68% | 91.8% | 97.3% | 80% / 81% |
+| clean, both models, after the second round of group repairs | 88% | 99.2% | 98.9% | 85% / 85% |
+| degraded, both models, after the second round of group repairs | 78% | 97.3% | 97.1% | 81% / 81% |
 
 The key/time pass helps the synthetic pages too because a misread key signature changes every pitch of a staff:
 keys and time signatures are now right on all 12 clean, degraded and hard pieces and the 8 tuplet pieces
@@ -283,6 +291,10 @@ Baseline (12 generated pieces, 192 measures), 2026-10-10:
 
 ## Diagnostics
 
+* `--fit` prints per page how many measures add up to their time signature (the assembler's own check) and, with
+  `--verbose`, lists the measures that do not with their summed durations. It needs no ground truth, so it ranks
+  real pages by recognition quality: Bach Cello Suite No 1 pages 3 to 6 read 51%, 80%, 71% and 75% of measures
+  adding up (the Prelude pages 1 and 2 with ground truth: 100% and 92% exact).
 * `--diag` prints, per staff, the modelled line positions against the actual ink runs at three x positions.
 * `PVOMR_STRIPDUMP=<strip index>` (with `--verbose`) prints the candidate line segments and 5-line groups of
   one detection strip; `PVOMR_ROWS=<y0>-<y1>` additionally prints the thin-ink row projection of that strip.
