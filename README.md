@@ -82,7 +82,9 @@ staff-less binary image.
    columns are not thick as well (a beam or a rest lying along the line survives, the line's wobble does not),
    and thicker runs are symbols; bar lines are thin vertical runs spanning the
    staff height that stay thin over their whole length (stems with heads, flags or beams are
-   rejected); bar line pairs and repeat dots give the kind; staves are grouped into systems by
+   rejected: a run whose end is touched by a head-sized blob is a stem, and a run that stops inside the gap
+   to the next staff while its component goes on is a spanning bar line, not an end to test); bar line pairs
+   and repeat dots give the kind; staves are grouped into systems by
    spanning bar lines and by vertical connectors (brackets, braces, system bar lines) left of
    the staves; measure boundaries are the bar line positions shared by the system.
 5. **Symbols** (`SymbolAnalyzer`, `GlyphLibrary`): connected components of the staff-less image
@@ -110,7 +112,9 @@ staff-less binary image.
    spans two spaces, a quarter rest nearly three), augmentation and staccato dots never sit on a staff line (a blob
    on a line is a line remnant), a chord gets one dot per head with double dots only side by side, a quarter note
    whose stem end lies on a neighbour's beam with the beam ink reaching its stem takes that beam count, and thin
-   flag spines or blobs next to a stem end reattach as flags.
+   flag spines or blobs next to a stem end reattach as flags. Hollow heads that broke off a shared stem are
+   reattached as one chord, and a stemless head that coincides with a head of a stemmed note is the same head
+   seen twice and is dropped.
    Everything else is classified by template matching against glyphs rendered from the SMuFL
    fonts in `D:\OMR\fonts` (Bravura, Leland, Gootville, Finale Maestro, MScore, Petaluma, Eugene,
    MuseJazz): the templates and the component are normalised to 32×32 bit masks and compared with
@@ -179,8 +183,10 @@ Effect on the 12 test pieces (trained on 72 other pieces in Leland, Bravura and 
 
 | clean, both models, after the staff-remover and piano-page round | 89% | 99.5% | 99.1% | 85% / 85% |
 | degraded, both models, after the staff-remover and piano-page round | 81% | 97.9% | 97.6% | 82% / 83% |
+| clean, retrained glyph model, after the piano bar-line round | 89% | 99.5% | 99.1% | 85% / 85% |
+| degraded, retrained glyph model, after the piano bar-line round | 81% | 98.6% | 98.2% | 83% / 83% |
 
-Hard set after these rounds: 190/192 measures, 63% exact, note P 90.8% / R 91.1%; tuplet set 99.6% / 99.6%.
+Hard set after these rounds: 192/192 measures, 67% exact, note P 92.5% / R 92.7%; tuplet set 99.8% / 99.8%.
 
 The key/time pass helps the synthetic pages too because a misread key signature changes every pitch of a staff:
 keys and time signatures are now right on all 12 clean, degraded and hard pieces and the 8 tuplet pieces
@@ -319,16 +325,22 @@ Baseline (12 generated pieces, 192 measures), 2026-10-10:
   `--verbose`, lists the measures that do not with their summed durations. It needs no ground truth, so it ranks
   real pages by recognition quality (for a two-staff part each staff is checked on its own): Bach Cello Suite No 1
   pages 3 to 6 read 46%, 82%, 69% and 75% of measures adding up (the Prelude pages 1 and 2 with ground truth:
-  100% and 92% exact), Beethoven 5 pages 7 to 9 (15 px staves) 88%, 82% and 85%, Bartok "For Children" page 3
-  (thick-lined piano scan) 86%. A scan of page 2 of the 63 scores added on 2026-10-11 ran without a failure;
-  the weakest pages are solo piano (Gounod Pastorale 49%, Fauré Ballade without a time signature on the page) and
-  the Handel Chaconne, whose upper staff is in 9/8 against 3/4 below (per-staff time signatures are not supported). When a page carries no time signature the length is inferred from the most common
+  100% and 92% exact), Beethoven 5 pages 7 to 9 (15 px staves) 94%, 84% and 81%, Bartok "For Children" page 3
+  (thick-lined piano scan) 92%, Brahms 4 page 2 72%. A scan of page 2 of the 63 scores added on 2026-10-11 ran without a failure;
+  the weakest pages were solo piano: the Gounod Pastorale read 49% because the bar lines of the upper piano staff
+  were rejected (the run scan stopped inside the gap to the lower staff and found an articulation mark there) and
+  a chord's stem was taken for a repeat bar line; with both fixed it reads 81%. The Fauré Ballade has no time
+  signature on the page, and the Handel Chaconne's upper staff is in 9/8 against 3/4 below (per-staff time
+  signatures are not supported). The retrained glyph model costs a little on the Bach suite pages 3 to 6
+  (46%, 80%, 69%, 64%). When a page carries no time signature the length is inferred from the most common
   measure sum, measures holding only a whole rest excluded (they take any length).
 * `--diag` prints, per staff, the modelled line positions against the actual ink runs at three x positions.
 * `PVOMR_STRIPDUMP=<strip index>` (with `--verbose`) prints the candidate line segments and 5-line groups of
   one detection strip; `PVOMR_ROWS=<y0>-<y1>` additionally prints the thin-ink row projection of that strip.
 * The GUI (`src/PVOMR.Gui`) shows the same overlays interactively, see "Correction GUI".
 * `--verbose --debug --out dir` also writes the staff-less binary image (`*_nostaff.png`).
+* `PVOMR_BARDUMP=1` prints every bar line candidate with the reason it was accepted or rejected, the bar lines
+  per staff after kind classification and at the end.
 * `PVOMR_KEYDUMP=1` prints every clef/key/time placement decision of the start-of-staff pass (hypothesis,
   score, competing digit score, position); `PVOMR_KEYSCAN=1` adds the per-column scores of the scan.
 * The models were trained on MuseScore renders only; on old engravings they occasionally see heads in beam ends

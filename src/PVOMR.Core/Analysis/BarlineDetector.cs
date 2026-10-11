@@ -5,6 +5,8 @@ namespace PVOMR.Core.Analysis;
 
 public static class BarlineDetector
 {
+    private static readonly bool BarDump = Environment.GetEnvironmentVariable("PVOMR_BARDUMP") == "1";
+
     private sealed class Candidate { public int X0, X1; public double Xc => (X0 + X1) / 2.0; public int Width => X1 - X0 + 1; public bool Thick; public int RunTop, RunBottom; }
 
     public static void Detect(BinaryImage bin, BinaryImage noStaff, ComponentMap cm, List<Staff> staves, List<string> log)
@@ -40,10 +42,11 @@ public static class BarlineDetector
             var accepted = new List<Candidate>();
             foreach (var c in cands)
             {
-                if (c.Width > 0.8 * ss) continue;
+                if (c.Width > 0.8 * ss) { if (BarDump) Console.Error.WriteLine($"bar staff {si + 1} x{c.X0}-{c.X1}: too wide"); continue; }
                 int xc = (int)Math.Round(c.Xc);
-                if (!IsThinAlongRun(noStaff, bin, staff, c, xc)) continue;
-                if (!ComponentIsThin(cm, staff, c, xc, staves)) continue;
+                if (!IsThinAlongRun(noStaff, bin, staff, c, xc)) { if (BarDump) Console.Error.WriteLine($"bar staff {si + 1} x{c.X0}-{c.X1}: not thin along run"); continue; }
+                if (!ComponentIsThin(cm, staff, c, xc, staves)) { if (BarDump) Console.Error.WriteLine($"bar staff {si + 1} x{c.X0}-{c.X1}: component not thin"); continue; }
+                if (BarDump) Console.Error.WriteLine($"bar staff {si + 1} x{c.X0}-{c.X1}: accepted");
                 c.Thick = c.Width >= Math.Max(3, 0.28 * ss) && c.Width >= 2.5 * staff.LineThickness;
                 accepted.Add(c);
             }
@@ -97,6 +100,7 @@ public static class BarlineDetector
             }
             staff.Barlines.Clear();
             staff.Barlines.AddRange(bars);
+            if (BarDump) Console.Error.WriteLine($"bars staff {si + 1} after kinds: " + string.Join(" ", bars.Select(b => $"{b.Kind}@{b.X0}-{b.X1}")));
         }
         // barlines much thinner than the typical barline of the page are stems (hollow heads that broke off)
         var widths = staves.SelectMany(st => st.Barlines).Select(b => b.X1 - b.X0 + 1).OrderBy(w => w).ToList();
@@ -105,7 +109,10 @@ public static class BarlineDetector
             int median = widths[widths.Count / 2];
             if (median >= 3)
                 foreach (var st in staves)
+                {
+                    if (BarDump) foreach (var b in st.Barlines.Where(b => b.X1 - b.X0 + 1 < 0.55 * median)) Console.Error.WriteLine($"bars staff {st.Index + 1}: removed thin {b.Kind}@{b.X0}-{b.X1} (median {median})");
                     st.Barlines.RemoveAll(b => b.X1 - b.X0 + 1 < 0.55 * median);
+                }
         }
         // spanning: a barline continues to the next staff when the ink is continuous in the gap and the next staff has a barline at the same x
         for (int si = 0; si < staves.Count; si++)
@@ -137,6 +144,7 @@ public static class BarlineDetector
                 }
             }
         }
+        if (BarDump) foreach (var st in staves) Console.Error.WriteLine($"bars staff {st.Index + 1} final: " + string.Join(" ", st.Barlines.Select(b => $"{b.Kind}@{b.X0}-{b.X1}")));
     }
 
     /// <summary>Number of rows of (nearly) continuous ink from y in direction dir at column x (bridging gaps of up to 2 rows), capped.</summary>
@@ -226,10 +234,33 @@ public static class BarlineDetector
             for (int x = Math.Max(0, x0); x <= Math.Min(cm.Width - 1, x1); x++)
                 if (cm.Labels[y * cm.Width + x] == comp.Label) { if (x < minX) minX = x; if (x > maxX) maxX = x; }
         if (maxX < 0) return true;
+        if (BarDump) Console.Error.WriteLine($"   comp label {comp.Label} bbox ({comp.X0},{comp.Y0})-({comp.X1},{comp.Y1}) extent in band {minX}-{maxX} (limit {Math.Max(1.0 * ss, 3 * c.Width + 2):0})");
         if (maxX - minX + 1 > Math.Max(1.0 * ss, 3 * c.Width + 2)) return false;
         // a stem whose (hollow) head broke off: foreign ink fragments right beside either end of the run
         foreach (int yEnd in new[] { c.RunTop, c.RunBottom })
         {
+            // the run scan stops a few spaces beyond the staff: when the component itself goes on (a barline spanning to
+            // the next staff) this is not an end at all
+            bool continues = yEnd == c.RunTop ? comp.Y0 < yEnd - 1.0 * ss : comp.Y1 > yEnd + 1.0 * ss;
+            if (continues) continue;
+            // ink touching the run right at its end (a head whose stem this is): barlines are not touched by note heads
+            {
+                int ty0 = (int)(yEnd - 0.8 * ss), ty1 = (int)(yEnd + 0.8 * ss);
+                int tx0 = (int)(c.X0 - 0.35 * ss), tx1 = (int)(c.X1 + 0.35 * ss);
+                int touching = 0;
+                for (int y = Math.Max(0, ty0); y <= Math.Min(cm.Height - 1, ty1); y++)
+                    for (int x = Math.Max(0, tx0); x <= Math.Min(cm.Width - 1, tx1); x++)
+                    {
+                        if (x >= c.X0 - 1 && x <= c.X1 + 1) continue;
+                        int l = cm.Labels[y * cm.Width + x];
+                        if (l == 0 || l == comp.Label) continue;
+                        // the other line of a double or repeat barline is tall; a head is not
+                        var other = cm.At(x, y);
+                        if (other != null && other.Height > 1.6 * ss) continue;
+                        touching++;
+                    }
+                if (touching >= 0.1 * ss * ss) return false;
+            }
             // barlines end on the outer staff lines (of this or another staff); a run ending elsewhere is suspect
             bool onLine = staves.Any(st => xc >= st.Left - st.Space && xc <= st.Right + st.Space
                                            && (Math.Abs(yEnd - st.TopY(xc)) <= 0.6 * ss || Math.Abs(yEnd - st.BottomY(xc)) <= 0.6 * ss));

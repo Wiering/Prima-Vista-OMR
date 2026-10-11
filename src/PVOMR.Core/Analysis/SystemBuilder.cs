@@ -92,10 +92,19 @@ public static class SystemBuilder
         double ss = sys.Staves.Average(s => s.Space);
         // cluster barline positions across staves
         var xs = new List<(double x, int staff, bool spanning, Barline b)>();
+        // the lines at the very start of the staves (system line, bracket edge, opening repeat) are one boundary at the
+        // system's left edge however wide the bracket makes them; they never open a measure of their own
+        double left = sys.Staves.Min(st => st.Left);
+        var starts = new List<(double x, int staff, bool spanning, Barline b)>();
         foreach (var st in sys.Staves)
-            foreach (var b in st.Barlines) xs.Add((b.X, st.Index, b.Spanning, b));
+            foreach (var b in st.Barlines)
+            {
+                if (b.X0 <= st.Left + 1.5 * ss) starts.Add((left, st.Index, b.Spanning, b));
+                else xs.Add((b.X, st.Index, b.Spanning, b));
+            }
         xs.Sort((p, q) => p.x.CompareTo(q.x));
         var clusters = new List<List<(double x, int staff, bool spanning, Barline b)>>();
+        if (starts.Count > 0) clusters.Add(starts);
         foreach (var e in xs)
         {
             if (clusters.Count > 0 && e.x - clusters[^1][^1].x <= 0.8 * ss) clusters[^1].Add(e);

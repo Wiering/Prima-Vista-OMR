@@ -220,6 +220,7 @@ public sealed class SymbolAnalyzer
             AttachTuplets(syms, staff);
             AttachDetachedStems(syms, staff);
             AttachDetachedHeads(syms, staff);
+            RemoveDuplicateHeads(syms, staff);
             AttachDetachedFlags(syms, staff);
             ContinueBeams(syms, staff);
             AttachDotsAndAccidentals(syms, staff);
@@ -946,6 +947,36 @@ public sealed class SymbolAnalyzer
             h.Attributes["stem"] = "reattached";
             h.Bounds = h.Bounds.Union(stem.Bounds);
             syms.Remove(stem); stems.Remove(stem);
+            // other stemless heads along the same stem form a chord with it
+            foreach (var o in heads.Where(o => o != h && syms.Contains(o) && o.StemUp == null).ToList())
+            {
+                var ro = o.Notes[0].Head;
+                bool beside = up != null ? ro.X1 >= stem.Bounds.X0 - 0.4 * ss && ro.X1 <= stem.Bounds.X1 + 0.3 * ss
+                                         : ro.X0 <= stem.Bounds.X1 + 0.4 * ss && ro.X0 >= stem.Bounds.X0 - 0.3 * ss;
+                if (!beside || ro.CenterY < stem.Bounds.Y0 - 0.6 * ss || ro.CenterY > stem.Bounds.Y1 + 0.6 * ss) continue;
+                h.Notes.Add(o.Notes[0]);
+                h.Kind = SymbolKind.Chord; h.Name = "chord";
+                h.Bounds = h.Bounds.Union(o.Bounds);
+                syms.Remove(o);
+            }
+            if (h.Notes.Count > 1) h.Notes.Sort((a, b) => b.Step.CompareTo(a.Step));
+        }
+    }
+
+    /// <summary>
+    /// A stemless head (a hollow head that broke off its stem and was classified on its own) that coincides with a head
+    /// of a stemmed note or chord is the same head seen twice: the stemless copy goes.
+    /// </summary>
+    private static void RemoveDuplicateHeads(List<MusicSymbol> syms, Staff staff)
+    {
+        double ss = staff.Space;
+        var stemmed = syms.Where(s => s.Kind is SymbolKind.Note or SymbolKind.Chord or SymbolKind.NoteGroup && (s.StemUp != null || s.Kind == SymbolKind.NoteGroup))
+                          .SelectMany(s => s.Notes).ToList();
+        if (stemmed.Count == 0) return;
+        foreach (var h in syms.Where(s => s.Kind == SymbolKind.Note && s.StemUp == null && s.Notes.Count == 1).ToList())
+        {
+            var n = h.Notes[0];
+            if (stemmed.Any(m => Math.Abs(m.HeadX - n.HeadX) <= 0.7 * ss && Math.Abs(m.HeadY - n.HeadY) <= 0.5 * ss)) syms.Remove(h);
         }
     }
 
