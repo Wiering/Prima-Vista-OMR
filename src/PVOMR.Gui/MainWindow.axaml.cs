@@ -185,6 +185,8 @@ public partial class MainWindow : Window
     private async Task ExportAsync()
     {
         if (_pages.Count == 0 || _file == null) return;
+        var options = await ExportDialog.ShowAsync(this, _pages.Count, _pageCount);
+        if (options == null) return;
         var file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
         {
             Title = "Export MusicXML",
@@ -198,10 +200,10 @@ public partial class MainWindow : Window
         {
             var pages = _pages.OrderBy(p => p.Key).Select(p => p.Value.Analysis).ToList();
             var score = MusicAssembler.Build(pages, new MusicAssembler.Options { Title = Path.GetFileNameWithoutExtension(_file) });
-            MusicXmlWriter.Write(score, path);
+            MusicXmlWriter.Write(score, path, options);
             _exportWarnings = score.Warnings.Count == 0 ? "" : "Export warnings:\n" + string.Join("\n", score.Warnings.Take(200));
             UpdateNotes();
-            Status($"wrote {Path.GetFileName(path)}: {score.Parts.Count} part(s), {score.Parts.Sum(p => p.Measures.Count)} measures from {pages.Count} page(s), {score.Warnings.Count} warnings");
+            Status($"wrote {Path.GetFileName(path)} ({options}): {score.Parts.Count} part(s), {score.Parts.Sum(p => p.Measures.Count)} measures from {pages.Count} page(s), {score.Warnings.Count} warnings");
         }
         catch (Exception ex)
         {

@@ -22,6 +22,7 @@ static int Usage()
           --debug             write debug overlay images (requires --out)
           --json              also write a JSON file with everything detected (requires --out)
           --musicxml <file>   assemble all analysed pages into a score and write MusicXML
+          --omit <list>       leave these out of the MusicXML: dynamics,articulations,slurs,ties,text,repeats,tuplets,beams
           --grand-staff       force two-staff systems to be one piano part (default: automatic)
           --fonts <dir>       directory with SMuFL fonts (default: ./fonts or D:\OMR\fonts)
           --model <file>      ONNX glyph classifier (default: models/glyphs.onnx if present; "none" = templates only)
@@ -55,7 +56,7 @@ if (args.Length > 0 && args[0] == "eval")
 }
 
 var inputs = new List<string>();
-string? pages = null, outDir = null, fonts = null, musicXml = null, augment = null, model = null;
+string? pages = null, outDir = null, fonts = null, musicXml = null, augment = null, model = null, omit = null;
 bool? grandStaff = null;
 double dpi = 300;
 bool debug = false, json = false, quiet = false, verbose = false, deskew = true, diag = false, fit = false;
@@ -72,6 +73,7 @@ for (int i = 0; i < args.Length; i++)
         case "--debug": debug = true; break;
         case "--json": json = true; break;
         case "--musicxml": musicXml = Next(); break;
+        case "--omit": omit = Next(); break;
         case "--augment": augment = Next(); break;
         case "--model": model = Next(); break;
         case "--grand-staff": grandStaff = true; break;
@@ -149,7 +151,9 @@ foreach (var input in inputs)
 if (musicXml != null)
 {
     var score = PVOMR.Core.Score.MusicAssembler.Build(allPages, new PVOMR.Core.Score.MusicAssembler.Options { GrandStaff = grandStaff, Title = Path.GetFileNameWithoutExtension(inputs[0]) });
-    PVOMR.Core.Score.MusicXmlWriter.Write(score, musicXml);
+    var exportOptions = new PVOMR.Core.Score.ExportOptions();
+    if (omit != null) foreach (var u in exportOptions.Omit(omit)) Console.Error.WriteLine($"unknown --omit item '{u}' (known: {string.Join(", ", PVOMR.Core.Score.ExportOptions.Names)})");
+    PVOMR.Core.Score.MusicXmlWriter.Write(score, musicXml, exportOptions);
     Console.WriteLine($"MusicXML written to {musicXml}: {score.Parts.Count} part(s), {score.Parts.Sum(p => p.Measures.Count)} measures, {score.Parts.Sum(p => p.Measures.Sum(m => m.Events.Count))} events, {score.Warnings.Count} warnings");
     if (!quiet) foreach (var wmsg in score.Warnings.Take(verbose ? int.MaxValue : 40)) Console.WriteLine("  warning: " + wmsg);
     if (!quiet && !verbose && score.Warnings.Count > 40) Console.WriteLine($"  ... {score.Warnings.Count - 40} more warnings (use --verbose)");

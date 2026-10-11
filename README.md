@@ -221,6 +221,9 @@ keys and time signatures are now right on all 12 clean, degraded and hard pieces
 
 ## Full scores over several pages
 
+`--omit dynamics,slurs` (also articulations, ties, text, repeats, tuplets, beams) leaves those out of the MusicXML
+while the notes and rests stay; without dynamics the playback in MuseScore keeps one volume, which makes wrong
+soft notes audible. The GUI asks the same question in a dialog before saving and remembers the answer.
 `--pages 7-9 --musicxml out.musicxml` assembles all analysed pages into one score with continuous measure numbers
 and `new-page`/`new-system` marks. Parts are the staves of the fullest system; a system with fewer staves
 (instruments omitted) is aligned to it monotonically by clef kind, and a part absent from a system receives
@@ -253,7 +256,10 @@ opens an Avalonia desktop application for checking and correcting the recognitio
   measure when it crosses a bar line; "Select" is the normal mode;
 * every edit re-runs the musical interpretation of the page (pitch names, keys, times), so the labels update at
   once; "Export MusicXML…" assembles all pages recognised in this session (pages are analysed when first shown
-  and cached). User-added or corrected notes are never dropped by the measure-fitting step of the assembler;
+  and cached); the export dialog lets you leave out dynamics and hairpins, articulations, slurs, ties, text,
+  repeat signs, tuplet brackets or beams (the notes and rests always go), and remembers the choice in
+  `%APPDATA%\PVOMR\export.json`. User-added or corrected notes are never dropped by the measure-fitting step of the
+  assembler;
 * the duration check tints every measure whose recognised durations do not add up to the time signature (red:
   too long, orange: too short, purple: the assembler had to drop uncertain notes to make it fit) and lists them
   under "Measures to check"; clicking an entry jumps to the measure. The check is the assembler's own validation,

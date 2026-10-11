@@ -4,10 +4,62 @@ using System.Xml;
 namespace PVOMR.Core.Score;
 
 /// <summary>Writes the score model as MusicXML 4.0 (score-partwise).</summary>
+/// <summary>What besides notes and rests goes into the MusicXML. Everything is on by default.</summary>
+public sealed class ExportOptions
+{
+    /// <summary>Dynamic marks and hairpins (crescendo/diminuendo wedges).</summary>
+    public bool Dynamics { get; set; } = true;
+    /// <summary>Staccato and the other articulation marks, fermatas.</summary>
+    public bool Articulations { get; set; } = true;
+    public bool Slurs { get; set; } = true;
+    public bool Ties { get; set; } = true;
+    /// <summary>Text directions such as tempo words.</summary>
+    public bool Text { get; set; } = true;
+    /// <summary>Repeat signs and special bar line styles (double, final); off writes plain bar lines, so playback runs straight through.</summary>
+    public bool Repeats { get; set; } = true;
+    /// <summary>Tuplet brackets and numbers (the durations keep their tuplet ratio either way).</summary>
+    public bool TupletBrackets { get; set; } = true;
+    /// <summary>Beam groups (visual only; without them the notes are flagged).</summary>
+    public bool Beams { get; set; } = true;
+
+    public static readonly string[] Names = { "dynamics", "articulations", "slurs", "ties", "text", "repeats", "tuplets", "beams" };
+
+    /// <summary>Turns off the named items ("dynamics,slurs"); unknown names are returned.</summary>
+    public List<string> Omit(string list)
+    {
+        var unknown = new List<string>();
+        foreach (var raw in list.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            switch (raw.ToLowerInvariant())
+            {
+                case "dynamics": Dynamics = false; break;
+                case "articulations": Articulations = false; break;
+                case "slurs": Slurs = false; break;
+                case "ties": Ties = false; break;
+                case "text": Text = false; break;
+                case "repeats": Repeats = false; break;
+                case "tuplets": TupletBrackets = false; break;
+                case "beams": Beams = false; break;
+                default: unknown.Add(raw); break;
+            }
+        return unknown;
+    }
+
+    public override string ToString()
+    {
+        var off = new List<string>();
+        if (!Dynamics) off.Add("dynamics"); if (!Articulations) off.Add("articulations"); if (!Slurs) off.Add("slurs"); if (!Ties) off.Add("ties");
+        if (!Text) off.Add("text"); if (!Repeats) off.Add("repeats"); if (!TupletBrackets) off.Add("tuplets"); if (!Beams) off.Add("beams");
+        return off.Count == 0 ? "everything" : "without " + string.Join(", ", off);
+    }
+}
+
 public static class MusicXmlWriter
 {
-    public static void Write(Score score, string path)
+    private static ExportOptions _o = new();
+
+    public static void Write(Score score, string path, ExportOptions? options = null)
     {
+        _o = options ?? new ExportOptions();
         var settings = new XmlWriterSettings { Indent = true, IndentChars = "  ", Encoding = new UTF8Encoding(false) };
         using var w = XmlWriter.Create(path, settings);
         w.WriteStartDocument();
@@ -92,11 +144,15 @@ public static class MusicXmlWriter
                 w.WriteEndElement();
             }
 
-            if (m.LeftBar != BarStyle.None || m.RepeatForward) WriteBarline(w, "left", m.LeftBar, m.RepeatForward ? "forward" : null);
+            if (_o.Repeats && (m.LeftBar != BarStyle.None || m.RepeatForward)) WriteBarline(w, "left", m.LeftBar, m.RepeatForward ? "forward" : null);
 
             // events by voice; directions are emitted before the event nearest to them (voice 1 pass)
             var voices = m.Events.GroupBy(e => e.Voice).OrderBy(g => g.Key).ToList();
-            var directions = m.Directions.OrderBy(d => d.X).ToList();
+            var directions = m.Directions.Where(d => d.Kind switch
+            {
+                DirectionKind.Dynamics or DirectionKind.WedgeStart or DirectionKind.WedgeStop => _o.Dynamics,
+                _ => _o.Text,
+            }).OrderBy(d => d.X).ToList();
             int position = 0; bool firstVoice = true;
             foreach (var voice in voices)
             {
@@ -123,7 +179,7 @@ public static class MusicXmlWriter
             }
             if (voices.Count == 0) foreach (var d in directions) WriteDirection(w, d, part.StaffCount);
 
-            if (m.RightBar != BarStyle.Regular || m.RepeatBackward) WriteBarline(w, "right", m.RightBar, m.RepeatBackward ? "backward" : null);
+            if (_o.Repeats && (m.RightBar != BarStyle.Regular || m.RepeatBackward)) WriteBarline(w, "right", m.RightBar, m.RepeatBackward ? "backward" : null);
             w.WriteEndElement();
             first = false;
         }
@@ -199,11 +255,12 @@ public static class MusicXmlWriter
             if (!e.MeasureRest) { w.WriteElementString("type", e.Type); for (int i = 0; i < e.Dots; i++) w.WriteStartElement("dot"); for (int i = 0; i < e.Dots; i++) w.WriteEndElement(); }
             WriteTimeModification(w, e);
             if (staffCount > 1) w.WriteElementString("staff", (e.NotatedStaff ?? e.Staff).ToString());
-            if (e.Fermata || e.TupletStart || e.TupletStop)
+            bool restFermata = e.Fermata && _o.Articulations, restTuplet = (e.TupletStart || e.TupletStop) && _o.TupletBrackets;
+            if (restFermata || restTuplet)
             {
                 w.WriteStartElement("notations");
-                WriteTupletNotation(w, e);
-                if (e.Fermata) w.WriteElementString("fermata", "");
+                if (restTuplet) WriteTupletNotation(w, e);
+                if (restFermata) w.WriteElementString("fermata", "");
                 w.WriteEndElement();
             }
             w.WriteEndElement();
@@ -220,8 +277,9 @@ public static class MusicXmlWriter
             w.WriteElementString("octave", n.Pitch.Octave.ToString());
             w.WriteEndElement();
             w.WriteElementString("duration", e.Duration.ToString());
-            if (n.TieStart) { w.WriteStartElement("tie"); w.WriteAttributeString("type", "start"); w.WriteEndElement(); }
-            if (n.TieStop) { w.WriteStartElement("tie"); w.WriteAttributeString("type", "stop"); w.WriteEndElement(); }
+            bool tieStart = n.TieStart && _o.Ties, tieStop = n.TieStop && _o.Ties;
+            if (tieStart) { w.WriteStartElement("tie"); w.WriteAttributeString("type", "start"); w.WriteEndElement(); }
+            if (tieStop) { w.WriteStartElement("tie"); w.WriteAttributeString("type", "stop"); w.WriteEndElement(); }
             w.WriteElementString("voice", e.Voice.ToString());
             w.WriteElementString("type", e.Type);
             for (int i = 0; i < e.Dots; i++) w.WriteElementString("dot", "");
@@ -229,7 +287,7 @@ public static class MusicXmlWriter
             WriteTimeModification(w, e);
             if (e.StemUp.HasValue) w.WriteElementString("stem", e.StemUp.Value ? "up" : "down");
             if (staffCount > 1) w.WriteElementString("staff", (e.NotatedStaff ?? e.Staff).ToString());
-            if (ni == 0)
+            if (ni == 0 && _o.Beams)
                 for (int b = 0; b < e.Beams.Length; b++)
                 {
                     if (e.Beams[b] == BeamState.None) continue;
@@ -238,24 +296,30 @@ public static class MusicXmlWriter
                     w.WriteString(e.Beams[b] switch { BeamState.Begin => "begin", BeamState.Continue => "continue", BeamState.End => "end", BeamState.ForwardHook => "forward hook", _ => "backward hook" });
                     w.WriteEndElement();
                 }
-            bool notations = n.TieStart || n.TieStop || (ni == 0 && (e.Articulations.Count > 0 || e.Fermata || e.SlurStarts.Count > 0 || e.SlurStops.Count > 0 || e.TupletStart || e.TupletStop));
+            bool artic = _o.Articulations && (e.Articulations.Count > 0 || e.Fermata);
+            bool slurs = _o.Slurs && (e.SlurStarts.Count > 0 || e.SlurStops.Count > 0);
+            bool tuplet = _o.TupletBrackets && (e.TupletStart || e.TupletStop);
+            bool notations = tieStart || tieStop || (ni == 0 && (artic || slurs || tuplet));
             if (notations)
             {
                 w.WriteStartElement("notations");
-                if (n.TieStart) { w.WriteStartElement("tied"); w.WriteAttributeString("type", "start"); w.WriteEndElement(); }
-                if (n.TieStop) { w.WriteStartElement("tied"); w.WriteAttributeString("type", "stop"); w.WriteEndElement(); }
+                if (tieStart) { w.WriteStartElement("tied"); w.WriteAttributeString("type", "start"); w.WriteEndElement(); }
+                if (tieStop) { w.WriteStartElement("tied"); w.WriteAttributeString("type", "stop"); w.WriteEndElement(); }
                 if (ni == 0)
                 {
-                    WriteTupletNotation(w, e);
-                    foreach (var s in e.SlurStops) { w.WriteStartElement("slur"); w.WriteAttributeString("type", "stop"); w.WriteAttributeString("number", s.ToString()); w.WriteEndElement(); }
-                    foreach (var s in e.SlurStarts) { w.WriteStartElement("slur"); w.WriteAttributeString("type", "start"); w.WriteAttributeString("number", s.ToString()); w.WriteEndElement(); }
-                    if (e.Articulations.Count > 0)
+                    if (tuplet) WriteTupletNotation(w, e);
+                    if (slurs)
+                    {
+                        foreach (var s in e.SlurStops) { w.WriteStartElement("slur"); w.WriteAttributeString("type", "stop"); w.WriteAttributeString("number", s.ToString()); w.WriteEndElement(); }
+                        foreach (var s in e.SlurStarts) { w.WriteStartElement("slur"); w.WriteAttributeString("type", "start"); w.WriteAttributeString("number", s.ToString()); w.WriteEndElement(); }
+                    }
+                    if (artic && e.Articulations.Count > 0)
                     {
                         w.WriteStartElement("articulations");
                         foreach (var a in e.Articulations) w.WriteElementString(a, "");
                         w.WriteEndElement();
                     }
-                    if (e.Fermata) w.WriteElementString("fermata", "");
+                    if (artic && e.Fermata) w.WriteElementString("fermata", "");
                 }
                 w.WriteEndElement();
             }
