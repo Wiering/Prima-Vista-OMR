@@ -127,6 +127,8 @@ public sealed class Note
     public int Accidental { get; set; } = int.MinValue;
     public string? AccidentalName { get; set; }
     public int LedgerLines { get; set; }
+    /// <summary>Head detector confidence (1 when not available).</summary>
+    public double Confidence { get; set; } = 1;
     public override string ToString() => $"{Pitch ?? "?"} step={Step}";
 }
 

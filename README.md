@@ -87,6 +87,14 @@ staff-less binary image.
    with stems are analysed structurally: note heads are found by scoring an elliptical template on
    both sides of every stem (filled and hollow), beams/flags are counted at the free stem end, and
    detached flags, augmentation dots, staccato dots and accidentals are attached afterwards.
+   A beamed group is then repaired with the knowledge that all its stems end at one (sloping) beam: a stem that
+   stops short of the fitted beam line lost its lower beams to a gap in the ink and takes the group's majority
+   beam count; two thin head-less strokes right before a head are a sharp (or, with less vertical overlap, a
+   natural) whose cross strokes must not count as beams; a "head" found at the beam end of a stem that also has
+   a normal head is the beam's end blob, not a chord member; a wide gap between stems is searched for a head whose
+   stem broke off; a stem without any head is searched again a little further out; and a stemless black head
+   lying inside a group's span joins the group. A hollow head with beams found with little confidence is dropped
+   (ledger lines around a stem), and hollow heads outside the staff need a ledger line.
    Everything else is classified by template matching against glyphs rendered from the SMuFL
    fonts in `D:\OMR\fonts` (Bravura, Leland, Gootville, Finale Maestro, MScore, Petaluma, Eugene,
    MuseJazz): the templates and the component are normalised to 32×32 bit masks and compared with
@@ -140,6 +148,7 @@ Effect on the 12 test pieces (trained on 72 other pieces in Leland, Bravura and 
 | degraded, both models | 45% | 81.6% | 85.1% | 78% / 82% |
 | clean, both models, after the small-staff key/time pass | 86% | 98.6% | 98.9% | 84% / 85% |
 | degraded, both models, after the small-staff key/time pass | 68% | 91.7% | 97.3% | 80% / 81% |
+| degraded, both models, after the beamed-group repairs | 68% | 91.8% | 97.3% | 80% / 81% |
 
 The key/time pass helps the synthetic pages too because a misread key signature changes every pitch of a staff:
 keys and time signatures are now right on all 12 clean, degraded and hard pieces and the 8 tuplet pieces
@@ -216,6 +225,7 @@ elative` LilyPond; it stops before polyphony):
 
 ```
 pvomr eval "D:\OMR\Scores\Bach - Cello Suite No 1 in G.pdf" testdata/bach-bwv1007-prelude-m1-19.musicxml --pages 1
+# 2026-10-11: page 1 19/19 measures exact, notes P 100% R 100%; page 2 (first 13 measures) 92% exact, P/R 99.5%
 pvomr eval "D:\OMR\Scores\Bach - Cello Suite No 1 in G.pdf" testdata/bach-bwv1007-prelude-m20-32.musicxml --pages 2 --measures 1-13
 ```
 

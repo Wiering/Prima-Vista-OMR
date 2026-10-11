@@ -100,7 +100,12 @@ public static class TextReport
         if (s.Kind != SymbolKind.Note && s.Kind != SymbolKind.Chord && s.Kind != SymbolKind.NoteGroup && s.Confidence > 0) sb.Append($" [conf {s.Confidence:0.00}]");
         foreach (var kv in s.Attributes)
             if (kv.Key is not ("clef" or "key" or "time" or "glyphs" or "best" or "alt" or "text" or "stemx" or "tuplet")) sb.Append($" {kv.Key}={kv.Value}");
-        if (verbose) sb.Append($"  bbox {s.Bounds}");
+        if (verbose)
+        {
+            sb.Append($"  bbox {s.Bounds}");
+            var heads = s.Notes.Concat(s.Children.SelectMany(c => c.Notes)).ToList();
+            if (heads.Count > 0) sb.Append(" heads=" + string.Join(",", heads.Select(n => $"{n.Pitch ?? "?"}@{n.Head.CenterX:0},{n.Head.CenterY:0}s{n.Step}")));
+        }
         return sb.ToString();
     }
 
