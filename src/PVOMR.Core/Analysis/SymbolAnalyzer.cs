@@ -76,6 +76,9 @@ public sealed class SymbolAnalyzer
                 if (cy < top - 1.0 * ss || cy > bot + 1.0 * ss) return false;
                 // whole and half rests are solid bars inside the staff; ledger-line remnants below or above it are not rests
                 if (label is "rest_whole" or "rest_half" && !WholeHalfRestPlausible(c, staff)) return false;
+                // flagged rests are tall: an 8th rest spans two spaces, a quarter rest nearly three
+                if (label is "rest_8th" or "rest_16th" && (h < 1.4 || h > 3.4)) return false;
+                if (label == "rest_quarter" && (h < 2.0 || h > 3.8)) return false;
                 if (prob < 0.6 && !barRest) return false;
                 if (barRest) label = RestOnLine(c, staff)!;
                 sym.Kind = SymbolKind.Rest; sym.Name = label switch { "rest_whole" => "restWhole", "rest_half" => "restHalf", "rest_quarter" => "restQuarter", "rest_8th" => "rest8th", _ => "rest16th" };
@@ -105,6 +108,7 @@ public sealed class SymbolAnalyzer
                 return true;
             }
             case "dot":
+                if (OnStaffLine(c, staff)) return false;   // augmentation and staccato dots sit in spaces; a blob on a line is a line remnant
                 sym.Kind = SymbolKind.Dot; sym.Name = "dot";
                 return true;
             case "dynamic":
@@ -126,6 +130,15 @@ public sealed class SymbolAnalyzer
             case "beam": sym.Kind = SymbolKind.Beam; sym.Name = "beam"; return true;
             default: return false;   // fragment, composite, other
         }
+    }
+
+    /// <summary>True when the component's centre lies within a fifth of a space of a staff line (inside the staff).</summary>
+    private static bool OnStaffLine(Component c, Staff staff)
+    {
+        double step = staff.StepAt(c.CenterX, c.CenterY);
+        if (step < -0.5 || step > 8.5) return false;
+        double r = Math.Round(step);
+        return ((int)r) % 2 == 0 && Math.Abs(step - r) <= 0.4;
     }
 
     /// <summary>"rest_whole" when the bar hangs from a staff line, "rest_half" when it sits on one, else null.</summary>
@@ -208,6 +221,7 @@ public sealed class SymbolAnalyzer
             AttachDetachedStems(syms, staff);
             AttachDetachedHeads(syms, staff);
             AttachDetachedFlags(syms, staff);
+            ContinueBeams(syms, staff);
             AttachDotsAndAccidentals(syms, staff);
             DetectHairpinsAndSlurs(syms, staff);
             foreach (var s in syms.OrderBy(s => s.Bounds.X0))
@@ -966,14 +980,69 @@ public sealed class SymbolAnalyzer
         }
     }
 
+    /// <summary>
+    /// A note read as a quarter (no flags) whose stem end lies on the beam of a neighbouring beamed note, with the
+    /// beam's ink actually reaching its stem, is a member of that beam: its stem ink broke off the beam.
+    /// </summary>
+    private void ContinueBeams(List<MusicSymbol> syms, Staff staff)
+    {
+        double ss = staff.Space;
+        var quarters = syms.Where(s => s.Kind is SymbolKind.Note or SymbolKind.Chord && s.Flags == 0 && s.StemUp.HasValue && s.Attributes.ContainsKey("stemx")
+                                       && s.Notes.All(n => n.HeadType == "black")).ToList();
+        if (quarters.Count == 0) return;
+        var beamed = syms.Where(s => (s.Kind is SymbolKind.Note or SymbolKind.Chord && s.Flags > 0 && s.Attributes.ContainsKey("stemx"))
+                                     || (s.Kind == SymbolKind.NoteGroup && s.Children.Any(c => c.Flags > 0 && c.Attributes.ContainsKey("stemx")))).ToList();
+        foreach (var q in quarters)
+        {
+            var parts = q.Attributes["stemx"].Split(',');
+            int qx0 = int.Parse(parts[0]), qx1 = int.Parse(parts[1]), qEnd = int.Parse(parts[2]);
+            foreach (var b in beamed)
+            {
+                // the nearest beamed stem of the neighbour on the side facing this note
+                var members = b.Kind == SymbolKind.NoteGroup ? b.Children.Where(c => c.Flags > 0 && c.Attributes.ContainsKey("stemx")).ToList() : new List<MusicSymbol> { b };
+                MusicSymbol? best = null; int bestDist = int.MaxValue, bx = 0, bEnd = 0;
+                foreach (var m in members)
+                {
+                    if (m.StemUp != q.StemUp) continue;
+                    var mp = m.Attributes["stemx"].Split(',');
+                    int mx0 = int.Parse(mp[0]), mx1 = int.Parse(mp[1]), mEnd = int.Parse(mp[2]);
+                    int dist = mx0 > qx1 ? mx0 - qx1 : qx0 - mx1;
+                    if (dist < 0 || dist > 2.5 * ss || Math.Abs(mEnd - qEnd) > 0.5 * ss) continue;
+                    if (dist < bestDist) { bestDist = dist; best = m; bx = mx0 > qx1 ? mx0 : mx1; bEnd = mEnd; }
+                }
+                if (best == null) continue;
+                // the beam's ink must run from the neighbour's stem to this stem at the beam level
+                int from = Math.Min(bx, bx > qx1 ? qx1 : qx0), to = Math.Max(bx, bx > qx1 ? qx1 : qx0);
+                int band = Math.Max(1, (int)Math.Round(0.25 * ss)), cols = 0, inked = 0;
+                for (int x = from; x <= to; x++)
+                {
+                    cols++;
+                    for (int dy = -band; dy <= band; dy++)
+                    {
+                        int y = (qEnd + bEnd) / 2 + dy;
+                        if (x >= 0 && x < _ns.Width && y >= 0 && y < _ns.Height && _ns[x, y]) { inked++; break; }
+                    }
+                }
+                if (cols == 0 || inked < 0.8 * cols) continue;
+                int flags = best.Flags;
+                q.Flags = flags;
+                q.Duration = flags switch { 1 => "8th", 2 => "16th", 3 => "32nd", _ => "64th" };
+                q.Attributes["beam"] = "continued from neighbour";
+                break;
+            }
+        }
+    }
+
     /// <summary>Flags that are not connected to their stem (thin engraving, scan gaps) are attached to the nearest stem end.</summary>
     private void AttachDetachedFlags(List<MusicSymbol> syms, Staff staff)
     {
         double ss = staff.Space;
         var notes = syms.Where(s => s.Kind is SymbolKind.Note or SymbolKind.Chord && s.Flags == 0 && s.StemUp.HasValue && s.Attributes.ContainsKey("stemx")).ToList();
         if (notes.Count == 0) return;
+        // thin engravings leave the flag as a narrow spine or even a blob next to the stem end
         var cands = syms.Where(s => s.Kind == SymbolKind.Flag || ((s.Kind is SymbolKind.Unknown or SymbolKind.Text or SymbolKind.Breath or SymbolKind.Articulation or SymbolKind.Ornament)
-                                     && s.Bounds.Height >= 1.3 * ss && s.Bounds.Height <= 3.6 * ss && s.Bounds.Width >= 0.35 * ss && s.Bounds.Width <= 1.6 * ss)).ToList();
+                                     && s.Bounds.Height >= 0.9 * ss && s.Bounds.Height <= 3.6 * ss && s.Bounds.Width >= 0.12 * ss && s.Bounds.Width <= 1.6 * ss)
+                                    || (s.Kind == SymbolKind.Dot && s.Bounds.Height >= 0.3 * ss)).ToList();
         foreach (var n in notes)
         {
             var parts = n.Attributes["stemx"].Split(',');
@@ -981,7 +1050,9 @@ public sealed class SymbolAnalyzer
             int freeEndY = int.Parse(parts[2]);
             var f = cands.Where(c => c.Bounds.X0 >= stemX1 - 0.25 * ss && c.Bounds.X0 <= stemX1 + 0.9 * ss
                                      && (n.StemUp == true ? c.Bounds.Y0 - freeEndY >= -0.5 * ss && c.Bounds.Y0 - freeEndY <= 1.5 * ss
-                                                          : freeEndY - c.Bounds.Y1 >= -0.5 * ss && freeEndY - c.Bounds.Y1 <= 1.5 * ss))
+                                                          : freeEndY - c.Bounds.Y1 >= -0.5 * ss && freeEndY - c.Bounds.Y1 <= 1.5 * ss)
+                                     // a dot or a thin spine only counts when it hugs the stem end (within half a space)
+                                     && (c.Kind == SymbolKind.Flag || c.Bounds.Width >= 0.35 * ss || c.Bounds.X0 - stemX1 <= 0.5 * ss))
                          .OrderBy(c => Math.Abs(c.Bounds.X0 - stemX1)).FirstOrDefault();
             if (f == null) continue;
             n.Flags = f.Kind == SymbolKind.Flag && f.Name.Contains("16th") ? 2 : f.Kind == SymbolKind.Flag && f.Name.Contains("32nd") ? 3 : 1;
@@ -1090,7 +1161,7 @@ public sealed class SymbolAnalyzer
         double w = c.Width / ss, h = c.Height / ss;
 
         // tiny round blob: a dot (augmentation / staccato / repeat dot)
-        if (w <= 0.55 && h <= 0.55 && c.Fill > 0.55 && w >= 0.12 && h >= 0.12 && Math.Abs(w - h) < 0.3)
+        if (w <= 0.55 && h <= 0.55 && c.Fill > 0.55 && w >= 0.12 && h >= 0.12 && Math.Abs(w - h) < 0.3 && !OnStaffLine(c, staff))
         {
             sym.Kind = SymbolKind.Dot; sym.Name = "dot"; sym.Confidence = 0.8;
             return sym;
@@ -1543,7 +1614,7 @@ public sealed class SymbolAnalyzer
 
         foreach (var st in withHeads)
         {
-            st.Flags = CountFlagsOrBeams(st, c, staff);
+            st.Flags = CountFlagsOrBeams(st, c, staff, withHeads.Count == 1);
         }
         if (withHeads.Count >= 2) RepairGroup(stems, withHeads, c, staff);
         if (withHeads.Count == 0) return null;
@@ -2049,10 +2120,13 @@ public sealed class SymbolAnalyzer
         return false;
     }
 
-    private int CountFlagsOrBeams(Stem st, Component c, Staff staff)
+    private int CountFlagsOrBeams(Stem st, Component c, Staff staff, bool single = false)
     {
         double ss = staff.Space;
         int label = c.Label;
+        // beams and flags are thick bands; ledger lines crossing a stem are thinner (thin flag strokes are picked up
+        // by the detached-flag pass instead: counting them here cost durations on every synthetic set)
+        int minBand = Math.Max(3, (int)Math.Round(0.3 * ss));
         // the free end of the stem is opposite to the heads
         int yEnd = st.Up ? st.Top : st.Bottom;
         int best = 0;
@@ -2061,7 +2135,7 @@ public sealed class SymbolAnalyzer
             int dx = (int)Math.Round(off * ss);
             int x = (dx > 0 ? st.X1 : st.X0) + dx;
             if (x < c.X0 || x > c.X1) continue;
-            int bands = 0, run = 0;
+            int bands = 0, run = 0, runTop = 0;
             int yFrom = st.Up ? yEnd - (int)(0.3 * ss) : yEnd - (int)(2.6 * ss);
             int yTo = st.Up ? yEnd + (int)(2.6 * ss) : yEnd + (int)(0.3 * ss);
             // stop when reaching the head area
@@ -2070,8 +2144,12 @@ public sealed class SymbolAnalyzer
             for (int y = yFrom; y <= yTo + 1; y++)
             {
                 bool on = y >= c.Y0 && y <= c.Y1 && _cm.Labels[y * _cm.Width + x] == label;
-                if (on) run++;
-                else { if (run >= Math.Max(3, 0.3 * ss)) bands++; run = 0; }   // ledger lines crossing the stem are thinner than beams
+                if (on) { if (run == 0) runTop = y; run++; }
+                else
+                {
+                    if (run >= minBand) bands++;
+                    run = 0;
+                }
             }
             if (bands > best) best = bands;
         }
@@ -2117,16 +2195,20 @@ public sealed class SymbolAnalyzer
     {
         double ss = staff.Space;
         var notes = syms.Where(s => s.Kind is SymbolKind.Note or SymbolKind.Chord or SymbolKind.NoteGroup).SelectMany(s => s.Notes.Select(n => (sym: s, note: n))).ToList();
-        var dots = syms.Where(s => s.Kind == SymbolKind.Dot).ToList();
+        var dots = syms.Where(s => s.Kind == SymbolKind.Dot).OrderBy(s => s.Bounds.X0).ToList();
+        var dotOf = new Dictionary<Note, MusicSymbol>();
         foreach (var d in dots)
         {
-            // augmentation dot: right of a head, roughly at head height (in a space)
-            var cand = notes.Where(p => d.Bounds.CenterX > p.note.Head.X1 + 0.05 * ss && d.Bounds.CenterX < p.note.Head.X1 + 1.4 * ss && Math.Abs(d.Bounds.CenterY - p.note.HeadY) <= 0.75 * ss)
-                            .OrderBy(p => Math.Abs(d.Bounds.CenterX - p.note.Head.X1)).FirstOrDefault();
+            // augmentation dot: right of a head, roughly at head height (in a space); one per head, nearest in height,
+            // and a second dot only when it lies beside the first (double dot), not above or below it
+            var cand = notes.Where(p => d.Bounds.CenterX > p.note.Head.X1 + 0.05 * ss && d.Bounds.CenterX < p.note.Head.X1 + 1.4 * ss && Math.Abs(d.Bounds.CenterY - p.note.HeadY) <= 0.75 * ss
+                                        && (!dotOf.TryGetValue(p.note, out var prev) || (Math.Abs(prev.Bounds.CenterY - d.Bounds.CenterY) <= 0.3 * ss && d.Bounds.X0 > prev.Bounds.X1)))
+                            .OrderBy(p => Math.Abs(d.Bounds.CenterY - p.note.HeadY)).ThenBy(p => Math.Abs(d.Bounds.CenterX - p.note.Head.X1)).FirstOrDefault();
             if (cand.note != null)
             {
                 cand.note.Dots++;
                 cand.sym.Dots = Math.Max(cand.sym.Dots, cand.note.Dots);
+                dotOf[cand.note] = d;
                 syms.Remove(d);
                 continue;
             }

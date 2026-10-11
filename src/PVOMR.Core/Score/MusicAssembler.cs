@@ -17,6 +17,8 @@ public static class MusicAssembler
         public string? Title { get; set; }
         /// <summary>When set, receives the score measure built from every recognised measure (for interactive checks).</summary>
         public Dictionary<Measure, ScoreMeasure>? MeasureMap { get; set; }
+        /// <summary>Filled with MeasureMap: the staff number (1 or 2) each recognised measure became within its part.</summary>
+        public Dictionary<Measure, int>? MeasureStaff { get; set; }
     }
 
     private sealed class StaffContext
@@ -74,7 +76,7 @@ public static class MusicAssembler
                         any = true;
                         var ctx = contexts[grand ? sIdx : pi];
                         BuildMeasure(sm, m, staff, sIdx + 1, ctx, mi == 0, partMeasureCount[pi] == 0);
-                        if (options.MeasureMap != null) options.MeasureMap[m] = sm;
+                        if (options.MeasureMap != null) { options.MeasureMap[m] = sm; options.MeasureStaff ??= new(); options.MeasureStaff[m] = sIdx + 1; }
                     }
                     if (!any)
                     {

@@ -7,7 +7,8 @@ static class Diagnostics
     public static void PrintFit(PageAnalysis p, bool verbose)
     {
         var map = new Dictionary<Measure, PVOMR.Core.Score.ScoreMeasure>();
-        try { PVOMR.Core.Score.MusicAssembler.Build(new[] { p }, new PVOMR.Core.Score.MusicAssembler.Options { MeasureMap = map }); }
+        var staffOf = new Dictionary<Measure, int>();
+        try { PVOMR.Core.Score.MusicAssembler.Build(new[] { p }, new PVOMR.Core.Score.MusicAssembler.Options { MeasureMap = map, MeasureStaff = staffOf }); }
         catch (Exception ex) { Console.WriteLine($"  fit: assembler failed: {ex.Message}"); return; }
         int total = 0, ok = 0, tooLong = 0, tooShort = 0, dropped = 0, unknown = 0;
         var misfits = new List<string>();
@@ -16,7 +17,7 @@ static class Diagnostics
             {
                 total++;
                 if (!map.TryGetValue(m, out var sm)) { unknown++; continue; }
-                var f = sm.Fit;
+                var f = sm.Fit.ForStaff(staffOf.GetValueOrDefault(m, 1));
                 if (f.Expected == null) { unknown++; continue; }
                 if (f.Fits && f.Dropped == 0) { ok++; continue; }
                 if (f.Dropped > 0) dropped++; else if (f.TooLong) tooLong++; else tooShort++;

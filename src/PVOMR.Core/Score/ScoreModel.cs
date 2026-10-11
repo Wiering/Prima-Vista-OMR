@@ -49,6 +49,13 @@ public sealed class MeasureFit
     public bool Fits => Expected == null || Sums.All(s => s.Sum == Expected);
     public bool TooLong => Expected != null && Sums.Any(s => s.Sum > Expected);
     public bool TooShort => Expected != null && Sums.Any(s => s.Sum < Expected);
+    /// <summary>The same check restricted to one staff of a two-staff part (1 = upper, 2 = lower).</summary>
+    public MeasureFit ForStaff(int staffNo)
+    {
+        var f = new MeasureFit { Expected = Expected, Dropped = Dropped };
+        f.Sums.AddRange(Sums.Where(s => s.Staff == staffNo));
+        return f;
+    }
 }
 
 public sealed class ScoreMeasure

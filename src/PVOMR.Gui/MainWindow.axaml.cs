@@ -316,16 +316,20 @@ public partial class MainWindow : Window
     private void ComputeFits()
     {
         _measureMap = new Dictionary<Measure, ScoreMeasure>();
+        _measureStaff = new Dictionary<Measure, int>();
         if (_pages.Count == 0 || _file == null) { View.Fits = null; return; }
         try
         {
             var pages = _pages.OrderBy(p => p.Key).Select(p => p.Value.Analysis).ToList();
-            MusicAssembler.Build(pages, new MusicAssembler.Options { Title = Path.GetFileNameWithoutExtension(_file), MeasureMap = _measureMap });
+            MusicAssembler.Build(pages, new MusicAssembler.Options { Title = Path.GetFileNameWithoutExtension(_file), MeasureMap = _measureMap, MeasureStaff = _measureStaff });
         }
         catch (Exception ex) { Status($"duration check failed: {ex.Message}"); }
-        View.Fits = _measureMap.ToDictionary(kv => kv.Key, kv => kv.Value.Fit);
+        View.Fits = _measureMap.ToDictionary(kv => kv.Key, kv => FitOf(kv.Key));
         View.InvalidateVisual();
     }
+
+    private Dictionary<Measure, int> _measureStaff = new();
+    private MeasureFit FitOf(Measure m) => _measureMap[m].Fit.ForStaff(_measureStaff.GetValueOrDefault(m, 1));
 
     private static string Quarters(int divisions) => (divisions / (double)Score.Divisions).ToString("0.##");
 
@@ -348,7 +352,7 @@ public partial class MainWindow : Window
             if (_current != null)
                 foreach (var st in _current.Analysis.Staves)
                     foreach (var m in st.Measures)
-                        if (_measureMap.TryGetValue(m, out var sm) && (!sm.Fit.Fits || sm.Fit.Dropped > 0)) _fitItems.Add((st, m, sm.Fit));
+                        if (_measureMap.ContainsKey(m)) { var f = FitOf(m); if (!f.Fits || f.Dropped > 0) _fitItems.Add((st, m, f)); }
             FitList.ItemsSource = _fitItems.Select(f => $"{f.staff.Index + 1}.{f.measure.Index + 1}: {FitText(f.fit)}").ToList();
             int total = _current?.Analysis.Staves.Sum(s => s.Measures.Count) ?? 0;
             FitSummary.Text = total == 0 ? "" : _fitItems.Count == 0 ? $"All {total} measures fit their time signature." : $"{_fitItems.Count} of {total} measures do not add up (red: too long, orange: too short, purple: notes dropped). Click to jump.";
@@ -446,8 +450,8 @@ public partial class MainWindow : Window
                 MeasureList.ItemsSource = _measureItems.Select(x => TextReport.Describe(x, ss, false)).ToList();
             }
             MeasureList.SelectedIndex = s != null ? _measureItems.IndexOf(s) : -1;
-            MeasureFitText.Text = _selMeasure != null && _measureMap.TryGetValue(_selMeasure, out var smFit)
-                ? $"Measure {_selMeasure.Staff.Index + 1}.{_selMeasure.Index + 1}: {FitText(smFit.Fit)}" : "";
+            MeasureFitText.Text = _selMeasure != null && _measureMap.ContainsKey(_selMeasure)
+                ? $"Measure {_selMeasure.Staff.Index + 1}.{_selMeasure.Index + 1}: {FitText(FitOf(_selMeasure))}" : "";
             UpdateFitList();
             CorrectionsInfo.Text = _store == null ? "" : _store.Count == 0
                 ? "No corrections yet. They are saved next to the score and replayed when a page is recognised again."

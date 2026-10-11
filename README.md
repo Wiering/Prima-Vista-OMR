@@ -77,7 +77,10 @@ staff-less binary image.
    is refined at full resolution and stored as a polyline, so curved book scans work. Candidates
    are validated by line continuity, which rejects equally spaced text lines.
 4. **Staff removal, bar lines, systems** (`StaffRemover`, `BarlineDetector`, `SystemBuilder`):
-   lines are erased where no symbol crosses them; bar lines are thin vertical runs spanning the
+   lines are erased where no symbol crosses them: a vertical ink run through the line up to one and a half
+   times its thickness is the line itself, a run up to twice the thickness is erased only when its neighbouring
+   columns are not thick as well (a beam or a rest lying along the line survives, the line's wobble does not),
+   and thicker runs are symbols; bar lines are thin vertical runs spanning the
    staff height that stay thin over their whole length (stems with heads, flags or beams are
    rejected); bar line pairs and repeat dots give the kind; staves are grouped into systems by
    spanning bar lines and by vertical connectors (brackets, braces, system bar lines) left of
@@ -103,7 +106,11 @@ staff-less binary image.
    and different digits over one beamed group are fingerings rather than tuplet numbers. Beams are counted only
    from bands at least 0.3 spaces thick (ledger lines crossing a stem are thinner); on small staves a rest-shaped
    component the classifier calls a fragment is still template matched, and a solid bar hanging from or sitting on
-   a staff line is a whole or half rest even when the classifier is unsure.
+   a staff line is a whole or half rest even when the classifier is unsure. Flagged rests must be tall (an 8th rest
+   spans two spaces, a quarter rest nearly three), augmentation and staccato dots never sit on a staff line (a blob
+   on a line is a line remnant), a chord gets one dot per head with double dots only side by side, a quarter note
+   whose stem end lies on a neighbour's beam with the beam ink reaching its stem takes that beam count, and thin
+   flag spines or blobs next to a stem end reattach as flags.
    Everything else is classified by template matching against glyphs rendered from the SMuFL
    fonts in `D:\OMR\fonts` (Bravura, Leland, Gootville, Finale Maestro, MScore, Petaluma, Eugene,
    MuseJazz): the templates and the component are normalised to 32×32 bit masks and compared with
@@ -161,7 +168,10 @@ Effect on the 12 test pieces (trained on 72 other pieces in Leland, Bravura and 
 | clean, both models, after the second round of group repairs | 88% | 99.2% | 98.9% | 85% / 85% |
 | degraded, both models, after the second round of group repairs | 78% | 97.3% | 97.1% | 81% / 81% |
 
-Hard set after these rounds: 190/192 measures, 62% exact, note P 90.8% / R 91.0%; tuplet set 99.2% / 99.2%.
+| clean, both models, after the staff-remover and piano-page round | 89% | 99.5% | 99.1% | 85% / 85% |
+| degraded, both models, after the staff-remover and piano-page round | 81% | 97.9% | 97.6% | 82% / 83% |
+
+Hard set after these rounds: 190/192 measures, 63% exact, note P 90.8% / R 91.1%; tuplet set 99.6% / 99.6%.
 
 The key/time pass helps the synthetic pages too because a misread key signature changes every pitch of a staff:
 keys and time signatures are now right on all 12 clean, degraded and hard pieces and the 8 tuplet pieces
@@ -298,9 +308,12 @@ Baseline (12 generated pieces, 192 measures), 2026-10-10:
 
 * `--fit` prints per page how many measures add up to their time signature (the assembler's own check) and, with
   `--verbose`, lists the measures that do not with their summed durations. It needs no ground truth, so it ranks
-  real pages by recognition quality: Bach Cello Suite No 1 pages 3 to 6 read 49%, 82%, 71% and 75% of measures
-  adding up (the Prelude pages 1 and 2 with ground truth: 100% and 92% exact), Beethoven 5 pages 7 to 9 (15 px
-  staves) 87%, 79% and 82%. When a page carries no time signature the length is inferred from the most common
+  real pages by recognition quality (for a two-staff part each staff is checked on its own): Bach Cello Suite No 1
+  pages 3 to 6 read 46%, 82%, 69% and 75% of measures adding up (the Prelude pages 1 and 2 with ground truth:
+  100% and 92% exact), Beethoven 5 pages 7 to 9 (15 px staves) 88%, 82% and 85%, Bartok "For Children" page 3
+  (thick-lined piano scan) 86%. A scan of page 2 of the 63 scores added on 2026-10-11 ran without a failure;
+  the weakest pages are solo piano (Gounod Pastorale 49%, Fauré Ballade without a time signature on the page) and
+  the Handel Chaconne, whose upper staff is in 9/8 against 3/4 below (per-staff time signatures are not supported). When a page carries no time signature the length is inferred from the most common
   measure sum, measures holding only a whole rest excluded (they take any length).
 * `--diag` prints, per staff, the modelled line positions against the actual ink runs at three x positions.
 * `PVOMR_STRIPDUMP=<strip index>` (with `--verbose`) prints the candidate line segments and 5-line groups of
