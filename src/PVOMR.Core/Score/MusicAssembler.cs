@@ -484,9 +484,10 @@ public static class MusicAssembler
         bool twoVoices = false;
         double ss = staff.Space;
         int ups = notes.Count(n => n.StemUp == true), downs = notes.Count(n => n.StemUp == false);
-        if (ups >= 2 && downs >= 2)
+        // an up-stem and a down-stem note at the same x are two voices (also a unison with stems both ways), adjacent ones are not
+        if (ups >= 1 && downs >= 1)
             foreach (var a in notes.Where(n => n.StemUp == true))
-                if (notes.Any(b => b.StemUp == false && Math.Abs(b.X - a.X) < 0.6 * ss)) { twoVoices = true; break; }   // simultaneous, not merely adjacent
+                if (notes.Any(b => b.StemUp == false && Math.Abs(b.X - a.X) < 0.6 * ss)) { twoVoices = true; break; }
         int baseVoice = (staffNo - 1) * 2 + 1;
         foreach (var e in events)
         {
@@ -507,7 +508,9 @@ public static class MusicAssembler
         // no time signature recognised anywhere: infer it from the most common measure length
         if (part.Measures.Count >= 3 && !part.Measures.Any(m => m.Time != null))
         {
-            var sums = part.Measures.Select(m => m.Events.Where(e => e.Voice == 1).Sum(e => e.Duration)).Where(x => x > 0).ToList();
+            // measures holding only a whole rest take any length and say nothing about the time signature
+            var sums = part.Measures.Where(m => !(m.Events.Count == 1 && m.Events[0].IsRest && m.Events[0].Type == "whole"))
+                                    .Select(m => m.Events.Where(e => e.Voice == 1).Sum(e => e.Duration)).Where(x => x > 0).ToList();
             if (sums.Count >= 3)
             {
                 int mode = sums.GroupBy(x => x).OrderByDescending(g => g.Count()).ThenByDescending(g => g.Key).First().Key;

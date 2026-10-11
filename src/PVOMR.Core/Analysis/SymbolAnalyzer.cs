@@ -51,7 +51,8 @@ public sealed class SymbolAnalyzer
         double ss = staff.Space;
         double h = c.Height / ss;
         string label = p.Label; double prob = p.Probability;
-        if (prob < 0.5) return false;
+        bool barRest = label is "rest_whole" or "rest_half" && prob >= 0.3 && WholeHalfRestPlausible(c, staff) && c.Fill >= 0.85 && c.Height <= 0.9 * ss && RestOnLine(c, staff) != null;
+        if (prob < 0.5 && !barRest) return false;
         sym.Confidence = Math.Round(prob, 2);
         if (_opt.Verbose) sym.Attributes["cnn"] = $"{p.Label} {p.Probability:0.00} / {p.Second} {p.SecondProbability:0.00}";
         switch (label)
@@ -75,7 +76,8 @@ public sealed class SymbolAnalyzer
                 if (cy < top - 1.0 * ss || cy > bot + 1.0 * ss) return false;
                 // whole and half rests are solid bars inside the staff; ledger-line remnants below or above it are not rests
                 if (label is "rest_whole" or "rest_half" && !WholeHalfRestPlausible(c, staff)) return false;
-                if (prob < 0.6) return false;
+                if (prob < 0.6 && !barRest) return false;
+                if (barRest) label = RestOnLine(c, staff)!;
                 sym.Kind = SymbolKind.Rest; sym.Name = label switch { "rest_whole" => "restWhole", "rest_half" => "restHalf", "rest_quarter" => "restQuarter", "rest_8th" => "rest8th", _ => "rest16th" };
                 PostProcessTemplate(sym, c, staff, false);
                 return true;
@@ -124,6 +126,17 @@ public sealed class SymbolAnalyzer
             case "beam": sym.Kind = SymbolKind.Beam; sym.Name = "beam"; return true;
             default: return false;   // fragment, composite, other
         }
+    }
+
+    /// <summary>"rest_whole" when the bar hangs from a staff line, "rest_half" when it sits on one, else null.</summary>
+    private static string? RestOnLine(Component c, Staff staff)
+    {
+        double stepTop = staff.StepAt(c.CenterX, c.Y0), stepBot = staff.StepAt(c.CenterX, c.Y1 + 1);
+        bool topOnLine = Math.Abs(stepTop - Math.Round(stepTop)) < 0.3 && ((int)Math.Round(stepTop)) % 2 == 0 && stepTop >= -0.5 && stepTop <= 8.5;
+        bool botOnLine = Math.Abs(stepBot - Math.Round(stepBot)) < 0.3 && ((int)Math.Round(stepBot)) % 2 == 0 && stepBot >= -0.5 && stepBot <= 8.5;
+        if (topOnLine && !botOnLine) return "rest_whole";
+        if (botOnLine && !topOnLine) return "rest_half";
+        return null;
     }
 
     /// <summary>Whole and half rests are solid bars at least 0.8 x 0.4 staff spaces inside the staff; slur pieces sliced by the staff lines and ledger-line remnants are thinner or outside.</summary>
@@ -1157,7 +1170,7 @@ public sealed class SymbolAnalyzer
         }
 
         // 0b. whole / half rests: a solid bar hanging below or sitting on a staff line
-        if (w >= 0.8 && w <= 2.0 && h >= 0.4 && h <= 0.8 && c.Fill > 0.75)
+        if (w >= 0.8 && w <= 2.0 && h >= 0.4 && (h <= 0.8 && c.Fill > 0.75 || h <= 0.9 && c.Fill > 0.85))
         {
             double stepTop = staff.StepAt(c.CenterX, c.Y0), stepBot = staff.StepAt(c.CenterX, c.Y1 + 1);
             bool topOnLine = Math.Abs(stepTop - Math.Round(stepTop)) < 0.3 && ((int)Math.Round(stepTop)) % 2 == 0 && stepTop >= -0.5 && stepTop <= 8.5;
@@ -1221,6 +1234,18 @@ public sealed class SymbolAnalyzer
             if (p.Label is "fragment" or "composite" or "other" && p.Probability >= 0.6)
             {
                 if (TryTupletDigit(sym, c, staff)) return sym;   // the models were not trained on tuplet digits
+                // on small staves the classifier is unsure about rests: a rest-shaped component inside the staff is still template matched
+                bool restShaped = ss < 18 && w >= 0.6 && w <= 1.5 && h >= 2.2 && h <= 3.8 && c.CenterY > staff.TopY(c.CenterX) - 0.5 * ss && c.CenterY < staff.BottomY(c.CenterX) + 0.5 * ss;
+                if (restShaped && _lib != null)
+                {
+                    var mr = _lib.Match(_cm.Mask(c), c.Width, c.Height, ss, 0.4, t => t.Kind == SymbolKind.Rest);
+                    if (mr.Count > 0 && mr[0].Score >= 0.6)
+                    {
+                        sym.Kind = SymbolKind.Rest; sym.Name = mr[0].Template.Name; sym.Confidence = Math.Round(mr[0].Score, 2);
+                        PostProcessTemplate(sym, c, staff, false);
+                        return sym;
+                    }
+                }
                 // trust the rejection: no template matching, straight to the shape heuristics
                 goto heuristics;
             }
@@ -2046,7 +2071,7 @@ public sealed class SymbolAnalyzer
             {
                 bool on = y >= c.Y0 && y <= c.Y1 && _cm.Labels[y * _cm.Width + x] == label;
                 if (on) run++;
-                else { if (run >= Math.Max(2, 0.2 * ss)) bands++; run = 0; }
+                else { if (run >= Math.Max(3, 0.3 * ss)) bands++; run = 0; }   // ledger lines crossing the stem are thinner than beams
             }
             if (bands > best) best = bands;
         }

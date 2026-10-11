@@ -100,7 +100,10 @@ staff-less binary image.
    needs a very confident detector. A hollow head with beams found with little confidence is dropped (ledger
    lines around a stem), hollow heads outside the staff need a ledger line, whole and half rests must be solid
    bars at least 0.4 spaces thick inside the staff (slurs sliced by the staff lines and ledger remnants are not),
-   and different digits over one beamed group are fingerings rather than tuplet numbers.
+   and different digits over one beamed group are fingerings rather than tuplet numbers. Beams are counted only
+   from bands at least 0.3 spaces thick (ledger lines crossing a stem are thinner); on small staves a rest-shaped
+   component the classifier calls a fragment is still template matched, and a solid bar hanging from or sitting on
+   a staff line is a whole or half rest even when the classifier is unsure.
    Everything else is classified by template matching against glyphs rendered from the SMuFL
    fonts in `D:\OMR\fonts` (Bravura, Leland, Gootville, Finale Maestro, MScore, Petaluma, Eugene,
    MuseJazz): the templates and the component are normalised to 32×32 bit masks and compared with
@@ -157,6 +160,8 @@ Effect on the 12 test pieces (trained on 72 other pieces in Leland, Bravura and 
 | degraded, both models, after the beamed-group repairs | 68% | 91.8% | 97.3% | 80% / 81% |
 | clean, both models, after the second round of group repairs | 88% | 99.2% | 98.9% | 85% / 85% |
 | degraded, both models, after the second round of group repairs | 78% | 97.3% | 97.1% | 81% / 81% |
+
+Hard set after these rounds: 190/192 measures, 62% exact, note P 90.8% / R 91.0%; tuplet set 99.2% / 99.2%.
 
 The key/time pass helps the synthetic pages too because a misread key signature changes every pitch of a staff:
 keys and time signatures are now right on all 12 clean, degraded and hard pieces and the 8 tuplet pieces
@@ -293,8 +298,10 @@ Baseline (12 generated pieces, 192 measures), 2026-10-10:
 
 * `--fit` prints per page how many measures add up to their time signature (the assembler's own check) and, with
   `--verbose`, lists the measures that do not with their summed durations. It needs no ground truth, so it ranks
-  real pages by recognition quality: Bach Cello Suite No 1 pages 3 to 6 read 51%, 80%, 71% and 75% of measures
-  adding up (the Prelude pages 1 and 2 with ground truth: 100% and 92% exact).
+  real pages by recognition quality: Bach Cello Suite No 1 pages 3 to 6 read 49%, 82%, 71% and 75% of measures
+  adding up (the Prelude pages 1 and 2 with ground truth: 100% and 92% exact), Beethoven 5 pages 7 to 9 (15 px
+  staves) 87%, 79% and 82%. When a page carries no time signature the length is inferred from the most common
+  measure sum, measures holding only a whole rest excluded (they take any length).
 * `--diag` prints, per staff, the modelled line positions against the actual ink runs at three x positions.
 * `PVOMR_STRIPDUMP=<strip index>` (with `--verbose`) prints the candidate line segments and 5-line groups of
   one detection strip; `PVOMR_ROWS=<y0>-<y1>` additionally prints the thin-ink row projection of that strip.
