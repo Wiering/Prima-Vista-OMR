@@ -180,6 +180,14 @@ opens an Avalonia desktop application for checking and correcting the recognitio
 * every edit re-runs the musical interpretation of the page (pitch names, keys, times), so the labels update at
   once; "Export MusicXML…" assembles all pages recognised in this session (pages are analysed when first shown
   and cached). User-added or corrected notes are never dropped by the measure-fitting step of the assembler;
+* the duration check tints every measure whose recognised durations do not add up to the time signature (red:
+  too long, orange: too short, purple: the assembler had to drop uncertain notes to make it fit) and lists them
+  under "Measures to check"; clicking an entry jumps to the measure. The check is the assembler's own validation,
+  run over all pages recognised so far, so it is exactly what the export would do;
+* Undo (Ctrl+Z) takes back the last correction of the page (the page is recognised again and the remaining log
+  replayed); Delete removes the selected symbol, the arrow keys move a single note head a step, Page Up/Down turn
+  pages, Escape returns to Select mode; "Recognise all pages" analyses the remaining pages so the export covers
+  the whole file;
 * corrections are saved automatically to `<score>.pvomr.json` next to the score as an edit log (staff overrides
   plus one entry per edit: delete, set, head, removeHead, add, move) and replayed whenever a page is recognised
   again, including in a later session; a symbol is identified by its staff and the bounds it had at recognition

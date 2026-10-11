@@ -1,4 +1,5 @@
 using Avalonia.Controls;
+using Avalonia.Input;
 using Avalonia.Platform.Storage;
 using Avalonia.Threading;
 using PVOMR.Core.Model;
@@ -23,6 +24,8 @@ public partial class MainWindow : Window
     private Staff? _selStaff;
     private Measure? _selMeasure;
     private List<MusicSymbol> _measureItems = new();
+    private List<(Staff staff, Measure measure, MeasureFit fit)> _fitItems = new();
+    private Dictionary<Measure, ScoreMeasure> _measureMap = new();
     private bool _busy, _updating;
     private string _exportWarnings = "";
 
@@ -41,6 +44,19 @@ public partial class MainWindow : Window
         PrevButton.Click += async (_, _) => await GoToPageAsync(_page - 1);
         NextButton.Click += async (_, _) => await GoToPageAsync(_page + 1);
         RecognizeButton.Click += async (_, _) => await AnalyzeAsync(_page, force: true);
+        RecognizeAllButton.Click += async (_, _) => await RecognizeAllAsync();
+        UndoButton.Click += async (_, _) => await UndoAsync();
+        FitsCheck.IsCheckedChanged += (_, _) => { View.ShowFits = FitsCheck.IsChecked == true; View.InvalidateVisual(); };
+        FitList.SelectionChanged += (_, _) =>
+        {
+            if (_updating || FitList.SelectedIndex < 0 || FitList.SelectedIndex >= _fitItems.Count) return;
+            var (staff, measure, _) = _fitItems[FitList.SelectedIndex];
+            _selSym = null; _selStaff = staff; _selMeasure = measure;
+            View.Select(null, staff);
+            View.EnsureVisible(new Rect((int)measure.X0, (int)(staff.TopY(measure.X0) - 2 * staff.Space), (int)measure.X1, (int)(staff.BottomY(measure.X0) + 2 * staff.Space)));
+            UpdateInspector(measure: measure);
+        };
+        KeyDown += OnKey;
         ExportButton.Click += async (_, _) => await ExportAsync();
         FitButton.Click += (_, _) => View.FitPage();
         FitWidthButton.Click += (_, _) => View.FitWidth();
@@ -159,6 +175,7 @@ public partial class MainWindow : Window
         _current = result;
         _selSym = null; _selStaff = null; _selMeasure = null;
         View.SetPage(result, fit);
+        ComputeFits();
         UpdateInspector();
         UpdateNotes();
         UpdateButtons();
@@ -287,14 +304,104 @@ public partial class MainWindow : Window
         _current.Modified = true;
         RecognitionEngine.Reinterpret(_current);
         View.SetAnalysis(_current.Analysis);
+        ComputeFits();
         UpdateInspector();
         UpdateNotes();
         Status($"page re-interpreted; {_store?.Count ?? 0} correction(s) saved to {Path.GetFileName(_store?.Path ?? "")}");
     }
 
+    // ------------------------------------------------------------------ duration check, undo, batch, keys
+
+    /// <summary>Assembles the pages recognised so far (cheap) to learn, per measure, whether its durations fit the time signature.</summary>
+    private void ComputeFits()
+    {
+        _measureMap = new Dictionary<Measure, ScoreMeasure>();
+        if (_pages.Count == 0 || _file == null) { View.Fits = null; return; }
+        try
+        {
+            var pages = _pages.OrderBy(p => p.Key).Select(p => p.Value.Analysis).ToList();
+            MusicAssembler.Build(pages, new MusicAssembler.Options { Title = Path.GetFileNameWithoutExtension(_file), MeasureMap = _measureMap });
+        }
+        catch (Exception ex) { Status($"duration check failed: {ex.Message}"); }
+        View.Fits = _measureMap.ToDictionary(kv => kv.Key, kv => kv.Value.Fit);
+        View.InvalidateVisual();
+    }
+
+    private static string Quarters(int divisions) => (divisions / (double)Score.Divisions).ToString("0.##");
+
+    private static string FitText(MeasureFit fit)
+    {
+        if (fit.Expected == null) return "no time signature known";
+        var parts = fit.Sums.Select(s => $"{(fit.Sums.Count > 1 ? $"v{s.Voice}: " : "")}{Quarters(s.Sum)}");
+        string sums = fit.Sums.Count == 0 ? "empty" : string.Join(", ", parts);
+        if (fit.Dropped > 0) return $"{sums} of {Quarters(fit.Expected.Value)} quarters: {fit.Dropped} uncertain note(s) dropped to make it fit, check them";
+        string state = fit.Fits ? "fits" : fit.TooLong ? "too long" : "too short";
+        return $"{sums} of {Quarters(fit.Expected.Value)} quarters: {state}";
+    }
+
+    private void UpdateFitList()
+    {
+        _updating = true;
+        try
+        {
+            _fitItems = new();
+            if (_current != null)
+                foreach (var st in _current.Analysis.Staves)
+                    foreach (var m in st.Measures)
+                        if (_measureMap.TryGetValue(m, out var sm) && (!sm.Fit.Fits || sm.Fit.Dropped > 0)) _fitItems.Add((st, m, sm.Fit));
+            FitList.ItemsSource = _fitItems.Select(f => $"{f.staff.Index + 1}.{f.measure.Index + 1}: {FitText(f.fit)}").ToList();
+            int total = _current?.Analysis.Staves.Sum(s => s.Measures.Count) ?? 0;
+            FitSummary.Text = total == 0 ? "" : _fitItems.Count == 0 ? $"All {total} measures fit their time signature." : $"{_fitItems.Count} of {total} measures do not add up (red: too long, orange: too short, purple: notes dropped). Click to jump.";
+        }
+        finally { _updating = false; }
+    }
+
+    private async Task UndoAsync()
+    {
+        if (_store == null || _busy) return;
+        if (!_store.UndoLast(_page)) { Status("nothing to undo on this page"); return; }
+        await AnalyzeAsync(_page, force: true);
+        Status($"undone; {_store.Count} correction(s) remain");
+    }
+
+    private async Task RecognizeAllAsync()
+    {
+        if (_file == null || _busy) return;
+        for (int p = 1; p <= _pageCount; p++)
+        {
+            if (_pages.ContainsKey(p)) continue;
+            _page = p; PageLabel.Text = $"page {_page} / {_pageCount}";
+            await AnalyzeAsync(p, force: false);
+        }
+        Status($"all {_pageCount} pages recognised; export covers the whole file");
+    }
+
+    private async void OnKey(object? sender, KeyEventArgs e)
+    {
+        if (e.Source is TextBox || _busy) return;
+        switch (e.Key)
+        {
+            case Key.Delete when _selSym != null:
+            {
+                var s = _selSym; _selSym = null; View.Select(null, _selStaff);
+                Edit(new SymbolEdit { Op = "delete" }, s); e.Handled = true; break;
+            }
+            case Key.Up or Key.Down when _selSym != null && CorrectionStore.Heads(_selSym).Count == 1:
+            {
+                var head = CorrectionStore.Heads(_selSym)[0];
+                Edit(new SymbolEdit { Op = "head", Head = 0, Step = head.Step + (e.Key == Key.Up ? 1 : -1) }, _selSym); e.Handled = true; break;
+            }
+            case Key.Z when e.KeyModifiers.HasFlag(KeyModifiers.Control):
+                await UndoAsync(); e.Handled = true; break;
+            case Key.PageDown: await GoToPageAsync(_page + 1); e.Handled = true; break;
+            case Key.PageUp: await GoToPageAsync(_page - 1); e.Handled = true; break;
+            case Key.Escape: SelectMode.IsChecked = true; e.Handled = true; break;
+        }
+    }
+
     // ------------------------------------------------------------------ inspector
 
-    private void UpdateInspector(bool keepList = false)
+    private void UpdateInspector(bool keepList = false, Measure? measure = null)
     {
         _updating = true;
         try
@@ -333,12 +440,15 @@ public partial class MainWindow : Window
 
             if (!keepList)
             {
-                _selMeasure = s != null && staff != null ? staff.Measures.FirstOrDefault(m => m.Symbols.Contains(s) || m.Symbols.Any(p => p.Children.Contains(s))) : null;
+                _selMeasure = measure ?? (s != null && staff != null ? staff.Measures.FirstOrDefault(m => m.Symbols.Contains(s) || m.Symbols.Any(p => p.Children.Contains(s))) : null);
                 _measureItems = _selMeasure?.Symbols.OrderBy(x => x.Bounds.X0).ToList() ?? new List<MusicSymbol>();
                 double ss = staff?.Space ?? 20;
                 MeasureList.ItemsSource = _measureItems.Select(x => TextReport.Describe(x, ss, false)).ToList();
             }
             MeasureList.SelectedIndex = s != null ? _measureItems.IndexOf(s) : -1;
+            MeasureFitText.Text = _selMeasure != null && _measureMap.TryGetValue(_selMeasure, out var smFit)
+                ? $"Measure {_selMeasure.Staff.Index + 1}.{_selMeasure.Index + 1}: {FitText(smFit.Fit)}" : "";
+            UpdateFitList();
             CorrectionsInfo.Text = _store == null ? "" : _store.Count == 0
                 ? "No corrections yet. They are saved next to the score and replayed when a page is recognised again."
                 : $"{_store.Count} correction(s) saved in {Path.GetFileName(_store.Path)}" + (_store.HasPage(_page) ? " (this page has some)" : "");
@@ -384,6 +494,8 @@ public partial class MainWindow : Window
         PrevButton.IsEnabled = hasFile && _page > 1;
         NextButton.IsEnabled = hasFile && _page < _pageCount;
         RecognizeButton.IsEnabled = hasFile;
+        RecognizeAllButton.IsEnabled = hasFile && _pages.Count < _pageCount;
+        UndoButton.IsEnabled = hasFile && _store != null && _store.HasPage(_page);
         ExportButton.IsEnabled = _pages.Count > 0 && !_busy;
         OpenButton.IsEnabled = !_busy;
         DiscardPageButton.IsEnabled = hasFile && _store != null && _store.HasPage(_page);

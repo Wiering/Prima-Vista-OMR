@@ -49,6 +49,10 @@ public sealed class PageView : Control
         }
     }
 
+    /// <summary>Duration check per measure (from the assembler); measures that do not fit are tinted.</summary>
+    public Dictionary<Measure, PVOMR.Core.Score.MeasureFit>? Fits { get; set; }
+    public bool ShowFits { get; set; } = true;
+
     public bool ShowStaffLines { get; set; } = true;
     public bool ShowBoxes { get; set; } = true;
     public bool ShowLabels { get; set; } = true;
@@ -262,6 +266,20 @@ public sealed class PageView : Control
     {
         var a = _analysis!;
         double thin = 1.0 / _zoom;
+        if (ShowFits && Fits != null)
+        {
+            var longBrush = new SolidColorBrush(Color.FromArgb(55, 255, 0, 0));
+            var shortBrush = new SolidColorBrush(Color.FromArgb(55, 255, 160, 0));
+            var droppedBrush = new SolidColorBrush(Color.FromArgb(45, 160, 0, 200));
+            foreach (var st in a.Staves)
+                foreach (var m in st.Measures)
+                {
+                    if (!Fits.TryGetValue(m, out var fit) || (fit.Fits && fit.Dropped == 0)) continue;
+                    var brush = fit.TooLong ? longBrush : fit.TooShort ? shortBrush : droppedBrush;
+                    double top = st.TopY(m.X0) - 2.5 * st.Space, bottom = st.BottomY(m.X0) + 2.5 * st.Space;
+                    context.FillRectangle(brush, new Avalonia.Rect(m.X0, top, Math.Max(1, m.X1 - m.X0), bottom - top));
+                }
+        }
         if (ShowStaffLines)
         {
             var pen = new Pen(new SolidColorBrush(Color.FromArgb(150, 255, 0, 0)), thin);

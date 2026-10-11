@@ -15,6 +15,8 @@ public static class MusicAssembler
         /// <summary>null = auto (two staves per system with treble+bass become one two-staff part).</summary>
         public bool? GrandStaff { get; set; }
         public string? Title { get; set; }
+        /// <summary>When set, receives the score measure built from every recognised measure (for interactive checks).</summary>
+        public Dictionary<Measure, ScoreMeasure>? MeasureMap { get; set; }
     }
 
     private sealed class StaffContext
@@ -72,6 +74,7 @@ public static class MusicAssembler
                         any = true;
                         var ctx = contexts[grand ? sIdx : pi];
                         BuildMeasure(sm, m, staff, sIdx + 1, ctx, mi == 0, partMeasureCount[pi] == 0);
+                        if (options.MeasureMap != null) options.MeasureMap[m] = sm;
                     }
                     if (!any)
                     {
@@ -247,26 +250,28 @@ public static class MusicAssembler
     private static void Validate(ScoreMeasure sm, TimeSpec time, int staffNo)
     {
         int expected = time.Length;
+        sm.Fit.Expected = expected;
         foreach (var voice in sm.Events.Where(e => e.Staff == staffNo).GroupBy(e => e.Voice).ToList())
         {
             var evs = voice.ToList();
             int sum = evs.Sum(e => e.Duration);
+            if (evs.Count == 1 && evs[0].IsRest && evs[0].Type == "whole") { evs[0].Duration = expected; evs[0].MeasureRest = true; sm.Fit.Sums.Add((staffNo, voice.Key, expected)); continue; }
+            sm.Fit.Sums.Add((staffNo, voice.Key, sum));
             if (sum == expected) continue;
-            if (evs.Count == 1 && evs[0].IsRest && evs[0].Type == "whole") { evs[0].Duration = expected; evs[0].MeasureRest = true; continue; }
             if (sum > expected)
             {
                 var uncertain = evs.Where(e => e.Uncertain).ToList();
                 ScoreEvent? drop1 = uncertain.FirstOrDefault(u => sum - u.Duration == expected);
                 if (drop1 != null)
                 {
-                    sm.Events.Remove(drop1);
+                    sm.Events.Remove(drop1); sm.Fit.Dropped++;
                     sm.Warnings.Add($"staff {staffNo} voice {voice.Key}: dropped uncertain {drop1} at x={drop1.X} to fit {time}");
                     continue;
                 }
                 var pair = uncertain.SelectMany((a, i) => uncertain.Skip(i + 1).Select(b => (a, b))).FirstOrDefault(p => sum - p.a.Duration - p.b.Duration == expected);
                 if (pair.a != null)
                 {
-                    sm.Events.Remove(pair.a); sm.Events.Remove(pair.b);
+                    sm.Events.Remove(pair.a); sm.Events.Remove(pair.b); sm.Fit.Dropped += 2;
                     sm.Warnings.Add($"staff {staffNo} voice {voice.Key}: dropped uncertain {pair.a} and {pair.b} to fit {time}");
                     continue;
                 }

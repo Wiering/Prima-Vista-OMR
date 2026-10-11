@@ -101,6 +101,18 @@ public sealed class CorrectionStore
 
     public void Clear(int page) { _file.Pages.RemoveAll(p => p.Page == page); Save(); }
 
+    /// <summary>Removes the most recent entry of a page (the last edit, else the last staff override). Returns false when there is none.</summary>
+    public bool UndoLast(int page)
+    {
+        var pc = _file.Pages.FirstOrDefault(p => p.Page == page);
+        if (pc == null) return false;
+        if (pc.Edits.Count > 0) pc.Edits.RemoveAt(pc.Edits.Count - 1);
+        else if (pc.Staves.Count > 0) pc.Staves.RemoveAt(pc.Staves.Count - 1);
+        else return false;
+        Save();
+        return true;
+    }
+
     public void Save()
     {
         _file.Pages.RemoveAll(p => p.Edits.Count == 0 && p.Staves.Count == 0);

@@ -32,6 +32,8 @@
       <TextBlock Classes="lbl" Text="DPI" Margin="12,0,4,0"/>
       <NumericUpDown Name="DpiBox" Minimum="100" Maximum="900" Increment="50" Value="300" Width="120" FormatString="0"/>
       <Button Name="RecognizeButton" Classes="tool" Content="Recognise again"/>
+      <Button Name="RecognizeAllButton" Classes="tool" Content="Recognise all pages"/>
+      <Button Name="UndoButton" Classes="tool" Content="Undo (Ctrl+Z)"/>
       <Button Name="ExportButton" Classes="tool" Content="Export MusicXML…"/>
       <Border Width="1" Background="#808080" Margin="6,2"/>
       <RadioButton Name="SelectMode" GroupName="mode" Content="Select" IsChecked="True"/>
@@ -43,6 +45,7 @@
       <CheckBox Name="BarlinesCheck" Content="Bar lines" IsChecked="True"/>
       <CheckBox Name="BoxesCheck" Content="Boxes" IsChecked="True"/>
       <CheckBox Name="LabelsCheck" Content="Labels" IsChecked="True"/>
+      <CheckBox Name="FitsCheck" Content="Duration check" IsChecked="True"/>
       <Border Width="1" Background="#808080" Margin="6,2"/>
       <Button Name="FitButton" Classes="tool" Content="Fit"/>
       <Button Name="FitWidthButton" Classes="tool" Content="Fit width"/>
@@ -94,7 +97,12 @@
           <TextBlock Name="CorrectionsInfo" TextWrapping="Wrap" Text="Corrections are saved next to the score and replayed when the page is recognised again."/>
           <Button Name="DiscardPageButton" Content="Discard this page's corrections"/>
 
+          <TextBlock Classes="h" Text="Measures to check"/>
+          <TextBlock Name="FitSummary" TextWrapping="Wrap" Text=""/>
+          <ListBox Name="FitList" Height="150" FontFamily="Consolas,Courier New,monospace" FontSize="11"/>
+
           <TextBlock Classes="h" Text="Symbols in this measure"/>
+          <TextBlock Name="MeasureFitText" TextWrapping="Wrap" Text=""/>
           <ListBox Name="MeasureList" Height="230" FontFamily="Consolas,Courier New,monospace" FontSize="11"/>
 
           <TextBlock Classes="h" Text="Notes and warnings"/>

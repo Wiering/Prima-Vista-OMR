@@ -38,8 +38,22 @@ public sealed record TimeSpec(int Beats, int BeatType, string? Symbol = null)
 
 public enum BarStyle { Regular, LightLight, LightHeavy, HeavyLight, Heavy, None }
 
+/// <summary>How the recognised durations of one measure compare with the time signature (per staff and voice).</summary>
+public sealed class MeasureFit
+{
+    /// <summary>Expected length in divisions, null when no time signature is known.</summary>
+    public int? Expected { get; set; }
+    /// <summary>Summed durations per (staff, voice) before any uncertain event was dropped.</summary>
+    public List<(int Staff, int Voice, int Sum)> Sums { get; } = new();
+    public int Dropped { get; set; }
+    public bool Fits => Expected == null || Sums.All(s => s.Sum == Expected);
+    public bool TooLong => Expected != null && Sums.Any(s => s.Sum > Expected);
+    public bool TooShort => Expected != null && Sums.Any(s => s.Sum < Expected);
+}
+
 public sealed class ScoreMeasure
 {
+    public MeasureFit Fit { get; } = new();
     public int Number { get; set; }
     public bool Implicit { get; set; }                 // pickup / partial measure
     public ClefSpec?[] Clefs { get; set; } = new ClefSpec?[2];   // per staff, only when (re)stated in this measure
