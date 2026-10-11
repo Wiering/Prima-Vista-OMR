@@ -12,6 +12,8 @@ public sealed class PageResult
     public required PageAnalysis Analysis { get; init; }
     public required AnalysisContext Context { get; init; }
     public bool Modified { get; set; }
+    /// <summary>Bounds of every symbol when it was first seen (recognition or addition): the identity used by the correction log.</summary>
+    public Dictionary<MusicSymbol, Rect> Origins { get; } = new();
 }
 
 /// <summary>Wraps the PVOMR.Core pipeline for the GUI: models and fonts are loaded once, pages are analysed on demand.</summary>
@@ -44,7 +46,9 @@ public sealed class RecognitionEngine
         }
         else image = ImageIO.Load(file);
         var analysis = _analyzer.Analyze(image, file, pageNumber, effectiveDpi, rerender, out var ctx);
-        return new PageResult { PageNumber = pageNumber, Analysis = analysis, Context = ctx };
+        var result = new PageResult { PageNumber = pageNumber, Analysis = analysis, Context = ctx };
+        CorrectionStore.RecordOrigins(result);
+        return result;
     }
 
     /// <summary>Recomputes clefs, keys, times and pitch names after the symbols of a page were edited.</summary>

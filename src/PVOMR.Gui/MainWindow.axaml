@@ -17,10 +17,14 @@
     <Style Selector="Button.tool">
       <Setter Property="Padding" Value="8,4"/>
     </Style>
+    <Style Selector="WrapPanel > :is(Control)">
+      <Setter Property="Margin" Value="0,0,6,4"/>
+      <Setter Property="VerticalAlignment" Value="Center"/>
+    </Style>
   </Window.Styles>
 
   <DockPanel>
-    <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Spacing="6" Margin="6,6,6,2">
+    <WrapPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="6,6,6,2">
       <Button Name="OpenButton" Classes="tool" Content="Open…"/>
       <Button Name="PrevButton" Classes="tool" Content="◀"/>
       <TextBlock Name="PageLabel" VerticalAlignment="Center" MinWidth="90" TextAlignment="Center" Text="no file"/>
@@ -30,6 +34,11 @@
       <Button Name="RecognizeButton" Classes="tool" Content="Recognise again"/>
       <Button Name="ExportButton" Classes="tool" Content="Export MusicXML…"/>
       <Border Width="1" Background="#808080" Margin="6,2"/>
+      <RadioButton Name="SelectMode" GroupName="mode" Content="Select" IsChecked="True"/>
+      <RadioButton Name="AddNoteMode" GroupName="mode" Content="Add note"/>
+      <RadioButton Name="AddRestMode" GroupName="mode" Content="Add rest"/>
+      <RadioButton Name="MoveMode" GroupName="mode" Content="Move"/>
+      <Border Width="1" Background="#808080" Margin="6,2"/>
       <CheckBox Name="StaffLinesCheck" Content="Staff lines" IsChecked="True"/>
       <CheckBox Name="BarlinesCheck" Content="Bar lines" IsChecked="True"/>
       <CheckBox Name="BoxesCheck" Content="Boxes" IsChecked="True"/>
@@ -38,7 +47,7 @@
       <Button Name="FitButton" Classes="tool" Content="Fit"/>
       <Button Name="FitWidthButton" Classes="tool" Content="Fit width"/>
       <Button Name="Zoom100Button" Classes="tool" Content="100%"/>
-    </StackPanel>
+    </WrapPanel>
     <TextBlock DockPanel.Dock="Bottom" Name="StatusText" Margin="8,3" Text="Open a PDF or an image to start."/>
 
     <Grid ColumnDefinitions="*,4,380">
@@ -80,6 +89,10 @@
             <Button Name="ApplySymbolButton" Content="Apply"/>
             <Button Name="DeleteSymbolButton" Content="Delete symbol"/>
           </StackPanel>
+
+          <TextBlock Classes="h" Text="Corrections"/>
+          <TextBlock Name="CorrectionsInfo" TextWrapping="Wrap" Text="Corrections are saved next to the score and replayed when the page is recognised again."/>
+          <Button Name="DiscardPageButton" Content="Discard this page's corrections"/>
 
           <TextBlock Classes="h" Text="Symbols in this measure"/>
           <ListBox Name="MeasureList" Height="230" FontFamily="Consolas,Courier New,monospace" FontSize="11"/>

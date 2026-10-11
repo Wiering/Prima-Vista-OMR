@@ -319,7 +319,9 @@ public static class MusicAssembler
         SetType(ev, s.Duration, s.Dots > 0 ? s.Dots : s.Notes.Max(n => n.Dots), sm);
         foreach (var n in s.Notes.OrderBy(n => n.Step)) ev.Notes.Add(MakeNote(n, clef, fifths));
         // stemless heads (whole notes, but also text glyphs taken for heads) and heads far outside the staff are suspects
-        if (s.StemUp == null || s.Notes.Any(n => n.Step > 18 || n.Step < -10)) ev.Uncertain = true;
+        // user-corrected or user-added symbols are never dropped to make a measure fit
+        bool asserted = s.Attributes.ContainsKey("corrected") || s.Attributes.ContainsKey("added");
+        if (!asserted && (s.StemUp == null || s.Notes.Any(n => n.Step > 18 || n.Step < -10))) ev.Uncertain = true;
         if (s.Attributes.TryGetValue("articulation", out var art) && art == "staccato") ev.Articulations.Add("staccato");
         return ev;
     }

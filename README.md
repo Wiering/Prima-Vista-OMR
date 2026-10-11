@@ -174,12 +174,17 @@ opens an Avalonia desktop application for checking and correcting the recognitio
 * a staff's clef, key signature and time signature can be forced ("Apply to staff") when the automatic reading is
   wrong; the overrides are stored on the staff (`ForcedClef`, `ForcedKey`, `ForcedTime`) and honoured by the
   interpreter, including the system-wide key and time sharing;
+* the toolbar modes "Add note" and "Add rest" insert a quarter note (at the clicked staff step) or a quarter rest
+  into the measure under the pointer; "Move" drags the selected symbol, its note steps follow and it changes
+  measure when it crosses a bar line; "Select" is the normal mode;
 * every edit re-runs the musical interpretation of the page (pitch names, keys, times), so the labels update at
   once; "Export MusicXML…" assembles all pages recognised in this session (pages are analysed when first shown
-  and cached, "Recognise again" discards the edits of the current page).
-
-Corrections are not saved between sessions yet, and symbols cannot be added or moved (only re-typed, re-pitched
-or deleted); both are the next steps for the GUI.
+  and cached). User-added or corrected notes are never dropped by the measure-fitting step of the assembler;
+* corrections are saved automatically to `<score>.pvomr.json` next to the score as an edit log (staff overrides
+  plus one entry per edit: delete, set, head, removeHead, add, move) and replayed whenever a page is recognised
+  again, including in a later session; a symbol is identified by its staff and the bounds it had at recognition
+  (nearest box with IoU ≥ 0.6 when the recognition shifted slightly). "Discard this page's corrections" removes
+  the page's log entries and recognises the page afresh.
 
 ## Tuplets
 

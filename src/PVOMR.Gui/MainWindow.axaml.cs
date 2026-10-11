@@ -1,5 +1,4 @@
 using Avalonia.Controls;
-using Avalonia.Interactivity;
 using Avalonia.Platform.Storage;
 using Avalonia.Threading;
 using PVOMR.Core.Model;
@@ -16,6 +15,7 @@ public partial class MainWindow : Window
 
     private RecognitionEngine? _engine;
     private string? _file;
+    private CorrectionStore? _store;
     private int _pageCount, _page;
     private readonly Dictionary<int, PageResult> _pages = new();
     private PageResult? _current;
@@ -49,11 +49,18 @@ public partial class MainWindow : Window
         BarlinesCheck.IsCheckedChanged += (_, _) => { View.ShowBarlines = BarlinesCheck.IsChecked == true; View.InvalidateVisual(); };
         BoxesCheck.IsCheckedChanged += (_, _) => { View.ShowBoxes = BoxesCheck.IsChecked == true; View.InvalidateVisual(); };
         LabelsCheck.IsCheckedChanged += (_, _) => { View.ShowLabels = LabelsCheck.IsChecked == true; View.InvalidateVisual(); };
+        SelectMode.IsCheckedChanged += (_, _) => { if (SelectMode.IsChecked == true) View.Mode = ViewMode.Select; };
+        AddNoteMode.IsCheckedChanged += (_, _) => { if (AddNoteMode.IsChecked == true) View.Mode = ViewMode.AddNote; };
+        AddRestMode.IsCheckedChanged += (_, _) => { if (AddRestMode.IsChecked == true) View.Mode = ViewMode.AddRest; };
+        MoveMode.IsCheckedChanged += (_, _) => { if (MoveMode.IsChecked == true) View.Mode = ViewMode.Move; };
         View.SelectionChanged += (s, st) => { _selSym = s; _selStaff = st; UpdateInspector(); };
+        View.AddRequested += AddSymbol;
+        View.MoveFinished += (s, dx, dy) => RecordOnly(new SymbolEdit { Op = "move", Dx = dx, Dy = dy }, s);
         ApplyStaffButton.Click += (_, _) => ApplyStaff(clear: false);
         ClearStaffButton.Click += (_, _) => ApplyStaff(clear: true);
         ApplySymbolButton.Click += (_, _) => ApplySymbol();
-        DeleteSymbolButton.Click += (_, _) => DeleteSymbol();
+        DeleteSymbolButton.Click += (_, _) => { if (_selSym != null) { var s = _selSym; _selSym = null; View.Select(null, _selStaff); Edit(new SymbolEdit { Op = "delete" }, s); } };
+        DiscardPageButton.Click += async (_, _) => { if (_store != null) { _store.Clear(_page); await AnalyzeAsync(_page, force: true); } };
         MeasureList.SelectionChanged += (_, _) =>
         {
             if (_updating || MeasureList.SelectedIndex < 0 || MeasureList.SelectedIndex >= _measureItems.Count) return;
@@ -99,6 +106,7 @@ public partial class MainWindow : Window
             _pageCount = await Task.Run(() => RecognitionEngine.PageCount(path));
             _pages.Clear();
             _exportWarnings = "";
+            _store = CorrectionStore.Load(path);
             Title = $"PVOMR – {Path.GetFileName(path)}";
             await GoToPageAsync(1);
         }
@@ -131,10 +139,13 @@ public partial class MainWindow : Window
                 _engine ??= new RecognitionEngine();
                 return _engine.Analyze(file, page, dpi);
             });
+            int applied = _store?.ApplyAll(result) ?? 0;
+            if (applied > 0) RecognitionEngine.Reinterpret(result);
             _pages[page] = result;
             ShowPage(result, fit: true);
             var a = result.Analysis;
-            Status($"page {page}: {a.Staves.Count} staves, {a.Systems.Count} systems, {a.Staves.Sum(s => s.Measures.Count)} measures, staff space {a.StaffSpace:0.0} px, {a.Elapsed.TotalSeconds:0.0} s");
+            Status($"page {page}: {a.Staves.Count} staves, {a.Systems.Count} systems, {a.Staves.Sum(s => s.Measures.Count)} measures, staff space {a.StaffSpace:0.0} px, {a.Elapsed.TotalSeconds:0.0} s"
+                   + (applied > 0 ? $"; {applied} stored correction(s) applied" : ""));
         }
         catch (Exception ex)
         {
@@ -147,7 +158,7 @@ public partial class MainWindow : Window
     {
         _current = result;
         _selSym = null; _selStaff = null; _selMeasure = null;
-        View.SetPage(result.Context.Gray, result.Analysis, fit);
+        View.SetPage(result, fit);
         UpdateInspector();
         UpdateNotes();
         UpdateButtons();
@@ -178,6 +189,107 @@ public partial class MainWindow : Window
         {
             Status($"export failed: {ex.Message}");
         }
+    }
+
+    // ------------------------------------------------------------------ edits (all go through the correction store)
+
+    private SymbolEdit Identify(SymbolEdit e, MusicSymbol s)
+    {
+        e.Staff = s.Staff?.Index ?? -1;
+        e.Bounds = _current != null && _current.Origins.TryGetValue(s, out var o) ? o : s.Bounds;
+        return e;
+    }
+
+    /// <summary>Applies an edit to the selected symbol, records it and refreshes.</summary>
+    private void Edit(SymbolEdit e, MusicSymbol target)
+    {
+        if (_current == null || _store == null) return;
+        Identify(e, target);
+        if (!CorrectionStore.Apply(_current, e)) { Status("the edit could not be applied"); return; }
+        _store.Record(_page, e);
+        Changed();
+    }
+
+    /// <summary>Records an edit that the view already applied (dragging).</summary>
+    private void RecordOnly(SymbolEdit e, MusicSymbol target)
+    {
+        if (_current == null || _store == null) return;
+        Identify(e, target);
+        target.Attributes["corrected"] = "1";
+        _store.Record(_page, e);
+        Changed();
+    }
+
+    private void AddSymbol(Avalonia.Point p, Staff? staff)
+    {
+        if (_current == null || _store == null) return;
+        if (staff == null) { Status("click inside a staff to add a symbol"); return; }
+        double ss = staff.Space;
+        bool rest = View.Mode == ViewMode.AddRest;
+        var e = new SymbolEdit { Op = "add", Staff = staff.Index, Kind = rest ? "Rest" : "Note", Duration = "quarter" };
+        if (rest)
+        {
+            double cy = (staff.TopY(p.X) + staff.BottomY(p.X)) / 2;
+            e.Bounds = new Rect((int)Math.Round(p.X - 0.5 * ss), (int)Math.Round(cy - ss), (int)Math.Round(p.X + 0.5 * ss), (int)Math.Round(cy + ss));
+        }
+        else
+        {
+            int step = (int)Math.Round(staff.StepAt(p.X, p.Y));
+            double hy = staff.BottomY(p.X) - step * ss / 2;
+            e.Step = step;
+            e.Stem = step >= 4 ? "down" : "up";
+            e.Bounds = new Rect((int)Math.Round(p.X - 0.6 * ss), (int)Math.Round(hy - 0.5 * ss), (int)Math.Round(p.X + 0.6 * ss), (int)Math.Round(hy + 0.5 * ss));
+        }
+        if (!CorrectionStore.Apply(_current, e)) { Status("no measure at this position"); return; }
+        _store.Record(_page, e);
+        var added = _current.Origins.FirstOrDefault(kv => kv.Value == e.Bounds && kv.Key.Attributes.ContainsKey("added")).Key;
+        _selSym = added; _selStaff = staff;
+        View.Select(added, staff);
+        Changed();
+    }
+
+    private void ApplyStaff(bool clear)
+    {
+        var staff = _selStaff ?? _selSym?.Staff;
+        if (staff == null || _current == null || _store == null) return;
+        if (clear) { staff.ForcedClef = null; staff.ForcedKey = null; staff.ForcedTime = null; }
+        else
+        {
+            staff.ForcedClef = StaffClefBox.SelectedItem is string c && c != Auto && Enum.TryParse<ClefKind>(c, out var ck) ? ck : null;
+            staff.ForcedKey = StaffKeyBox.SelectedItem is string k && k != Auto ? Enumerable.Range(-7, 15).First(f => KeyLabel(f) == k) : null;
+            string t = (StaffTimeBox.Text ?? "").Trim();
+            staff.ForcedTime = t.Length == 0 ? null : t.Equals("C", StringComparison.OrdinalIgnoreCase) ? "C (4/4)" : t;
+        }
+        _store.SetStaffOverride(_page, staff.Index, staff.ForcedClef, staff.ForcedKey, staff.ForcedTime);
+        Changed();
+    }
+
+    private void ApplySymbol()
+    {
+        var s = _selSym;
+        if (s == null) return;
+        var e = new SymbolEdit { Op = "set" };
+        if (KindBox.SelectedItem is string kind && kind != s.Kind.ToString()) e.Kind = kind;
+        if (DurationBox.SelectedItem is string d && d != s.Duration) e.Duration = d;
+        int dots = (int)(DotsBox.Value ?? 0);
+        if (dots != s.Dots) e.Dots = dots;
+        string stem = StemBox.SelectedItem as string ?? "(none)";
+        string current = s.StemUp == true ? "up" : s.StemUp == false ? "down" : "(none)";
+        if (stem != current) e.Stem = stem == "(none)" ? "none" : stem;
+        if (e.Kind == null && e.Duration == null && e.Dots == null && e.Stem == null) { Status("nothing changed"); return; }
+        Edit(e, s);
+    }
+
+    /// <summary>After any edit: recompute the interpretation of the page and refresh everything.</summary>
+    private void Changed()
+    {
+        if (_current == null) return;
+        _current.Modified = true;
+        RecognitionEngine.Reinterpret(_current);
+        View.SetAnalysis(_current.Analysis);
+        UpdateInspector();
+        UpdateNotes();
+        Status($"page re-interpreted; {_store?.Count ?? 0} correction(s) saved to {Path.GetFileName(_store?.Path ?? "")}");
     }
 
     // ------------------------------------------------------------------ inspector
@@ -227,6 +339,9 @@ public partial class MainWindow : Window
                 MeasureList.ItemsSource = _measureItems.Select(x => TextReport.Describe(x, ss, false)).ToList();
             }
             MeasureList.SelectedIndex = s != null ? _measureItems.IndexOf(s) : -1;
+            CorrectionsInfo.Text = _store == null ? "" : _store.Count == 0
+                ? "No corrections yet. They are saved next to the score and replayed when a page is recognised again."
+                : $"{_store.Count} correction(s) saved in {Path.GetFileName(_store.Path)}" + (_store.HasPage(_page) ? " (this page has some)" : "");
         }
         finally { _updating = false; }
         UpdateButtons();
@@ -236,87 +351,25 @@ public partial class MainWindow : Window
     {
         HeadsPanel.Children.Clear();
         if (s == null) return;
-        var notes = s.Notes.Count > 0 ? s.Notes : s.Children.SelectMany(c => c.Notes).ToList();
-        foreach (var n in notes)
+        var notes = CorrectionStore.Heads(s);
+        for (int i = 0; i < notes.Count; i++)
         {
-            var note = n;
+            var note = notes[i]; int index = i;
             var row = new StackPanel { Orientation = Avalonia.Layout.Orientation.Horizontal, Spacing = 4 };
             row.Children.Add(new TextBlock { Text = $"{note.Pitch ?? "?"}  (step {note.Step}, {note.HeadType})", VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center, MinWidth = 170 });
             var up = new Button { Content = "▲", Padding = new Avalonia.Thickness(6, 2) };
             var down = new Button { Content = "▼", Padding = new Avalonia.Thickness(6, 2) };
-            up.Click += (_, _) => { note.Step++; Changed(); };
-            down.Click += (_, _) => { note.Step--; Changed(); };
+            up.Click += (_, _) => Edit(new SymbolEdit { Op = "head", Head = index, Step = note.Step + 1 }, s);
+            down.Click += (_, _) => Edit(new SymbolEdit { Op = "head", Head = index, Step = note.Step - 1 }, s);
             row.Children.Add(up); row.Children.Add(down);
             if (notes.Count > 1)
             {
                 var remove = new Button { Content = "✕", Padding = new Avalonia.Thickness(6, 2) };
-                remove.Click += (_, _) =>
-                {
-                    s.Notes.Remove(note);
-                    foreach (var c in s.Children) c.Notes.Remove(note);
-                    Changed();
-                };
+                remove.Click += (_, _) => Edit(new SymbolEdit { Op = "removeHead", Head = index }, s);
                 row.Children.Add(remove);
             }
             HeadsPanel.Children.Add(row);
         }
-    }
-
-    private void ApplyStaff(bool clear)
-    {
-        var staff = _selStaff ?? _selSym?.Staff;
-        if (staff == null || _current == null) return;
-        if (clear) { staff.ForcedClef = null; staff.ForcedKey = null; staff.ForcedTime = null; }
-        else
-        {
-            staff.ForcedClef = StaffClefBox.SelectedItem is string c && c != Auto && Enum.TryParse<ClefKind>(c, out var ck) ? ck : null;
-            staff.ForcedKey = StaffKeyBox.SelectedItem is string k && k != Auto ? Enumerable.Range(-7, 15).First(f => KeyLabel(f) == k) : null;
-            string t = (StaffTimeBox.Text ?? "").Trim();
-            staff.ForcedTime = t.Length == 0 ? null : t.Equals("C", StringComparison.OrdinalIgnoreCase) ? "C (4/4)" : t;
-        }
-        Changed();
-    }
-
-    private void ApplySymbol()
-    {
-        var s = _selSym;
-        if (s == null) return;
-        if (KindBox.SelectedItem is string kind && Enum.TryParse<SymbolKind>(kind, out var k)) s.Kind = k;
-        if (DurationBox.SelectedItem is string d) s.Duration = d;
-        s.Dots = (int)(DotsBox.Value ?? 0);
-        foreach (var n in s.Notes) n.Dots = s.Dots;
-        s.StemUp = StemBox.SelectedItem switch { "up" => true, "down" => false, _ => null };
-        s.Attributes["corrected"] = "1";
-        Changed();
-    }
-
-    private void DeleteSymbol()
-    {
-        var s = _selSym;
-        if (s == null || _current == null) return;
-        foreach (var st in _current.Analysis.Staves)
-            foreach (var m in st.Measures)
-            {
-                if (m.Symbols.Remove(s)) goto done;
-                foreach (var p in m.Symbols) if (p.Children.Remove(s)) goto done;
-            }
-        _current.Analysis.PageSymbols.Remove(s);
-        done:
-        _selSym = null;
-        View.Select(null, _selStaff);
-        Changed();
-    }
-
-    /// <summary>After any edit: recompute the interpretation of the page and refresh everything.</summary>
-    private void Changed()
-    {
-        if (_current == null) return;
-        _current.Modified = true;
-        RecognitionEngine.Reinterpret(_current);
-        View.SetAnalysis(_current.Analysis);
-        UpdateInspector();
-        UpdateNotes();
-        Status("page re-interpreted after the correction (export to see the result)");
     }
 
     private void UpdateNotes()
@@ -333,6 +386,7 @@ public partial class MainWindow : Window
         RecognizeButton.IsEnabled = hasFile;
         ExportButton.IsEnabled = _pages.Count > 0 && !_busy;
         OpenButton.IsEnabled = !_busy;
+        DiscardPageButton.IsEnabled = hasFile && _store != null && _store.HasPage(_page);
         bool hasStaff = (_selStaff ?? _selSym?.Staff) != null;
         ApplyStaffButton.IsEnabled = hasStaff; ClearStaffButton.IsEnabled = hasStaff;
         ApplySymbolButton.IsEnabled = _selSym != null; DeleteSymbolButton.IsEnabled = _selSym != null;

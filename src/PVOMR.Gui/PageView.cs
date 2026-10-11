@@ -15,10 +15,17 @@ namespace PVOMR.Gui;
 /// Shows the (deskewed) page image with the recognised staves, bar lines and symbols drawn over it. Wheel zooms around
 /// the pointer, dragging pans, a click selects the smallest symbol under the pointer.
 /// </summary>
+public enum ViewMode { Select, AddNote, AddRest, Move }
+
 public sealed class PageView : Control
 {
     private WriteableBitmap? _bitmap;
     private PageAnalysis? _analysis;
+    private PageResult? _page;
+    private ViewMode _mode = ViewMode.Select;
+    private bool _moving;
+    private double _accX, _accY;
+    private int _movedX, _movedY;
     private double _zoom = 1;
     private Point _offset;
     private Point _pressPos, _lastDrag;
@@ -27,6 +34,20 @@ public sealed class PageView : Control
     private Staff? _selectedStaff;
 
     public event Action<MusicSymbol?, Staff?>? SelectionChanged;
+    /// <summary>A click in an Add mode: image coordinates and the staff under the pointer.</summary>
+    public event Action<Point, Staff?>? AddRequested;
+    /// <summary>A symbol was dragged in Move mode by (dx, dy) image pixels (already applied to the symbol).</summary>
+    public event Action<MusicSymbol, int, int>? MoveFinished;
+
+    public ViewMode Mode
+    {
+        get => _mode;
+        set
+        {
+            _mode = value;
+            Cursor = value switch { ViewMode.AddNote or ViewMode.AddRest => new Cursor(StandardCursorType.Cross), ViewMode.Move => new Cursor(StandardCursorType.SizeAll), _ => Cursor.Default };
+        }
+    }
 
     public bool ShowStaffLines { get; set; } = true;
     public bool ShowBoxes { get; set; } = true;
@@ -43,10 +64,11 @@ public sealed class PageView : Control
         Focusable = true;
     }
 
-    public void SetPage(GrayImage? image, PageAnalysis? analysis, bool fit)
+    public void SetPage(PageResult? page, bool fit)
     {
-        _bitmap = image == null ? null : ToBitmap(image);
-        _analysis = analysis;
+        _page = page;
+        _bitmap = page == null ? null : ToBitmap(page.Context.Gray);
+        _analysis = page?.Analysis;
         _selected = null; _selectedStaff = null;
         if (fit) FitPage();
         InvalidateVisual();
@@ -126,7 +148,14 @@ public sealed class PageView : Control
         base.OnPointerPressed(e);
         Focus();
         _pressPos = _lastDrag = e.GetPosition(this);
-        _dragging = true; _moved = false;
+        _dragging = true; _moved = false; _moving = false;
+        if (_mode == ViewMode.Move && _selected != null && _page != null)
+        {
+            var img = ToImage(_pressPos);
+            var r = _selected.Bounds;
+            int pad = (int)Math.Max(3, 4 / _zoom);
+            if (img.X >= r.X0 - pad && img.X <= r.X1 + pad && img.Y >= r.Y0 - pad && img.Y <= r.Y1 + pad) { _moving = true; _accX = _accY = 0; _movedX = _movedY = 0; }
+        }
         e.Pointer.Capture(this);
     }
 
@@ -136,12 +165,20 @@ public sealed class PageView : Control
         if (!_dragging) return;
         var p = e.GetPosition(this);
         if (!_moved && (Math.Abs(p.X - _pressPos.X) > 4 || Math.Abs(p.Y - _pressPos.Y) > 4)) _moved = true;
-        if (_moved)
+        if (!_moved) return;
+        if (_moving && _selected != null && _page != null)
         {
-            _offset += p - _lastDrag;
-            _lastDrag = p;
-            InvalidateVisual();
+            _accX += (p.X - _lastDrag.X) / _zoom; _accY += (p.Y - _lastDrag.Y) / _zoom;
+            int dx = (int)Math.Truncate(_accX), dy = (int)Math.Truncate(_accY);
+            if (dx != 0 || dy != 0)
+            {
+                CorrectionStore.Shift(_page, _selected, dx, dy);
+                _accX -= dx; _accY -= dy; _movedX += dx; _movedY += dy;
+            }
         }
+        else _offset += p - _lastDrag;
+        _lastDrag = p;
+        InvalidateVisual();
     }
 
     protected override void OnPointerReleased(PointerReleasedEventArgs e)
@@ -150,10 +187,18 @@ public sealed class PageView : Control
         if (!_dragging) return;
         _dragging = false;
         e.Pointer.Capture(null);
-        if (_moved) return;
+        if (_moved)
+        {
+            if (_moving && _selected != null && (_movedX != 0 || _movedY != 0)) MoveFinished?.Invoke(_selected, _movedX, _movedY);
+            _moving = false;
+            return;
+        }
         var img = ToImage(e.GetPosition(this));
-        SelectAt(img);
+        if (_mode is ViewMode.AddNote or ViewMode.AddRest) AddRequested?.Invoke(img, StaffAt(img.X, img.Y));
+        else SelectAt(img);
     }
+
+    private Staff? StaffAt(double x, double y) => _analysis?.Staves.FirstOrDefault(st => x >= st.Left - 2 * st.Space && x <= st.Right + 2 * st.Space && y >= st.TopY(x) - 3 * st.Space && y <= st.BottomY(x) + 3 * st.Space);
 
     private void SelectAt(Point img)
     {
@@ -177,8 +222,7 @@ public sealed class PageView : Control
                 }
         foreach (var s in _analysis.PageSymbols) Consider(s, null);
         // no symbol: select the staff under the pointer
-        if (best == null)
-            bestStaff = _analysis.Staves.FirstOrDefault(st => x >= st.Left - 2 * st.Space && x <= st.Right + 2 * st.Space && y >= st.TopY(x) - 3 * st.Space && y <= st.BottomY(x) + 3 * st.Space);
+        if (best == null) bestStaff = StaffAt(x, y);
         _selected = best; _selectedStaff = bestStaff;
         InvalidateVisual();
         SelectionChanged?.Invoke(best, bestStaff);
