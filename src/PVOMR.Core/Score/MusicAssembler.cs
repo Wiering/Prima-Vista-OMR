@@ -611,6 +611,50 @@ public static class MusicAssembler
                 }
             }
         }
+        // sanity of the time signature in force: a signature almost no measure fits, while most measures agree on another
+        // plausible length, was misread (a "5/4" over 3/8 music, a "1/4" carried along a whole part) and is replaced
+        {
+            // runs of measures under one time signature (or under none); a page break ends a run so that a signature
+            // misread on one page does not drag the next page along
+            var runs = new List<List<ScoreMeasure>>();
+            foreach (var m in part.Measures)
+            {
+                if (runs.Count > 0 && runs[^1][0].Fit.Expected == m.Fit.Expected && runs[^1][0].Page == m.Page && (m.Time == null || m.Time.Length == m.Fit.Expected)) runs[^1].Add(m);
+                else runs.Add(new List<ScoreMeasure> { m });
+            }
+            foreach (var run in runs)
+            {
+                if (run.Count < 4) continue;
+                int? expected = run[0].Fit.Expected;
+                var informative = run.Where(m => !(m.Events.Count == 1 && m.Events[0].IsRest && m.Events[0].Type == "whole") && m.Events.Count > 0).ToList();
+                if (informative.Count < 4) continue;
+                int Main(ScoreMeasure m) => m.Events.GroupBy(e => e.Staff).Select(g => g.GroupBy(e => e.Voice).Select(v => v.Sum(e => e.Duration)).Max()).Max();
+                int fitting = expected == null ? 0 : informative.Count(m => Main(m) == expected);
+                if (expected != null && fitting * 5 >= informative.Count) continue;   // at least a fifth fits: the signature stands
+                var sums = informative.Select(Main).Where(x => x > 0).ToList();
+                if (sums.Count < 4) continue;
+                int mode = sums.GroupBy(x => x).OrderByDescending(g => g.Count()).ThenByDescending(g => g.Key).First().Key;
+                int share = sums.Count(x => x == mode);
+                int eighth = Score.Divisions / 2;
+                // the agreeing measures must be at least 30% (40% when no signature was read at all) and twice the fitting ones
+                int needed = expected == null ? (sums.Count * 2 + 4) / 5 : (sums.Count * 3 + 9) / 10;
+                if (share < needed || share < 2 * fitting || mode == expected || mode % eighth != 0 || mode < 2 * eighth || mode > 24 * eighth) continue;
+                int eighths = mode / eighth;
+                TimeSpec t = eighths % 2 == 0 ? new TimeSpec(eighths / 2, 4) : new TimeSpec(eighths, 8);
+                var first = run[0];
+                score.Warnings.Add(expected == null
+                    ? $"{part.Id} m{first.Number} (page {first.Page}): no time signature; {t} inferred from {share} of {sums.Count} measures"
+                    : $"{part.Id} m{first.Number} (page {first.Page}): time signature {Fraction(expected.Value)} fits {fitting} of {informative.Count} measures; replaced by {t}, which {share} agree on");
+                first.Time = t;
+                foreach (var m in run)
+                {
+                    if (m != first && m.Time != null) m.Time = null;
+                    m.Warnings.RemoveAll(w => w.Contains("duration") || w.Contains("dropped uncertain"));
+                    m.Fit.Sums.Clear(); m.Fit.Dropped = 0;
+                    for (int st = 1; st <= part.StaffCount; st++) Validate(m, t, st);
+                }
+            }
+        }
         // pickup measure
         if (part.Measures.Count > 1)
         {

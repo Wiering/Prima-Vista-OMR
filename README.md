@@ -152,6 +152,11 @@ staff-less binary image.
    CLI with a page range, the GUI when the previous page is already recognised), the last system of the previous
    page seeds clef, key and time of the first system, so continuation pages without a time signature are read
    against the right measure length; the `--fit` report assembles the pages analysed so far for the same reason.
+   The assembler then checks every time signature against the music under it: when fewer than a fifth of the
+   measures of a page fit it while at least 30% agree on another plausible length (twice as many as fit the
+   reading), the signature was misread and is replaced by the agreed length, with a warning; a page without any
+   signature gets the length 40% of its measures agree on. This repaired the pages that failed on every measure in
+   the corpus run (a "5/4" over 3/8 music, a "1/4" carried along a whole cello part, an "8/4").
 
 ## Trained classifiers (models/)
 
@@ -338,6 +343,10 @@ Baseline (12 generated pieces, 192 measures), 2026-10-10:
 
 ## Diagnostics
 
+* The corpus run of 2026-10-12 (first six pages of each of the 416 unique files, 2267 pages) finished without a
+  crash or timeout; the median page took 7.6 s and the slowest 53 s. Over the 1856 pages with at least eight
+  measures the median share of measures adding up was 56% (full scores 65%, chamber music 67%, parts 56%, piano
+  arrangements 49%, vocal scores 39%, the "Challenges" folder 29%), before the time-signature sanity check.
 * `python tools/corpus_run.py --root D:\OMR\Scores [--max-pages 6] [--report]` runs the recogniser over every
   PDF under a folder (the first pages of each, with a time limit per page) and keeps a manifest
   (`<root>/.pvomr-corpus.json`) keyed by the MD5 of each file, so duplicate files under other names are processed
