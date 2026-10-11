@@ -159,9 +159,14 @@ public sealed class SymbolAnalyzer
             var syms = perStaff[staff];
             var consumed = GroupTextLines(comps, staff, syms);
             DetectClefAtStart(comps, staff, syms, consumed);
-            if (!syms.Any(s => s.Kind == SymbolKind.Clef)) DetectClefByTemplate(comps, staff, syms, consumed);
-            DetectKeySignature(comps, staff, syms, consumed);
-            DetectTimeSignature(comps, staff, syms, consumed);
+            // template placement is for small and medium staves (large glyphs survive staff removal, and the cost grows
+            // with the square of the staff space; spurious "staves" on text pages have spacings of 100+ px)
+            if (staff.Space <= MaxPlacementSpace)
+            {
+                if (!syms.Any(s => s.Kind == SymbolKind.Clef)) DetectClefByTemplate(comps, staff, syms, consumed);
+                DetectKeySignature(comps, staff, syms, consumed);
+                DetectTimeSignature(comps, staff, syms, consumed);
+            }
             var classified = new List<(MusicSymbol sym, Component comp)>();
             foreach (var c in comps)
             {
@@ -333,6 +338,7 @@ public sealed class SymbolAnalyzer
         _ => null,
     };
 
+    private const double MaxPlacementSpace = 40;
     private static readonly bool KeyDump = Environment.GetEnvironmentVariable("PVOMR_KEYDUMP") == "1";
     private static readonly bool KeyScan = Environment.GetEnvironmentVariable("PVOMR_KEYSCAN") == "1";
 
@@ -371,7 +377,7 @@ public sealed class SymbolAnalyzer
             double ly = line.YAt(xc);
             for (int y = 0; y < h; y++) if (Math.Abs(py + y - ly) <= half) ignore[y] = true;
         }
-        int tol = Math.Max(1, (int)Math.Round(staff.Space / 16));
+        int tol = Math.Clamp((int)Math.Round(staff.Space / 16), 1, 2);
         // columns of a barline or bracket (ink running well beyond the staff at both ends) are unknown too
         var ignoreCol = new bool[w];
         int ignoredCols = 0;

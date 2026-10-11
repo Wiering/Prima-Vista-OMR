@@ -101,7 +101,8 @@ staff-less binary image.
    better by a time-signature digit, or breaks the even spacing; the time signature is accepted only when
    both digits (or the common/cut glyph) score very high and no stem crosses the digit's edge. Clefs are first
    assembled from components and fall back to the same template placement (with stretched C clefs for old
-   editions).
+   editions). The placement pass runs for staves up to 40 px staff space: larger glyphs survive staff removal,
+   and the spurious "staves" found on text pages (spacings of 100 px and more) would make it take hours.
 6. **Interpretation** (`MusicInterpreter`): clefs, key signatures (accidental runs at the start),
    time signatures and pitch names with per-measure accidental memory. Within a system, staves without a key
    or time signature adopt the majority reading (the time only when at least a quarter of the staves have one);
