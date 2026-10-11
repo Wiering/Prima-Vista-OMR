@@ -159,6 +159,28 @@ read by the template-placement pass described above; Beethoven 3 page 2 (jagged 
 and the Dover Bach Suite 3 page 3 read the right key on every staff but one. Instrument names are not read
 (parts are numbered), and a grand staff inside an orchestral score is still treated as two parts.
 
+## Correction GUI (src/PVOMR.Gui)
+
+`dotnet run --project src/PVOMR.Gui -c Release -- "score.pdf"` (or start `pvomr-gui.exe`, optionally with a file)
+opens an Avalonia desktop application for checking and correcting the recognition before export:
+
+* the deskewed page is shown with the detected staff lines, bar lines, measure numbers and a coloured box per
+  symbol (green notes, orange rests, purple clefs, blue key signatures, magenta time signatures, red unknown);
+  the mouse wheel zooms around the pointer, dragging pans, Shift/Ctrl + wheel scroll, and the Fit / Fit width /
+  100% buttons reset the view; the overlays can be switched off individually;
+* clicking selects the smallest symbol under the pointer (or the staff when there is none); the inspector shows the
+  symbol's description, kind, duration, dots, stem direction and its note heads, which can be moved up or down a
+  step or removed; a symbol can be deleted; the "Symbols in this measure" list navigates within the measure;
+* a staff's clef, key signature and time signature can be forced ("Apply to staff") when the automatic reading is
+  wrong; the overrides are stored on the staff (`ForcedClef`, `ForcedKey`, `ForcedTime`) and honoured by the
+  interpreter, including the system-wide key and time sharing;
+* every edit re-runs the musical interpretation of the page (pitch names, keys, times), so the labels update at
+  once; "Export MusicXML…" assembles all pages recognised in this session (pages are analysed when first shown
+  and cached, "Recognise again" discards the edits of the current page).
+
+Corrections are not saved between sessions yet, and symbols cannot be added or moved (only re-typed, re-pitched
+or deleted); both are the next steps for the GUI.
+
 ## Tuplets
 
 Triplets (and other tuplets) are supported end to end: the generator (`--style tuplets`, also part of `hard`)
@@ -241,6 +263,7 @@ Baseline (12 generated pieces, 192 measures), 2026-10-10:
 * `--diag` prints, per staff, the modelled line positions against the actual ink runs at three x positions.
 * `PVOMR_STRIPDUMP=<strip index>` (with `--verbose`) prints the candidate line segments and 5-line groups of
   one detection strip; `PVOMR_ROWS=<y0>-<y1>` additionally prints the thin-ink row projection of that strip.
+* The GUI (`src/PVOMR.Gui`) shows the same overlays interactively, see "Correction GUI".
 * `--verbose --debug --out dir` also writes the staff-less binary image (`*_nostaff.png`).
 * `PVOMR_KEYDUMP=1` prints every clef/key/time placement decision of the start-of-staff pass (hypothesis,
   score, competing digit score, position); `PVOMR_KEYSCAN=1` adds the per-column scores of the scan.

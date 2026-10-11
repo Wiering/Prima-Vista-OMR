@@ -1,0 +1,93 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="using:PVOMR.Gui"
+        x:Class="PVOMR.Gui.MainWindow"
+        Title="PVOMR – score correction"
+        Width="1500" Height="950"
+        WindowStartupLocation="CenterScreen">
+  <Window.Styles>
+    <Style Selector="TextBlock.h">
+      <Setter Property="FontWeight" Value="Bold"/>
+      <Setter Property="Margin" Value="0,10,0,2"/>
+    </Style>
+    <Style Selector="TextBlock.lbl">
+      <Setter Property="VerticalAlignment" Value="Center"/>
+      <Setter Property="Margin" Value="0,0,8,0"/>
+    </Style>
+    <Style Selector="Button.tool">
+      <Setter Property="Padding" Value="8,4"/>
+    </Style>
+  </Window.Styles>
+
+  <DockPanel>
+    <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Spacing="6" Margin="6,6,6,2">
+      <Button Name="OpenButton" Classes="tool" Content="Open…"/>
+      <Button Name="PrevButton" Classes="tool" Content="◀"/>
+      <TextBlock Name="PageLabel" VerticalAlignment="Center" MinWidth="90" TextAlignment="Center" Text="no file"/>
+      <Button Name="NextButton" Classes="tool" Content="▶"/>
+      <TextBlock Classes="lbl" Text="DPI" Margin="12,0,4,0"/>
+      <NumericUpDown Name="DpiBox" Minimum="100" Maximum="900" Increment="50" Value="300" Width="120" FormatString="0"/>
+      <Button Name="RecognizeButton" Classes="tool" Content="Recognise again"/>
+      <Button Name="ExportButton" Classes="tool" Content="Export MusicXML…"/>
+      <Border Width="1" Background="#808080" Margin="6,2"/>
+      <CheckBox Name="StaffLinesCheck" Content="Staff lines" IsChecked="True"/>
+      <CheckBox Name="BarlinesCheck" Content="Bar lines" IsChecked="True"/>
+      <CheckBox Name="BoxesCheck" Content="Boxes" IsChecked="True"/>
+      <CheckBox Name="LabelsCheck" Content="Labels" IsChecked="True"/>
+      <Border Width="1" Background="#808080" Margin="6,2"/>
+      <Button Name="FitButton" Classes="tool" Content="Fit"/>
+      <Button Name="FitWidthButton" Classes="tool" Content="Fit width"/>
+      <Button Name="Zoom100Button" Classes="tool" Content="100%"/>
+    </StackPanel>
+    <TextBlock DockPanel.Dock="Bottom" Name="StatusText" Margin="8,3" Text="Open a PDF or an image to start."/>
+
+    <Grid ColumnDefinitions="*,4,380">
+      <local:PageView Name="View" Grid.Column="0"/>
+      <GridSplitter Grid.Column="1" Background="#C0C0C0" ResizeDirection="Columns"/>
+      <ScrollViewer Grid.Column="2" HorizontalScrollBarVisibility="Disabled">
+        <StackPanel Margin="10,0,10,10" Spacing="4">
+
+          <TextBlock Classes="h" Text="Staff"/>
+          <TextBlock Name="StaffInfo" TextWrapping="Wrap" Text="Click a staff or a symbol."/>
+          <Grid ColumnDefinitions="60,*" RowDefinitions="Auto,Auto,Auto" Margin="0,4,0,0">
+            <TextBlock Classes="lbl" Grid.Row="0" Grid.Column="0" Text="Clef"/>
+            <ComboBox Name="StaffClefBox" Grid.Row="0" Grid.Column="1" HorizontalAlignment="Stretch" Margin="0,2"/>
+            <TextBlock Classes="lbl" Grid.Row="1" Grid.Column="0" Text="Key"/>
+            <ComboBox Name="StaffKeyBox" Grid.Row="1" Grid.Column="1" HorizontalAlignment="Stretch" Margin="0,2"/>
+            <TextBlock Classes="lbl" Grid.Row="2" Grid.Column="0" Text="Time"/>
+            <TextBox Name="StaffTimeBox" Grid.Row="2" Grid.Column="1" Watermark="auto, e.g. 3/4 or C" Margin="0,2"/>
+          </Grid>
+          <StackPanel Orientation="Horizontal" Spacing="6">
+            <Button Name="ApplyStaffButton" Content="Apply to staff"/>
+            <Button Name="ClearStaffButton" Content="Back to automatic"/>
+          </StackPanel>
+
+          <TextBlock Classes="h" Text="Symbol"/>
+          <TextBlock Name="SymbolInfo" TextWrapping="Wrap" FontFamily="Consolas,Courier New,monospace" FontSize="12" Text="(none)"/>
+          <Grid ColumnDefinitions="60,*" RowDefinitions="Auto,Auto,Auto,Auto" Margin="0,4,0,0">
+            <TextBlock Classes="lbl" Grid.Row="0" Grid.Column="0" Text="Kind"/>
+            <ComboBox Name="KindBox" Grid.Row="0" Grid.Column="1" HorizontalAlignment="Stretch" Margin="0,2"/>
+            <TextBlock Classes="lbl" Grid.Row="1" Grid.Column="0" Text="Duration"/>
+            <ComboBox Name="DurationBox" Grid.Row="1" Grid.Column="1" HorizontalAlignment="Stretch" Margin="0,2"/>
+            <TextBlock Classes="lbl" Grid.Row="2" Grid.Column="0" Text="Dots"/>
+            <NumericUpDown Name="DotsBox" Grid.Row="2" Grid.Column="1" Minimum="0" Maximum="3" Increment="1" FormatString="0" Margin="0,2"/>
+            <TextBlock Classes="lbl" Grid.Row="3" Grid.Column="0" Text="Stem"/>
+            <ComboBox Name="StemBox" Grid.Row="3" Grid.Column="1" HorizontalAlignment="Stretch" Margin="0,2"/>
+          </Grid>
+          <TextBlock Text="Note heads" Margin="0,6,0,0"/>
+          <StackPanel Name="HeadsPanel" Spacing="2"/>
+          <StackPanel Orientation="Horizontal" Spacing="6" Margin="0,6,0,0">
+            <Button Name="ApplySymbolButton" Content="Apply"/>
+            <Button Name="DeleteSymbolButton" Content="Delete symbol"/>
+          </StackPanel>
+
+          <TextBlock Classes="h" Text="Symbols in this measure"/>
+          <ListBox Name="MeasureList" Height="230" FontFamily="Consolas,Courier New,monospace" FontSize="11"/>
+
+          <TextBlock Classes="h" Text="Notes and warnings"/>
+          <TextBox Name="NotesBox" AcceptsReturn="True" IsReadOnly="True" Height="180" TextWrapping="Wrap" FontSize="11"/>
+        </StackPanel>
+      </ScrollViewer>
+    </Grid>
+  </DockPanel>
+</Window>

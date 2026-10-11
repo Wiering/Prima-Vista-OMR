@@ -30,7 +30,7 @@ public static class MusicInterpreter
                 for (int k = 0; k < sys.Staves.Count; k++)
                 {
                     var staff = sys.Staves[k];
-                    if (staff.Measures.Any(m => m.Symbols.Any(sy => sy.Kind == SymbolKind.KeySignature)) || staff.KeyFifths == key) continue;
+                    if (staff.Measures.Any(m => m.Symbols.Any(sy => sy.Kind == SymbolKind.KeySignature)) || staff.KeyFifths == key || staff.ForcedKey != null) continue;
                     Staff? prev = sys.Index > 0 && page.Systems[sys.Index - 1].Staves.Count == sys.Staves.Count ? page.Systems[sys.Index - 1].Staves[k] : null;
                     InterpretStaff(staff, prev, key);
                 }
@@ -41,7 +41,7 @@ public static class MusicInterpreter
             {
                 // all staves of a system carry the same time signature: the majority reading overrules misread digits
                 string time = times.GroupBy(t => t).OrderByDescending(g => g.Count()).First().Key;
-                foreach (var st in sys.Staves) st.TimeSignature = time;
+                foreach (var st in sys.Staves) if (st.ForcedTime == null) st.TimeSignature = time;
             }
         }
         CompleteKeysAcrossSystems(page);
@@ -79,7 +79,7 @@ public static class MusicInterpreter
             {
                 var staff = sys.Staves[k];
                 int own = staff.KeyFifths;
-                if (own == target) continue;
+                if (own == target || staff.ForcedKey != null) continue;
                 bool fix = HasKeySignature(staff) ? Math.Sign(own) == Math.Sign(target) && Math.Abs(own) < Math.Abs(target)
                                                   : sys.Index > 0;   // no signature of its own: inherited an incomplete reading
                 if (!fix) continue;
@@ -92,9 +92,9 @@ public static class MusicInterpreter
 
     private static void InterpretStaff(Staff staff, Staff? prev, int? forcedKey, bool forcedOverrides = false)
     {
-        var clef = prev?.Clef ?? ClefKind.Unknown;
-        int fifths = forcedKey ?? prev?.KeyFifths ?? 0;
-        string? time = prev?.TimeSignature;
+        var clef = staff.ForcedClef ?? prev?.Clef ?? ClefKind.Unknown;
+        int fifths = staff.ForcedKey ?? forcedKey ?? prev?.KeyFifths ?? 0;
+        string? time = staff.ForcedTime ?? prev?.TimeSignature;
         bool keyFromThisStaff = false;
         var measureAccidentals = new Dictionary<int, int>();
 
@@ -113,12 +113,13 @@ public static class MusicInterpreter
                 {
                     var newClef = ClefFrom(s);
                     if (newClef != ClefKind.Unknown) clef = newClef;
+                    if (staff.ForcedClef != null) clef = staff.ForcedClef.Value;
                     s.Attributes["clef"] = clef.ToString();
                     if (!seenNote) { leadingAccidentals.Clear(); }
                     continue;
                 }
                 if (s.Kind is SymbolKind.Note or SymbolKind.Chord or SymbolKind.NoteGroup or SymbolKind.Rest) seenNote = true;
-                if (s.Kind == SymbolKind.Accidental && !seenNote && (mi == 0 || ordered.Any(c => c.Kind == SymbolKind.Clef && c.Bounds.X0 < s.Bounds.X0) || leadingAccidentals.Count > 0)) leadingAccidentals.Add(s);
+                if (s.Kind is SymbolKind.Accidental or SymbolKind.KeySignature && !seenNote && (mi == 0 || ordered.Any(c => c.Kind == SymbolKind.Clef && c.Bounds.X0 < s.Bounds.X0) || leadingAccidentals.Count > 0)) leadingAccidentals.Add(s);
                 if (s.Kind == SymbolKind.TimeSignature && !seenNote)
                 {
                     double cy = s.Bounds.CenterY, cx = s.Bounds.CenterX;
@@ -129,7 +130,7 @@ public static class MusicInterpreter
             // 2. key signature: a run of >= 1 accidentals of one type before the first note (first measure of the system, or after a clef)
             // the key signature is the leading run of accidentals of one kind (sharps or flats); a differing one ends the run
             // accidentals found by the key-signature zone pass are the key signature even when a slur or an early note sorts between them
-            var zoneAcc = ordered.Where(s => s.Kind == SymbolKind.Accidental && s.Attributes.ContainsKey("keyzone")).ToList();
+            var zoneAcc = ordered.Where(s => s.Kind is SymbolKind.Accidental or SymbolKind.KeySignature && s.Attributes.ContainsKey("keyzone")).ToList();
             if (zoneAcc.Count > 0) leadingAccidentals = zoneAcc;
             if (leadingAccidentals.Count > 0 && leadingAccidentals[0].Name is "accidentalSharp" or "accidentalFlat")
             {
@@ -142,7 +143,7 @@ public static class MusicInterpreter
                 if (plausible && mi == 0 || plausible && ordered.Any(c => c.Kind == SymbolKind.Clef))
                 {
                     int n = leadingAccidentals.Count;
-                    if (!(forcedOverrides && forcedKey != null))
+                    if (!(forcedOverrides && forcedKey != null) && staff.ForcedKey == null)
                         fifths = leadingAccidentals[0].Name == "accidentalSharp" ? n : leadingAccidentals[0].Name == "accidentalFlat" ? -n : 0;
                     keyFromThisStaff = true;
                     foreach (var a in leadingAccidentals) { a.Kind = SymbolKind.KeySignature; a.Attributes["key"] = KeyName(fifths); }
@@ -168,6 +169,7 @@ public static class MusicInterpreter
                 }
                 // a partial reading (digits missing or unidentified) is no time signature: the system's other staves may supply one
                 if (time != null && time.Contains('?')) time = null;
+                if (staff.ForcedTime != null) time = staff.ForcedTime;
                 foreach (var t in timeDigits) t.Attributes["time"] = time ?? "?";
             }
             // 4. pitches

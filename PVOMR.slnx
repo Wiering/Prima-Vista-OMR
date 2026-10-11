@@ -2,5 +2,6 @@
   <Folder Name="/src/">
     <Project Path="src/PVOMR.Cli/PVOMR.Cli.csproj" />
     <Project Path="src/PVOMR.Core/PVOMR.Core.csproj" />
+    <Project Path="src/PVOMR.Gui/PVOMR.Gui.csproj" />
   </Folder>
 </Solution>

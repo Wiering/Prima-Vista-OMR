@@ -59,6 +59,10 @@ public sealed class Staff
     public ClefKind Clef { get; set; } = ClefKind.Unknown;
     public int KeyFifths { get; set; }
     public string? TimeSignature { get; set; }
+    /// <summary>User corrections: when set they override what the interpreter reads from the symbols.</summary>
+    public ClefKind? ForcedClef { get; set; }
+    public int? ForcedKey { get; set; }
+    public string? ForcedTime { get; set; }
 
     public int LineCount => Lines.Count;
     public double TopY(double x) => Lines[0].YAt(x);
