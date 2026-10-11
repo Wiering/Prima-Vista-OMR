@@ -626,6 +626,9 @@ public static class MusicAssembler
             {
                 if (run.Count < 4) continue;
                 int? expected = run[0].Fit.Expected;
+                // a signature read from the C or cut-C glyph is reliable; only digit readings and carried values are questioned
+                var inForceMeasure = part.Measures.LastOrDefault(m => m.Number <= run[0].Number && m.Time != null);
+                if (expected != null && inForceMeasure?.Time?.Symbol != null && inForceMeasure.Time.Length == expected && inForceMeasure.Page == run[0].Page) continue;
                 var informative = run.Where(m => !(m.Events.Count == 1 && m.Events[0].IsRest && m.Events[0].Type == "whole") && m.Events.Count > 0).ToList();
                 if (informative.Count < 4) continue;
                 int Main(ScoreMeasure m) => m.Events.GroupBy(e => e.Staff).Select(g => g.GroupBy(e => e.Voice).Select(v => v.Sum(e => e.Duration)).Max()).Max();
