@@ -129,6 +129,8 @@ public sealed class Note
     public int LedgerLines { get; set; }
     /// <summary>Head detector confidence (1 when not available).</summary>
     public double Confidence { get; set; } = 1;
+    /// <summary>The staff this head actually lies in when it is not the stem's staff (cross-staff beaming); Step is relative to it.</summary>
+    public Staff? CrossStaff { get; set; }
     public override string ToString() => $"{Pitch ?? "?"} step={Step}";
 }
 

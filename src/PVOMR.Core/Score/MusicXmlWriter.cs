@@ -198,7 +198,7 @@ public static class MusicXmlWriter
             w.WriteElementString("voice", e.Voice.ToString());
             if (!e.MeasureRest) { w.WriteElementString("type", e.Type); for (int i = 0; i < e.Dots; i++) w.WriteStartElement("dot"); for (int i = 0; i < e.Dots; i++) w.WriteEndElement(); }
             WriteTimeModification(w, e);
-            if (staffCount > 1) w.WriteElementString("staff", e.Staff.ToString());
+            if (staffCount > 1) w.WriteElementString("staff", (e.NotatedStaff ?? e.Staff).ToString());
             if (e.Fermata || e.TupletStart || e.TupletStop)
             {
                 w.WriteStartElement("notations");
@@ -228,7 +228,7 @@ public static class MusicXmlWriter
             if (n.AccidentalName != null) w.WriteElementString("accidental", n.AccidentalName);
             WriteTimeModification(w, e);
             if (e.StemUp.HasValue) w.WriteElementString("stem", e.StemUp.Value ? "up" : "down");
-            if (staffCount > 1) w.WriteElementString("staff", e.Staff.ToString());
+            if (staffCount > 1) w.WriteElementString("staff", (e.NotatedStaff ?? e.Staff).ToString());
             if (ni == 0)
                 for (int b = 0; b < e.Beams.Length; b++)
                 {

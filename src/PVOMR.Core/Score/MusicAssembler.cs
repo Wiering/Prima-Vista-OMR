@@ -75,7 +75,8 @@ public static class MusicAssembler
                         var m = staff.Measures[mi];
                         any = true;
                         var ctx = contexts[grand ? sIdx : pi];
-                        BuildMeasure(sm, m, staff, sIdx + 1, ctx, mi == 0, partMeasureCount[pi] == 0);
+                        var sibling = grand && sys.Staves.Count == 2 ? sys.Staves[1 - sIdx] : null;
+                        BuildMeasure(sm, m, staff, sIdx + 1, ctx, mi == 0, partMeasureCount[pi] == 0, sibling, grand ? 2 - sIdx : 0);
                         if (options.MeasureMap != null) { options.MeasureMap[m] = sm; options.MeasureStaff ??= new(); options.MeasureStaff[m] = sIdx + 1; }
                     }
                     if (!any)
@@ -139,7 +140,7 @@ public static class MusicAssembler
 
     // ------------------------------------------------------------------ one staff-measure
 
-    private static void BuildMeasure(ScoreMeasure sm, Measure m, Staff staff, int staffNo, StaffContext ctx, bool firstInSystem, bool firstOfPart)
+    private static void BuildMeasure(ScoreMeasure sm, Measure m, Staff staff, int staffNo, StaffContext ctx, bool firstInSystem, bool firstOfPart, Staff? sibling = null, int siblingNo = 0)
     {
         double ss = staff.Space;
         sm.X0 = (int)m.X0; sm.X1 = (int)m.X1;
@@ -176,10 +177,20 @@ public static class MusicAssembler
             {
                 case SymbolKind.Note:
                 case SymbolKind.Chord:
-                    events.Add(MakeNoteEvent(s, staff, staffNo, clef, ctx.Key ?? 0, sm));
+                {
+                    var ev = MakeNoteEvent(s, staff, staffNo, clef, ctx.Key ?? 0, sm);
+                    if (sibling != null && s.Notes.Count > 0 && s.Notes.All(n => n.CrossStaff == sibling)) ev.NotatedStaff = siblingNo;
+                    events.Add(ev);
+                }
                     break;
                 case SymbolKind.NoteGroup:
-                    events.AddRange(MakeGroupEvents(s, staff, staffNo, clef, ctx.Key ?? 0, sm));
+                {
+                    var ordered = s.Children.OrderBy(c => c.Notes.Min(n => n.HeadX)).ToList();
+                    var evs = MakeGroupEvents(s, staff, staffNo, clef, ctx.Key ?? 0, sm).ToList();
+                    if (sibling != null)
+                        foreach (var (e, c) in evs.Zip(ordered)) if (c.Notes.Count > 0 && c.Notes.All(n => n.CrossStaff == sibling)) e.NotatedStaff = siblingNo;
+                    events.AddRange(evs);
+                }
                     break;
                 case SymbolKind.Rest:
                     events.Add(MakeRest(s, staffNo));
@@ -333,10 +344,14 @@ public static class MusicAssembler
         return ev;
     }
 
+    private static int _groupCounter;
+
     private static IEnumerable<ScoreEvent> MakeGroupEvents(MusicSymbol group, Staff staff, int staffNo, ClefKind clef, int fifths, ScoreMeasure sm)
     {
         var children = group.Children.OrderBy(c => c.Notes.Min(n => n.HeadX)).ToList();
         var evs = children.Select(c => MakeNoteEvent(c, staff, staffNo, clef, fifths, sm)).ToList();
+        int groupId = ++_groupCounter;
+        foreach (var e in evs) e.GroupId = groupId;
         if (group.Attributes.TryGetValue("tuplet", out var tupletText))
         {
             // "3@1409;3@1480": each digit applies to the run of `actual` notes centred under it
@@ -382,8 +397,16 @@ public static class MusicAssembler
                 }
                 evs[i].Beams = beams;
             }
-            // a note inside a beamed group without beams is most likely a beam-count miss: give it one beam
-            foreach (var (e, c) in evs.Zip(children)) if (c.Flags == 0 && e.Type == "quarter") { e.Type = "eighth"; e.Duration = DurationOf("eighth", e.Dots); sm.Warnings.Add($"beamed note at x={e.X} had no beam count; assuming 8th"); }
+            // a note inside a beamed group without beams is most likely a beam-count miss: give it one beam, unless its
+            // stem points the other way than the beamed notes (a second voice sharing the group's ink)
+            var flaggedChildren = children.Where(c => c.Flags > 0).ToList();
+            bool? beamedUp = flaggedChildren.Count == 0 ? null : flaggedChildren.Count(c => c.StemUp == true) * 2 >= flaggedChildren.Count;
+            foreach (var (e, c) in evs.Zip(children))
+            {
+                if (c.Flags != 0 || e.Type != "quarter") continue;
+                if (beamedUp != null && c.StemUp != null && c.StemUp != beamedUp) { e.GroupId = 0; continue; }
+                e.Type = "eighth"; e.Duration = DurationOf("eighth", e.Dots); sm.Warnings.Add($"beamed note at x={e.X} had no beam count; assuming 8th");
+            }
         }
         return evs;
     }
@@ -485,17 +508,28 @@ public static class MusicAssembler
         var notes = events.Where(e => !e.IsRest && e.StemUp.HasValue).ToList();
         bool twoVoices = false;
         double ss = staff.Space;
-        int ups = notes.Count(n => n.StemUp == true), downs = notes.Count(n => n.StemUp == false);
+        // cross-staff members of a beamed group have their stems on the other side of the beam: for the voice they
+        // follow the direction of the group's members on this staff
+        var dir = events.ToDictionary(e => e, e => e.StemUp);
+        foreach (var g in events.Where(e => e.GroupId > 0).GroupBy(e => e.GroupId))
+        {
+            var home = g.Where(e => e.Beams.Length > 0 && e.NotatedStaff == null).ToList();
+            var away = g.Where(e => e.Beams.Length > 0 && e.NotatedStaff != null).ToList();
+            if (home.Count == 0 || away.Count == 0) continue;
+            bool up = home.Count(e => e.StemUp == true) * 2 >= home.Count;
+            foreach (var e in away) dir[e] = up;
+        }
+        int ups = notes.Count(n => dir[n] == true), downs = notes.Count(n => dir[n] == false);
         // an up-stem and a down-stem note at the same x are two voices (also a unison with stems both ways), adjacent ones are not
         if (ups >= 1 && downs >= 1)
-            foreach (var a in notes.Where(n => n.StemUp == true))
-                if (notes.Any(b => b.StemUp == false && Math.Abs(b.X - a.X) < 0.6 * ss)) { twoVoices = true; break; }
+            foreach (var a in notes.Where(n => dir[n] == true))
+                if (notes.Any(b => dir[b] == false && Math.Abs(b.X - a.X) < 0.6 * ss)) { twoVoices = true; break; }
         int baseVoice = (staffNo - 1) * 2 + 1;
         foreach (var e in events)
         {
             if (!twoVoices) { e.Voice = baseVoice; continue; }
             if (e.IsRest) e.Voice = e.Y > staff.CenterY ? baseVoice + 1 : baseVoice;
-            else e.Voice = e.StemUp == false ? baseVoice + 1 : baseVoice;
+            else e.Voice = dir[e] == false ? baseVoice + 1 : baseVoice;
         }
         if (twoVoices)
         {

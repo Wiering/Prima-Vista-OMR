@@ -103,6 +103,10 @@ public sealed class ScoreEvent
     public bool MeasureRest { get; set; }
     public int Voice { get; set; } = 1;
     public int Staff { get; set; } = 1;
+    /// <summary>Staff the note is written on when it differs from the voice's staff (cross-staff notes of a grand staff).</summary>
+    public int? NotatedStaff { get; set; }
+    /// <summary>Beamed group the event came from (0 = none): its beamed members form one voice.</summary>
+    public int GroupId { get; set; }
     public int Duration { get; set; }                 // divisions
     public string Type { get; set; } = "quarter";     // MusicXML note type
     public int Dots { get; set; }

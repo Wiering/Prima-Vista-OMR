@@ -51,6 +51,24 @@ public static class MusicInterpreter
             }
         }
         CompleteKeysAcrossSystems(page);
+        // cross-staff heads: pitch from the staff they lie in (its clef and key), not the stem's staff
+        foreach (var staff in page.Staves)
+            foreach (var m in staff.Measures)
+                foreach (var s in m.Symbols)
+                {
+                    bool any = false;
+                    foreach (var sym in new[] { s }.Concat(s.Children))
+                        foreach (var n in sym.Notes)
+                        {
+                            if (n.CrossStaff == null) continue;
+                            n.Pitch = PitchName(n.CrossStaff.Clef, n.CrossStaff.KeyFifths, n, new Dictionary<int, int>());
+                            n.LedgerLines = n.Step < 0 ? (-n.Step) / 2 : n.Step > 8 ? (n.Step - 8) / 2 : 0;
+                            any = true;
+                        }
+                    if (!any) continue;
+                    foreach (var ch in s.Children) ch.Pitch = string.Join(" ", ch.Notes.Select(n => n.Pitch));
+                    s.Pitch = s.Kind == SymbolKind.NoteGroup ? null : string.Join(" ", s.Notes.Select(n => n.Pitch));
+                }
     }
 
     /// <summary>The staff at the same position in the previous system of the page, or in the last system of the previous page for the first system.</summary>

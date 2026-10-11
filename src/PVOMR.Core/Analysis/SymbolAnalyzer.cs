@@ -1301,8 +1301,8 @@ public sealed class SymbolAnalyzer
             }
         }
 
-        // 1. stems -> note structures
-        var stems = FindStems(c, staff);
+        // 1. stems -> note structures (a component far taller than two staves is a bar line or bracket, never a note group)
+        var stems = h <= 20 ? FindStems(c, staff) : new List<Stem>();
         if (stems.Count > 0)
         {
             var noteSym = AnalyzeNoteGroup(c, staff, stems);
@@ -1710,6 +1710,29 @@ public sealed class SymbolAnalyzer
         double BeamAt(double x) => intercept + slope * x;
         double beamEnd = fitPts.Count > 0 ? BeamAt(fitPts.Average(p => p.Item1)) : double.NaN;
 
+        // 0. a beam with heads on both sides of it straddles two staves (cross-staff beaming): the heads on the far side
+        //    of the beam, seen from this staff, belong to the neighbouring staff of the system
+        if (!double.IsNaN(intercept) && withHeads.Any(s => s.Flags > 0 && s.Up) && withHeads.Any(s => s.Flags > 0 && !s.Up))
+        {
+            var above = _page.Staves.FirstOrDefault(o => o.SystemIndex == staff.SystemIndex && o.Index == staff.Index - 1);
+            var below = _page.Staves.FirstOrDefault(o => o.SystemIndex == staff.SystemIndex && o.Index == staff.Index + 1);
+            foreach (var st in withHeads.Where(s => s.Flags > 0))
+                foreach (var h in st.Heads)
+                {
+                    bool headAboveBeam = h.HeadY < BeamAt(h.HeadX);
+                    double stepH = staff.StepAt(h.HeadX, h.HeadY);
+                    // only heads well beyond the staff (two spaces past the outer line) that lie nearer the neighbour
+                    Staff? target = headAboveBeam && stepH > 12.5 ? above : !headAboveBeam && stepH < -4.5 ? below : null;
+                    if (target == null || h.CrossStaff == target) continue;
+                    double dThis = Math.Min(Math.Abs(h.HeadY - staff.TopY(h.HeadX)), Math.Abs(h.HeadY - staff.BottomY(h.HeadX)));
+                    double dOther = Math.Min(Math.Abs(h.HeadY - target.TopY(h.HeadX)), Math.Abs(h.HeadY - target.BottomY(h.HeadX)));
+                    if (dOther > 1.5 * dThis) continue;
+                    h.CrossStaff = target;
+                    h.Step = (int)Math.Round(target.StepAt(h.HeadX, h.HeadY));
+                    if (_opt.Verbose) st.Trace += $"[head {h.HeadX:0},{h.HeadY:0} -> staff {target.Index + 1}]";
+                }
+        }
+
         // 1. stems that stop short of the beam line lost their lower beams to a gap in the ink
         if (!double.IsNaN(intercept))
             foreach (var st in withHeads.Where(s => s.Up == up && s.Flags < majority))
@@ -1821,7 +1844,9 @@ public sealed class SymbolAnalyzer
                     if (found == null) continue;
                     var (hx, hy, score, hollow) = found.Value;
                     var head = new Note { Head = new Rect((int)Math.Round(hx - 0.59 * ss), (int)Math.Round(hy - 0.5 * ss), (int)Math.Round(hx + 0.59 * ss), (int)Math.Round(hy + 0.5 * ss)), HeadType = hollow ? "half" : "black", Confidence = score };
-                    head.Step = (int)Math.Round(staff.StepAt(hx, hy));
+                    double stepG = staff.StepAt(hx, hy);
+                    head.CrossStaff = stepG <= -2.5 || stepG >= 10.5 ? OtherStaffAt(staff, hx, hy) : null;
+                    head.Step = (int)Math.Round((head.CrossStaff ?? staff).StepAt(hx, hy));
                     int sx = (int)Math.Round(up ? hx + 0.5 * ss : hx - 0.5 * ss);
                     var extra = new Stem { X = sx, X0 = sx, X1 = sx, Up = up, Flags = majority, SortX = hx, Top = (int)Math.Min(head.Head.Y0, beamEnd), Bottom = (int)Math.Max(head.Head.Y1, beamEnd) };
                     extra.Heads.Add(head);
@@ -1857,7 +1882,7 @@ public sealed class SymbolAnalyzer
             // the head must be ink of this component, not a ledger line or a beam
             if (_cm.Labels[y * _cm.Width + x] != c.Label) continue;
             double stepF = staff.StepAt(x, y);
-            if ((stepF <= -2.5 || stepF >= 10.5) && !HasLedgerLine(x, y, ss)) continue;
+            if ((stepF <= -2.5 || stepF >= 10.5) && OtherStaffAt(staff, x, y) == null && !HasLedgerLine(x, y, ss)) continue;
             if (LooksLikeBeam(x, y, ss, 1) || LooksLikeBeam(x, y, ss, -1)) continue;
             best = (x, y, p, ph > pb);
         }
@@ -1941,6 +1966,19 @@ public sealed class SymbolAnalyzer
     }
 
     /// <summary>Head detection with the trained verifier: windows along both sides of the stem, batch-classified, non-maximum suppression.</summary>
+    /// <summary>Another staff of the same system whose band (lines plus one space) contains the point: the home of a cross-staff head.</summary>
+    private Staff? OtherStaffAt(Staff staff, double x, double y)
+    {
+        foreach (var o in _page.Staves)
+        {
+            // cross-staff beams join neighbouring staves only
+            if (o == staff || o.SystemIndex != staff.SystemIndex || Math.Abs(o.Index - staff.Index) != 1) continue;
+            if (x < o.Left - o.Space || x > o.Right + o.Space) continue;
+            if (y >= o.TopY(x) - 1.0 * o.Space && y <= o.BottomY(x) + 1.0 * o.Space) return o;
+        }
+        return null;
+    }
+
     private int _stemLabel = -1;
 
     /// <summary>True when a pixel of the given component label lies within r of (cx, cy) in the staff-less image.</summary>
@@ -2002,7 +2040,11 @@ public sealed class SymbolAnalyzer
             bool beam = LooksLikeBeam(f.cx, f.cy, ss, -f.sign);
             // outside the staff a real head sits on or next to ledger lines; text and stray marks do not
             double stepF = staff.StepAt(f.cx, f.cy);
-            if ((stepF <= -2.5 || stepF >= 10.5) && !HasLedgerLine(f.cx, f.cy, ss)) { if (_opt.Verbose) st.Trace += $"[{f.cx:0},{f.cy:0} NOLEDGER]"; continue; }
+            // a head inside the neighbouring staff belongs to this stem only at the stem's far end (cross-staff beaming);
+            // heads of the other staff that merely pass by a long stem do not
+            Staff? other = stepF <= -2.5 || stepF >= 10.5 ? OtherStaffAt(staff, f.cx, f.cy) : null;
+            if (other != null && Math.Min(Math.Abs(f.cy - st.Top), Math.Abs(f.cy - st.Bottom)) > 1.0 * ss) { if (_opt.Verbose) st.Trace += $"[{f.cx:0},{f.cy:0} other staff mid-stem]"; continue; }
+            if ((stepF <= -2.5 || stepF >= 10.5) && other == null && !HasLedgerLine(f.cx, f.cy, ss)) { if (_opt.Verbose) st.Trace += $"[{f.cx:0},{f.cy:0} NOLEDGER]"; continue; }
             if (_opt.Verbose) st.Trace += $"[{f.cx:0},{f.cy:0} p{f.score:0.00} {(f.hollow ? "h" : "b")}{(beam ? " BEAM" + _beamWhy : "")}]";
             if (beam) continue;
             var (cxr, cyr) = (f.cx, f.cy);
@@ -2011,8 +2053,10 @@ public sealed class SymbolAnalyzer
                 Head = new Rect((int)Math.Round(cxr - rx), (int)Math.Round(cyr - headH / 2), (int)Math.Round(cxr + rx), (int)Math.Round(cyr + headH / 2)),
                 HeadType = f.hollow ? "half" : "black",
                 Confidence = Math.Min(1, f.score),
+                CrossStaff = other,
             };
-            head.Step = (int)Math.Round(staff.StepAt(cxr, cyr));
+            head.Step = (int)Math.Round((other ?? staff).StepAt(cxr, cyr));
+            if (other != null && _opt.Verbose) st.Trace += $"[{f.cx:0},{f.cy:0} cross-staff {other.Index + 1}]";
             st.Heads.Add(head);
         }
         if (st.Heads.Count == 0) return;
@@ -2225,7 +2269,11 @@ public sealed class SymbolAnalyzer
     private void AttachDotsAndAccidentals(List<MusicSymbol> syms, Staff staff)
     {
         double ss = staff.Space;
-        var notes = syms.Where(s => s.Kind is SymbolKind.Note or SymbolKind.Chord or SymbolKind.NoteGroup).SelectMany(s => s.Notes.Select(n => (sym: s, note: n))).ToList();
+        // heads with the symbol that owns them: for a beamed group the child, so a dot lands on the right note
+        var notes = syms.Where(s => s.Kind is SymbolKind.Note or SymbolKind.Chord or SymbolKind.NoteGroup)
+                        .SelectMany(s => s.Kind == SymbolKind.NoteGroup && s.Children.Count > 0
+                                         ? s.Children.SelectMany(c => c.Notes.Select(n => (sym: c, note: n)))
+                                         : s.Notes.Select(n => (sym: s, note: n))).ToList();
         var dots = syms.Where(s => s.Kind == SymbolKind.Dot).OrderBy(s => s.Bounds.X0).ToList();
         var dotOf = new Dictionary<Note, MusicSymbol>();
         foreach (var d in dots)
@@ -2237,6 +2285,10 @@ public sealed class SymbolAnalyzer
                             .OrderBy(p => Math.Abs(d.Bounds.CenterY - p.note.HeadY)).ThenBy(p => Math.Abs(d.Bounds.CenterX - p.note.Head.X1)).FirstOrDefault();
             if (cand.note != null)
             {
+                // a head shared by two voices (two notes at the same place): the dot belongs to the longer note
+                var shared = notes.Where(p => p.sym != cand.sym && Math.Abs(p.note.HeadX - cand.note.HeadX) <= 0.3 * ss && Math.Abs(p.note.HeadY - cand.note.HeadY) <= 0.3 * ss)
+                                  .OrderBy(p => p.sym.Flags).FirstOrDefault();
+                if (shared.note != null && shared.sym.Flags < cand.sym.Flags) cand = shared;
                 cand.note.Dots++;
                 cand.sym.Dots = Math.Max(cand.sym.Dots, cand.note.Dots);
                 dotOf[cand.note] = d;
