@@ -114,7 +114,12 @@ staff-less binary image.
    whose stem end lies on a neighbour's beam with the beam ink reaching its stem takes that beam count, and thin
    flag spines or blobs next to a stem end reattach as flags. Hollow heads that broke off a shared stem are
    reattached as one chord, and a stemless head that coincides with a head of a stemmed note is the same head
-   seen twice and is dropped. Cross-staff beaming (piano arpeggios running from one staff into the other under
+   seen twice and is dropped. Voices on a staff: an up-stem and a down-stem note at the same x start two voices,
+   split by stem direction (rests by their height); when the measure length is known it arbitrates among a few
+   candidate splits (single voice, by direction with the rests on either side, flipped, long notes against short
+   ones) and the one whose main voice fills the measure without any voice overflowing wins. A second voice may
+   stop early, as a held bass note under a moving line has no written rests; the duration check accepts that and
+   flags only an overflowing voice or a main voice that does not fill the measure. Cross-staff beaming (piano arpeggios running from one staff into the other under
    one beam) is handled in two ways: a head found at the far end of a stem inside the neighbouring staff of the
    system is accepted as a cross-staff head, and when one beam carries heads on both sides of it, the heads two
    spaces or more beyond this staff on the far side belong to the neighbouring staff. Such heads keep their place
@@ -197,7 +202,8 @@ Effect on the 12 test pieces (trained on 72 other pieces in Leland, Bravura and 
 | clean, retrained glyph model, after the piano bar-line round | 89% | 99.5% | 99.1% | 85% / 85% |
 | degraded, retrained glyph model, after the piano bar-line round | 81% | 98.6% | 98.2% | 83% / 83% |
 
-Hard set after these rounds: 192/192 measures, 67% exact, note P 92.5% / R 92.7%; tuplet set 99.8% / 99.8%.
+Hard set after these rounds: 192/192 measures, 69% exact, note P 93.5% / R 93.7% (the time-arbitrated voice split
+alone brought it from 92.5% / 92.7%); tuplet set 99.8% / 99.8%.
 
 The key/time pass helps the synthetic pages too because a misread key signature changes every pitch of a staff:
 keys and time signatures are now right on all 12 clean, degraded and hard pieces and the 8 tuplet pieces
@@ -332,6 +338,10 @@ Baseline (12 generated pieces, 192 measures), 2026-10-10:
 
 ## Diagnostics
 
+* `python tools/corpus_run.py --root D:\OMR\Scores [--max-pages 6] [--report]` runs the recogniser over every
+  PDF under a folder (the first pages of each, with a time limit per page) and keeps a manifest
+  (`<root>/.pvomr-corpus.json`) keyed by the MD5 of each file, so duplicate files under other names are processed
+  once and a later run only adds what is new; `--report` prints the ranking of the worst and slowest pages.
 * `--fit` prints per page how many measures add up to their time signature (the assembler's own check) and, with
   `--verbose`, lists the measures that do not with their summed durations. It needs no ground truth, so it ranks
   real pages by recognition quality (for a two-staff part each staff is checked on its own): Bach Cello Suite No 1
@@ -343,8 +353,9 @@ Baseline (12 generated pieces, 192 measures), 2026-10-10:
   a chord's stem was taken for a repeat bar line; with both fixed it reads 81%. With the pages in sequence, Bach
   suite page 6 (no time signature after its first system) is checked in full: 48 measures, 69% adding up, instead
   of 24 checked and 12 unknown. Debussy's Clair de lune page 2 (cross-staff arpeggios under one beam, a dotted
-  bass note sharing the first head) moved from 27% to 32% with the cross-staff handling; the rest of that page
-  is two-voice writing that still defeats the voice assignment. The Fauré Ballade has no time
+  bass note sharing the first head) moved from 27% to 32% with the cross-staff handling and to 45% with the
+  time-arbitrated voice split, which also lifted Beethoven 5 pages 7 and 8 to 96% and 87%, the Pathétique page 2
+  to 82% and the Fauré Ballade pages to 43% and 18%. The Fauré Ballade has no time
   signature on the page, and the Handel Chaconne's upper staff is in 9/8 against 3/4 below (per-staff time
   signatures are not supported). The retrained glyph model costs a little on the Bach suite pages 3 to 6
   (46%, 80%, 69%, 64%). When a page carries no time signature the length is inferred from the most common

@@ -216,7 +216,7 @@ public static class MusicAssembler
             if (art != null && !ev.Articulations.Contains(art)) ev.Articulations.Add(art);
         }
 
-        AssignVoices(events, staff, staffNo);
+        AssignVoices(events, staff, staffNo, ctx.Time?.Length);
         events = events.OrderBy(e => e.Voice).ThenBy(e => e.X).ToList();
         sm.Events.AddRange(events);
 
@@ -503,7 +503,7 @@ public static class MusicAssembler
 
     // ------------------------------------------------------------------ voices
 
-    private static void AssignVoices(List<ScoreEvent> events, Staff staff, int staffNo)
+    private static void AssignVoices(List<ScoreEvent> events, Staff staff, int staffNo, int? expected = null)
     {
         var notes = events.Where(e => !e.IsRest && e.StemUp.HasValue).ToList();
         bool twoVoices = false;
@@ -525,16 +525,64 @@ public static class MusicAssembler
             foreach (var a in notes.Where(n => dir[n] == true))
                 if (notes.Any(b => dir[b] == false && Math.Abs(b.X - a.X) < 0.6 * ss)) { twoVoices = true; break; }
         int baseVoice = (staffNo - 1) * 2 + 1;
-        foreach (var e in events)
+        // the default split: by stem direction, rests by their height
+        bool DefaultSecond(ScoreEvent e) => e.IsRest ? e.Y > staff.CenterY : dir[e] == false;
+        var second = events.ToDictionary(e => e, e => twoVoices && DefaultSecond(e));
+
+        // when the measure length is known, let it arbitrate: the split (or no split) whose voices fill the measure wins
+        if (expected is int L && events.Count > 0)
         {
-            if (!twoVoices) { e.Voice = baseVoice; continue; }
-            if (e.IsRest) e.Voice = e.Y > staff.CenterY ? baseVoice + 1 : baseVoice;
-            else e.Voice = dir[e] == false ? baseVoice + 1 : baseVoice;
+            int total = events.Sum(e => e.Duration);
+            // what the validation step can still repair: an overflowing voice whose surplus is exactly one or two
+            // uncertain notes counts as fitting
+            int Repaired(List<ScoreEvent> voice)
+            {
+                int sum = voice.Sum(e => e.Duration);
+                if (sum <= L) return sum;
+                var unc = voice.Where(e => e.Uncertain).ToList();
+                if (unc.Any(u => sum - u.Duration == L)) return L;
+                if (unc.SelectMany((a, i) => unc.Skip(i + 1).Select(b => a.Duration + b.Duration)).Any(d => sum - d == L)) return L;
+                return sum;
+            }
+            double Cost(Func<ScoreEvent, bool> isSecond)
+            {
+                int a = Repaired(events.Where(e => !isSecond(e)).ToList()), b = Repaired(events.Where(isSecond).ToList());
+                if (b == 0) return Math.Abs(a - L);
+                // the second voice may stop early (a held bass note under a moving line); it must not overflow
+                return Math.Abs(a - L) + (b > L ? (b - L) : 0.25 * (L - b));
+            }
+            var candidates = new List<(string name, Func<ScoreEvent, bool> isSecond)>
+            {
+                ("single", _ => false),
+                ("direction", DefaultSecond),
+                ("direction, rests up", e => !e.IsRest && dir[e] == false),
+                ("direction, rests down", e => e.IsRest || dir[e] == false),
+                ("direction flipped", e => e.IsRest ? e.Y <= staff.CenterY : dir[e] == true),
+                ("long notes", e => !e.IsRest && (e.Type is "whole" or "half" || e.Dots > 0) && e.Beams.Length == 0),
+            };
+            // only consider splits that use both stem directions or separate long from short notes; a measure that adds
+            // up as one voice stays one voice
+            bool bothDirections = notes.Any(n => dir[n] == true) && notes.Any(n => dir[n] == false);
+            double currentCost = Cost(e => second[e]);
+            (string name, Func<ScoreEvent, bool> isSecond, double cost) best = ("current", e => second[e], currentCost);
+            if (total == L) best = ("single", _ => false, 0);
+            else
+                foreach (var (name, isSecond) in candidates)
+                {
+                    if (name != "single" && name != "long notes" && !bothDirections) continue;
+                    // a second voice made only of uncertain notes is a stray head hiding from the duration check
+                    if (name != "single" && !events.Any(e => isSecond(e) && !e.Uncertain && !e.IsRest)) continue;
+                    double c = Cost(isSecond);
+                    // an alternative split must make the measure add up exactly; a direction-based one may also merely
+                    // improve a measure that really has stems both ways (a single-voice measure with a wrong duration
+                    // must not be "fixed" by inventing a second voice)
+                    bool directionBased = name.StartsWith("direction") && bothDirections;
+                    if (c < best.cost - 1e-9 && (c < 1e-9 || directionBased)) best = (name, isSecond, c);
+                }
+            foreach (var e in events) second[e] = best.isSecond(e);
+            twoVoices = events.Any(e => second[e]);
         }
-        if (twoVoices)
-        {
-            // rests shared by both voices: keep them in voice 1 only when voice 2 already accounts for that time span
-        }
+        foreach (var e in events) e.Voice = second[e] ? baseVoice + 1 : baseVoice;
     }
 
     // ------------------------------------------------------------------ finishing

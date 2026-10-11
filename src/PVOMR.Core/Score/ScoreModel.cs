@@ -46,9 +46,11 @@ public sealed class MeasureFit
     /// <summary>Summed durations per (staff, voice) before any uncertain event was dropped.</summary>
     public List<(int Staff, int Voice, int Sum)> Sums { get; } = new();
     public int Dropped { get; set; }
-    public bool Fits => Expected == null || Sums.All(s => s.Sum == Expected);
+    // the fullest voice of each staff must fill the measure; a second voice may stop early (a held note under a
+    // moving line has no written rests), but no voice may overflow
+    public bool Fits => Expected == null || (!TooLong && !TooShort);
     public bool TooLong => Expected != null && Sums.Any(s => s.Sum > Expected);
-    public bool TooShort => Expected != null && Sums.Any(s => s.Sum < Expected);
+    public bool TooShort => Expected != null && Sums.GroupBy(s => s.Staff).Any(g => g.Max(s => s.Sum) < Expected);
     /// <summary>The same check restricted to one staff of a two-staff part (1 = upper, 2 = lower).</summary>
     public MeasureFit ForStaff(int staffNo)
     {

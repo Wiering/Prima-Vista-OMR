@@ -119,10 +119,10 @@ foreach (var input in inputs)
             var result = analyzer.Analyze(img, page.Source, page.PageNumber, page.Dpi, rerender, out var ctx, previousPage != null && previousPage.PageNumber == page.PageNumber - 1 ? previousPage : null);
             previousPage = result;
             if (diag) Diagnostics.DumpStaves(result, ctx);
-            if (fit) Diagnostics.PrintFit(pageResults.Append(result).ToList(), result, verbose);
             string text = TextReport.Write(result, verbose);
             if (quiet) Console.WriteLine(text.Split('\n')[0] + (result.Staves.Count > 0 ? $"  staves={result.Staves.Count} systems={result.Systems.Count} measures={result.Staves.Sum(s => s.Measures.Count)}" : "  (no music)"));
             else Console.Write(text);
+            if (fit) Diagnostics.PrintFit(pageResults.Append(result).ToList(), result, verbose);
             reportSb.Append(text).AppendLine();
             pageResults.Add(result);
             allPages.Add(result);
