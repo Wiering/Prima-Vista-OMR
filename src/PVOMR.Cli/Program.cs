@@ -108,6 +108,7 @@ foreach (var input in inputs)
     if (!File.Exists(input)) { Console.Error.WriteLine($"not found: {input}"); exit = 1; continue; }
     var reportSb = new StringBuilder();
     var pageResults = new List<PageAnalysis>();
+    PageAnalysis? previousPage = null;
     try
     {
         foreach (var page in PageSource.Enumerate(input, pages, dpi))
@@ -115,9 +116,10 @@ foreach (var input in inputs)
             var img = page.Image;
             if (augment != null) img = Augment.Apply(img, augment, page.PageNumber);
             Func<double, GrayImage>? rerender = page.FromPdf && augment == null ? d => PageSource.RenderPdfPage(page.Source, page.PageNumber, d) : null;
-            var result = analyzer.Analyze(img, page.Source, page.PageNumber, page.Dpi, rerender, out var ctx);
+            var result = analyzer.Analyze(img, page.Source, page.PageNumber, page.Dpi, rerender, out var ctx, previousPage != null && previousPage.PageNumber == page.PageNumber - 1 ? previousPage : null);
+            previousPage = result;
             if (diag) Diagnostics.DumpStaves(result, ctx);
-            if (fit) Diagnostics.PrintFit(result, verbose);
+            if (fit) Diagnostics.PrintFit(pageResults.Append(result).ToList(), result, verbose);
             string text = TextReport.Write(result, verbose);
             if (quiet) Console.WriteLine(text.Split('\n')[0] + (result.Staves.Count > 0 ? $"  staves={result.Staves.Count} systems={result.Systems.Count} measures={result.Staves.Sum(s => s.Measures.Count)}" : "  (no music)"));
             else Console.Write(text);

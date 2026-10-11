@@ -9,8 +9,14 @@ public static class MusicInterpreter
     private static readonly string[] SharpOrder = { "F", "C", "G", "D", "A", "E", "B" };
     private static readonly string[] FlatOrder = { "B", "E", "A", "D", "G", "C", "F" };
 
-    public static void Interpret(PageAnalysis page)
+    /// <summary>
+    /// Interprets a page. <paramref name="previous"/> is the page before it in the same score (when pages are analysed in
+    /// order): its last system seeds clef, key and time of the first system here, so continuation pages without a time
+    /// signature are read against the right measure length.
+    /// </summary>
+    public static void Interpret(PageAnalysis page, PageAnalysis? previous = null)
     {
+        var carried = previous?.Systems.LastOrDefault();
         // Carry the clef/key from one system to the next for the same staff position (parts) is a guess; we only carry within a staff.
         foreach (var sys in page.Systems)
         {
@@ -18,7 +24,7 @@ public static class MusicInterpreter
             {
                 var staff = sys.Staves[k];
                 // inherit from the staff at the same position in the previous system when nothing is found
-                Staff? prev = sys.Index > 0 && page.Systems[sys.Index - 1].Staves.Count == sys.Staves.Count ? page.Systems[sys.Index - 1].Staves[k] : null;
+                Staff? prev = PrevStaff(page, sys, k, carried);
                 InterpretStaff(staff, prev, null);
             }
             // staves of one system share the key signature: a staff whose key signature was not recognised adopts the
@@ -31,7 +37,7 @@ public static class MusicInterpreter
                 {
                     var staff = sys.Staves[k];
                     if (staff.Measures.Any(m => m.Symbols.Any(sy => sy.Kind == SymbolKind.KeySignature)) || staff.KeyFifths == key || staff.ForcedKey != null) continue;
-                    Staff? prev = sys.Index > 0 && page.Systems[sys.Index - 1].Staves.Count == sys.Staves.Count ? page.Systems[sys.Index - 1].Staves[k] : null;
+                    Staff? prev = PrevStaff(page, sys, k, carried);
                     InterpretStaff(staff, prev, key);
                 }
             }
@@ -45,6 +51,13 @@ public static class MusicInterpreter
             }
         }
         CompleteKeysAcrossSystems(page);
+    }
+
+    /// <summary>The staff at the same position in the previous system of the page, or in the last system of the previous page for the first system.</summary>
+    private static Staff? PrevStaff(PageAnalysis page, StaffSystem sys, int k, StaffSystem? carried)
+    {
+        if (sys.Index > 0) return page.Systems[sys.Index - 1].Staves.Count == sys.Staves.Count ? page.Systems[sys.Index - 1].Staves[k] : null;
+        return carried != null && carried.Staves.Count == sys.Staves.Count ? carried.Staves[k] : null;
     }
 
     private static int? SystemMajorityKey(StaffSystem sys)
@@ -155,6 +168,7 @@ public static class MusicInterpreter
             // 3. time signature
             if (timeDigits.Count > 0)
             {
+                string? inherited = time;
                 var common = timeDigits.FirstOrDefault(t => t.Name is "timeSigCommon" or "timeSigCutCommon");
                 var stack = timeDigits.FirstOrDefault(t => t.Attributes.ContainsKey("stack"));
                 if (stack != null) time = stack.Attributes["stack"];
@@ -178,6 +192,8 @@ public static class MusicInterpreter
                     if (!int.TryParse(parts[1], out int den) || den is not (1 or 2 or 4 or 8 or 16 or 32) || !int.TryParse(parts[0], out int num) || num < 1 || num > 24) time = null;
                 }
                 if (staff.ForcedTime != null) time = staff.ForcedTime;
+                // digits that give no valid signature (fingerings, fragments) do not cancel an inherited one
+                if (time == null) time = inherited;
                 foreach (var t in timeDigits) t.Attributes["time"] = time ?? "?";
             }
             // 4. pitches

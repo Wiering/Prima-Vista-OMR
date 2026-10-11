@@ -150,13 +150,14 @@ public partial class MainWindow : Window
             string file = _file;
             double dpi = (double)(DpiBox.Value ?? 300);
             Status(_engine == null ? "loading models and fonts…" : $"recognising page {page}…");
+            _pages.TryGetValue(page - 1, out var previous);
             var result = await Task.Run(() =>
             {
                 _engine ??= new RecognitionEngine();
-                return _engine.Analyze(file, page, dpi);
+                return _engine.Analyze(file, page, dpi, previous);
             });
             int applied = _store?.ApplyAll(result) ?? 0;
-            if (applied > 0) RecognitionEngine.Reinterpret(result);
+            if (applied > 0) RecognitionEngine.Reinterpret(result, previous);
             _pages[page] = result;
             ShowPage(result, fit: true);
             var a = result.Analysis;
@@ -302,7 +303,8 @@ public partial class MainWindow : Window
     {
         if (_current == null) return;
         _current.Modified = true;
-        RecognitionEngine.Reinterpret(_current);
+        _pages.TryGetValue(_page - 1, out var previousPage);
+        RecognitionEngine.Reinterpret(_current, previousPage);
         View.SetAnalysis(_current.Analysis);
         ComputeFits();
         UpdateInspector();

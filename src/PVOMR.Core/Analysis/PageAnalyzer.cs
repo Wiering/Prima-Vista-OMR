@@ -29,7 +29,7 @@ public sealed class PageAnalyzer
     }
 
     /// <summary>Analyse a page. <paramref name="rerender"/> may be used to obtain the page at a higher DPI.</summary>
-    public PageAnalysis Analyze(GrayImage gray, string source, int pageNumber, double dpi, Func<double, GrayImage>? rerender, out AnalysisContext ctx)
+    public PageAnalysis Analyze(GrayImage gray, string source, int pageNumber, double dpi, Func<double, GrayImage>? rerender, out AnalysisContext ctx, PageAnalysis? previous = null)
     {
         var sw = Stopwatch.StartNew();
         var result = new PageAnalysis { Source = source, PageNumber = pageNumber, Dpi = dpi };
@@ -131,7 +131,7 @@ public sealed class PageAnalyzer
         symbolAnalyzer.Run();
 
         // 5. musical interpretation (clefs, key signatures, pitches)
-        MusicInterpreter.Interpret(result);
+        MusicInterpreter.Interpret(result, previous);
 
         result.Elapsed = sw.Elapsed;
         return result;

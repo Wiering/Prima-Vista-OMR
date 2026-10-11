@@ -33,7 +33,7 @@ public sealed class RecognitionEngine
 
     public static int PageCount(string file) => PageSource.IsPdf(file) ? PageSource.GetPdfPageCount(file) : 1;
 
-    public PageResult Analyze(string file, int pageNumber, double dpi)
+    public PageResult Analyze(string file, int pageNumber, double dpi, PageResult? previous = null)
     {
         GrayImage image;
         Func<double, GrayImage>? rerender = null;
@@ -45,12 +45,12 @@ public sealed class RecognitionEngine
             rerender = d => PageSource.RenderPdfPage(file, pageNumber, d);
         }
         else image = ImageIO.Load(file);
-        var analysis = _analyzer.Analyze(image, file, pageNumber, effectiveDpi, rerender, out var ctx);
+        var analysis = _analyzer.Analyze(image, file, pageNumber, effectiveDpi, rerender, out var ctx, previous?.Analysis);
         var result = new PageResult { PageNumber = pageNumber, Analysis = analysis, Context = ctx };
         CorrectionStore.RecordOrigins(result);
         return result;
     }
 
     /// <summary>Recomputes clefs, keys, times and pitch names after the symbols of a page were edited.</summary>
-    public static void Reinterpret(PageResult page) => MusicInterpreter.Interpret(page.Analysis);
+    public static void Reinterpret(PageResult page, PageResult? previous = null) => MusicInterpreter.Interpret(page.Analysis, previous?.Analysis);
 }

@@ -3,12 +3,15 @@ using PVOMR.Core.Model;
 
 static class Diagnostics
 {
-    /// <summary>Duration check of one page: how many measures add up to the time signature (assembler validation).</summary>
-    public static void PrintFit(PageAnalysis p, bool verbose)
+    /// <summary>
+    /// Duration check of one page: how many of its measures add up to the time signature (assembler validation). The
+    /// pages analysed before it in the same run take part in the assembly so a time signature carries over.
+    /// </summary>
+    public static void PrintFit(IReadOnlyList<PageAnalysis> pages, PageAnalysis p, bool verbose)
     {
         var map = new Dictionary<Measure, PVOMR.Core.Score.ScoreMeasure>();
         var staffOf = new Dictionary<Measure, int>();
-        try { PVOMR.Core.Score.MusicAssembler.Build(new[] { p }, new PVOMR.Core.Score.MusicAssembler.Options { MeasureMap = map, MeasureStaff = staffOf }); }
+        try { PVOMR.Core.Score.MusicAssembler.Build(pages, new PVOMR.Core.Score.MusicAssembler.Options { MeasureMap = map, MeasureStaff = staffOf }); }
         catch (Exception ex) { Console.WriteLine($"  fit: assembler failed: {ex.Message}"); return; }
         int total = 0, ok = 0, tooLong = 0, tooShort = 0, dropped = 0, unknown = 0;
         var misfits = new List<string>();

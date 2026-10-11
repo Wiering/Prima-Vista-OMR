@@ -135,7 +135,11 @@ staff-less binary image.
    time signatures and pitch names with per-measure accidental memory. Within a system, staves without a key
    or time signature adopt the majority reading (the time only when at least a quarter of the staves have one);
    across the systems of a page, a staff position whose key signature lost accidentals on one system (same
-   kind, fewer of them) is completed to the fuller reading. Partial time readings ("7/?") are discarded.
+   kind, fewer of them) is completed to the fuller reading. Partial time readings ("7/?") are discarded, and
+   digits that give no valid signature do not cancel an inherited one. When pages are analysed in order (the
+   CLI with a page range, the GUI when the previous page is already recognised), the last system of the previous
+   page seeds clef, key and time of the first system, so continuation pages without a time signature are read
+   against the right measure length; the `--fit` report assembles the pages analysed so far for the same reason.
 
 ## Trained classifiers (models/)
 
@@ -329,7 +333,9 @@ Baseline (12 generated pieces, 192 measures), 2026-10-10:
   (thick-lined piano scan) 92%, Brahms 4 page 2 72%. A scan of page 2 of the 63 scores added on 2026-10-11 ran without a failure;
   the weakest pages were solo piano: the Gounod Pastorale read 49% because the bar lines of the upper piano staff
   were rejected (the run scan stopped inside the gap to the lower staff and found an articulation mark there) and
-  a chord's stem was taken for a repeat bar line; with both fixed it reads 81%. The Fauré Ballade has no time
+  a chord's stem was taken for a repeat bar line; with both fixed it reads 81%. With the pages in sequence, Bach
+  suite page 6 (no time signature after its first system) is checked in full: 48 measures, 69% adding up, instead
+  of 24 checked and 12 unknown. The Fauré Ballade has no time
   signature on the page, and the Handel Chaconne's upper staff is in 9/8 against 3/4 below (per-staff time
   signatures are not supported). The retrained glyph model costs a little on the Bach suite pages 3 to 6
   (46%, 80%, 69%, 64%). When a page carries no time signature the length is inferred from the most common
