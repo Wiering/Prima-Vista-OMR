@@ -151,7 +151,16 @@ rendered from the SMuFL fonts with random degradations); `pvomr crops --heads ..
 negatives. `python tools/train_glyphs.py --crops crops --out models/glyphs.onnx` and
 `python tools/train_glyphs.py --crops heads --out models/heads.onnx --labels head_black,head_half,none` train and
 export (CPU, a few minutes each). `pvomr gen --font Bravura|Petaluma|...` renders with another engraving font.
-`--model none` disables both models (template matching and the ellipse scorer are used instead).
+`pvomr crops --dpi 200` renders the training pages smaller (13 to 14 px staff space, the size of full-score staves)
+so the models also see small glyphs. `--model none` disables both models (template matching and the ellipse
+scorer are used instead).
+
+Retraining 2026-10-11 (145 training pieces: the 72 original, 45 hard-style and 28 tuplet-style ones, crops at 300
+and 200 dpi, 84,000 glyph crops and 114,000 head windows): the new glyph model reads the 15 px Beethoven staves
+clearly better (page 7: 88% -> 94% of measures adding up) at a small cost on the synthetic sets (clean note
+precision 99.5% -> 99.2%, hard 90.8% -> 90.4%); it is the shipped `models/glyphs.onnx`. The retrained head verifier
+lost ground on the real pages (Bach page 2: 92% -> 85% exact, Gounod 46% -> 41%) and was not adopted; the old
+`models/heads.onnx` stays.
 
 Effect on the 12 test pieces (trained on 72 other pieces in Leland, Bravura and Petaluma):
 

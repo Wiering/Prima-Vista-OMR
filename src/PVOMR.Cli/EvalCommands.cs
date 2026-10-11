@@ -79,7 +79,7 @@ static class EvalCommands
 
     public static int Crops(string[] args)
     {
-        var dirs = new List<string>(); string outDir = "crops"; string? fontDir = null; int variants = 30; bool augment = true; int seed = 1; bool heads = false;
+        var dirs = new List<string>(); string outDir = "crops"; string? fontDir = null; int variants = 30; bool augment = true; int seed = 1; bool heads = false; double dpi = 300;
         for (int i = 1; i < args.Length; i++)
         {
             string a = args[i];
@@ -93,6 +93,7 @@ static class EvalCommands
                 case "--no-augment": augment = false; break;
                 case "--seed": seed = int.Parse(Next()); break;
                 case "--heads": heads = true; break;
+                case "--dpi": dpi = double.Parse(Next(), System.Globalization.CultureInfo.InvariantCulture); break;   // lower values give small-staff crops
                 default: Console.Error.WriteLine($"unknown option {a}"); return 2;
             }
         }
@@ -100,25 +101,25 @@ static class EvalCommands
         var glyphs = GlyphLibrary.Load(null, log);
         if (heads)
         {
-            var an = new PageAnalyzer(new AnalysisOptions { Dpi = 300 }, glyphs, null);
+            var an = new PageAnalyzer(new AnalysisOptions { Dpi = dpi }, glyphs, null);
             var rnd2 = new Random(seed);
             var tot = new CropExtractor.Stats();
             foreach (var d in dirs)
             {
-                var st = CropExtractor.ExtractHeadWindows(d, outDir, an, 300, rnd2, augment);
+                var st = CropExtractor.ExtractHeadWindows(d, outDir, an, dpi, rnd2, augment);
                 Console.WriteLine($"{d}: {st.Pages} pages, {st.Counts.Values.Sum()} windows");
                 foreach (var kv in st.Counts) tot.Counts[kv.Key] = tot.Counts.GetValueOrDefault(kv.Key) + kv.Value;
             }
             foreach (var kv in tot.Counts.OrderByDescending(kv => kv.Value)) Console.WriteLine($"  {kv.Key,-16} {kv.Value}");
             return 0;
         }
-        var analyzer = new PageAnalyzer(new AnalysisOptions { Dpi = 300 }, glyphs, null);
+        var analyzer = new PageAnalyzer(new AnalysisOptions { Dpi = dpi }, glyphs, null);
         var rnd = new Random(seed);
         var total = new CropExtractor.Stats();
         var sw = Stopwatch.StartNew();
         foreach (var d in dirs)
         {
-            var st = CropExtractor.ExtractFromPages(d, outDir, analyzer, 300, rnd, augment);
+            var st = CropExtractor.ExtractFromPages(d, outDir, analyzer, dpi, rnd, augment);
             Console.WriteLine($"{d}: {st.Pages} pages, {st.Counts.Values.Sum()} crops");
             foreach (var kv in st.Counts) total.Counts[kv.Key] = total.Counts.GetValueOrDefault(kv.Key) + kv.Value;
         }
