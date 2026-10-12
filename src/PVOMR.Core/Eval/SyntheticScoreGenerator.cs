@@ -19,7 +19,7 @@ public sealed class SyntheticScoreGenerator
         public double AccidentalProbability { get; set; } = 0.08;
         public double DynamicsProbability { get; set; } = 0.15;
         public double SlurProbability { get; set; } = 0.15;
-        public int MinType { get; set; } = 4;       // 1 = whole ... 4 = 16th: fastest note value used
+        public int MinType { get; set; } = 4;       // fastest note value used: 1 = whole ... 4 = 8th, 5 = 16th
         /// <summary>Weight of short values (8ths/16ths): 1 = uniform, higher = denser beamed rhythms.</summary>
         public double Density { get; set; } = 1.0;
         /// <summary>Probability that a staff gets a second voice (stems down) in a measure.</summary>
@@ -27,6 +27,10 @@ public sealed class SyntheticScoreGenerator
         public double TieProbability { get; set; } = 0.0;
         /// <summary>Probability that a quarter-note slot becomes a triplet of 8ths.</summary>
         public double TripletProbability { get; set; } = 0.0;
+        /// <summary>Probability that an 8th becomes four 32nds (or 32nds + a 16th) and a 16th four 64ths.</summary>
+        public double FastProbability { get; set; } = 0.0;
+        /// <summary>Probability of grace notes before a note: one slashed 8th (acciaccatura) or two or three 16ths.</summary>
+        public double GraceProbability { get; set; } = 0.0;
     }
 
     public SyntheticScoreGenerator(int seed) { _rnd = new Random(seed); }
@@ -124,6 +128,36 @@ public sealed class SyntheticScoreGenerator
                 }
                 remaining -= 96; x += 96;
                 continue;
+            }
+            if (pick.dots == 0 && pick.type is "eighth" or "16th" && s.FastProbability > 0 && _rnd.NextDouble() < s.FastProbability)
+            {
+                // a run of 32nds in place of an 8th, or of 64ths in place of a 16th
+                var runTypes = pick.type == "16th" ? new[] { ("64th", 6), ("64th", 6), ("64th", 6), ("64th", 6) }
+                             : _rnd.NextDouble() < 0.6 ? new[] { ("32nd", 12), ("32nd", 12), ("32nd", 12), ("32nd", 12) } : new[] { ("32nd", 12), ("32nd", 12), ("16th", 24) };
+                int rx = x;
+                foreach (var (rt, rd) in runTypes)
+                {
+                    var re = new ScoreEvent { Type = rt, Duration = rd, X = rx };
+                    stepPos = Math.Clamp(stepPos + _rnd.Next(-2, 3), -4, 14);
+                    re.Notes.Add(MakeNote(clef, stepPos, fifths, s));
+                    re.StemUp = forcedStem > 0 ? true : forcedStem < 0 ? false : stepPos < 4;
+                    events.Add(re); rx += rd;
+                }
+                remaining -= dur; x += dur;
+                continue;
+            }
+            if (s.GraceProbability > 0 && pick.div >= 48 && _rnd.NextDouble() < s.GraceProbability && !(forcedStem != 0))
+            {
+                // grace notes before the coming note: they take no time
+                int count = _rnd.NextDouble() < 0.6 ? 1 : _rnd.Next(2, 4);
+                for (int k = 0; k < count; k++)
+                {
+                    var ge = new ScoreEvent { Grace = true, GraceSlash = count == 1, Type = count == 1 ? "eighth" : "16th", Duration = 0, X = x };
+                    int gs = Math.Clamp(stepPos + _rnd.Next(-2, 3), -3, 13);
+                    ge.Notes.Add(MakeNote(clef, gs, fifths, s));
+                    ge.StemUp = true;
+                    events.Add(ge);
+                }
             }
             var ev = new ScoreEvent { Type = pick.type, Dots = pick.dots, Duration = dur, X = x };
             if (_rnd.NextDouble() < s.RestProbability && pick.type != "whole") ev.IsRest = true;

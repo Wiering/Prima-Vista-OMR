@@ -427,9 +427,37 @@ public static class MusicAssembler
             int sum = evs.Sum(e => e.Duration);
             if (evs.Count == 1 && evs[0].IsRest && evs[0].Type == "whole") { evs[0].Duration = expected; evs[0].MeasureRest = true; sm.Fit.Sums.Add((staffNo, voice.Key, expected)); continue; }
             sm.Fit.Sums.Add((staffNo, voice.Key, sum));
+            if (sum != expected)
+            {
+                // dotted beamed pairs read alike (see MakeGroupEvents): all of them, or a single one, as dotted 8th + 16th
+                var pairs = evs.Where(e => e.AltType != null).GroupBy(e => e.AltPair).Select(g => g.ToList()).Where(g => g.Count == 2).ToList();
+                int Delta(List<ScoreEvent> pr) => pr.Sum(e => DurationOf(e.AltType!, e.Dots) - e.Duration);
+                List<List<ScoreEvent>>? fix = pairs.Count > 0 && sum + pairs.Sum(Delta) == expected ? pairs : pairs.FirstOrDefault(pr => sum + Delta(pr) == expected) is { } one ? new() { one } : null;
+                if (fix != null)
+                {
+                    foreach (var pr in fix)
+                        foreach (var e in pr) { e.Type = e.AltType!; e.Duration = DurationOf(e.Type, e.Dots); e.Beams = BeamsFor(e.Type, pr.IndexOf(e)); }
+                    sum = evs.Sum(e => e.Duration);
+                    sm.Fit.Sums[^1] = (staffNo, voice.Key, sum);
+                    sm.Warnings.Add($"staff {staffNo} voice {voice.Key}: {fix.Count} dotted beamed pair(s) read as dotted 8th + 16th to fit {time}");
+                }
+            }
             if (sum == expected) continue;
             if (sum > expected)
             {
+                // small notes that make up exactly the surplus are grace notes: they stay, taking no time
+                var graces = evs.Where(e => e.GraceCandidate).ToList();
+                if (graces.Count > 0 && sum - graces.Sum(e => e.Duration) == expected)
+                {
+                    foreach (var g in graces)
+                    {
+                        g.Grace = true; g.Duration = 0; g.Beams = Array.Empty<BeamState>();
+                        if (g.Type is "quarter" or "half" or "whole") g.Type = "eighth";
+                    }
+                    sm.Fit.Sums[^1] = (staffNo, voice.Key, expected);
+                    sm.Warnings.Add($"staff {staffNo} voice {voice.Key}: {graces.Count} small note(s) taken as grace notes to fit {time}");
+                    continue;
+                }
                 var uncertain = evs.Where(e => e.Uncertain).ToList();
                 ScoreEvent? drop1 = uncertain.FirstOrDefault(u => sum - u.Duration == expected);
                 if (drop1 != null)
@@ -498,6 +526,13 @@ public static class MusicAssembler
         bool asserted = s.Attributes.ContainsKey("corrected") || s.Attributes.ContainsKey("added");
         if (!asserted && (s.StemUp == null || s.Notes.Any(n => n.Step > 18 || n.Step < -10))) ev.Uncertain = true;
         if (s.Attributes.TryGetValue("articulation", out var art) && art == "staccato") ev.Articulations.Add("staccato");
+        // small notes: grace-note candidates, settled by the measure length in Validate
+        if (s.Attributes.TryGetValue("grace", out var gr))
+        {
+            ev.GraceCandidate = true; ev.GraceSlash = gr == "slash"; ev.Uncertain = true;
+        }
+        // slashes through the stem of a hollow note: a single-note tremolo, the written value stays
+        if (s.Attributes.TryGetValue("tremolo", out var trem) && int.TryParse(trem, out int marks)) { ev.TremoloMarks = marks; ev.TremoloType = "single"; }
         return ev;
     }
 
@@ -538,6 +573,30 @@ public static class MusicAssembler
                     used[best + k] = true;
                 }
             }
+        }
+        // two hollow notes joined by beams: an alternating (two-note) tremolo; each note shows the value of the whole
+        // figure, so each lasts half of it (MusicXML: time modification 2:1, tremolo start/stop, no beams)
+        if (group.Name.StartsWith("beamed") && evs.Count >= 2 && evs.Count % 2 == 0 && evs.All(e => e.TremoloType == "single"))
+        {
+            for (int i = 0; i + 1 < evs.Count; i += 2)
+                foreach (var (e, k) in new[] { (evs[i], 0), (evs[i + 1], 1) })
+                {
+                    e.TremoloType = k == 0 ? "start" : "stop";
+                    e.Duration /= 2;
+                    e.TupletActual = 2; e.TupletNormal = 1;
+                    e.GroupId = 0;
+                }
+            return evs;
+        }
+        // a beamed pair with one dotted note is a dotted 8th and a 16th (dotted 16th and 32nd in fast music): the
+        // short hook of the second beam is easily credited to the wrong stem or missed, leaving both notes alike
+        if (group.Name.StartsWith("beamed") && evs.Count == 2 && evs.Count(e => e.Dots == 1) == 1 && evs[0].Type == evs[1].Type
+            && !evs.Any(e => e.TupletActual != 0 || e.Grace || e.TremoloType != null) && evs[0].Type is "eighth" or "16th" or "32nd")
+        {
+            // an alternative reading only: Validate applies it when it makes the voice fill the measure exactly (the dot
+            // may also be a stray one, and then the partner really is what it looks like)
+            string longT = evs[0].Type == "32nd" ? "16th" : "eighth", shortT = evs[0].Type == "32nd" ? "32nd" : "16th";
+            foreach (var e in evs) { e.AltType = e.Dots == 1 ? longT : shortT; e.AltPair = evs[0]; }
         }
         if (group.Name.StartsWith("beamed"))
         {
@@ -587,6 +646,15 @@ public static class MusicAssembler
         if (duration == null || duration.EndsWith("?")) ev.Uncertain = true;
         ev.Type = type; ev.Dots = Math.Min(dots, 2);
         ev.Duration = DurationOf(type, ev.Dots);
+    }
+
+    /// <summary>Beams of one note of a two-note beamed figure: one shared beam, and a hook for the shorter note.</summary>
+    private static BeamState[] BeamsFor(string type, int index)
+    {
+        int levels = type switch { "eighth" => 1, "16th" => 2, "32nd" => 3, "64th" => 4, _ => 0 };
+        var b = new BeamState[levels];
+        for (int k = 0; k < levels; k++) b[k] = k == 0 ? (index == 0 ? BeamState.Begin : BeamState.End) : (index == 0 ? BeamState.ForwardHook : BeamState.BackwardHook);
+        return b;
     }
 
     public static int DurationOf(string type, int dots)

@@ -137,6 +137,18 @@ public sealed class ScoreEvent
     public BeamState[] Beams { get; set; } = Array.Empty<BeamState>();   // index = beam level - 1
     public List<string> Articulations { get; } = new();
     public bool Fermata { get; set; }
+    /// <summary>Tremolo strokes (1-4, 0 = none) and kind: "single" (slashes through one stem: the note repeated) or
+    /// "start"/"stop" (two notes alternating, joined by tremolo beams).</summary>
+    public int TremoloMarks { get; set; }
+    /// <summary>A grace note (small note before the beat; takes no time in the measure); slashed = acciaccatura.</summary>
+    public bool Grace { get; set; }
+    public bool GraceSlash { get; set; }
+    /// <summary>Printed small: becomes a grace note only when the measure overflows by exactly such notes.</summary>
+    public bool GraceCandidate { get; set; }
+    /// <summary>Alternative note value for a dotted beamed pair read alike (applied when it makes the measure fit).</summary>
+    public string? AltType { get; set; }
+    public ScoreEvent? AltPair { get; set; }
+    public string? TremoloType { get; set; }
     public List<int> SlurStarts { get; } = new();
     public List<int> SlurStops { get; } = new();
     /// <summary>Tuplet ratio (actual:normal), 0 = none. Duration already reflects the tuplet.</summary>

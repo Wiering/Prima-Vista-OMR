@@ -47,9 +47,30 @@ public static class MusicXmlReader
                         case "note":
                         {
                             bool chord = el.Element("chord") != null;
-                            bool grace = el.Element("grace") != null;
-                            if (grace) break;
-                            int dur = Scale(el, divisions);
+                            var graceEl = el.Element("grace");
+                            bool grace = graceEl != null;
+                            int dur = grace ? 0 : Scale(el, divisions);
+                            if (grace && chord && last != null && last.Grace)
+                            {
+                                var gp = ReadPitch(el);
+                                if (gp != null) last.Notes.Add(gp);
+                                break;
+                            }
+                            if (grace)
+                            {
+                                var g = new ScoreEvent
+                                {
+                                    Grace = true, GraceSlash = graceEl!.Attribute("slash")?.Value == "yes", Duration = 0,
+                                    Voice = int.TryParse(el.Element("voice")?.Value, out int gv) ? gv : 1,
+                                    Staff = int.TryParse(el.Element("staff")?.Value, out int gs) ? gs : 1,
+                                    Type = el.Element("type")?.Value ?? "eighth", X = position,
+                                };
+                                var gpn = ReadPitch(el);
+                                if (gpn != null) g.Notes.Add(gpn);
+                                m.Events.Add(g);
+                                last = g;
+                                break;
+                            }
                             if (chord && last != null)
                             {
                                 var pn = ReadPitch(el);

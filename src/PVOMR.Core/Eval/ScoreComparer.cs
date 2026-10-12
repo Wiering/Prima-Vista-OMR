@@ -13,6 +13,7 @@ public sealed class ComparisonResult
     public int MatchedPitchAndDuration;                // ... and identical type+dots
     public int TruthRests, RecognisedRests, MatchedRests;
     public int MatchedDurationOnly;                    // aligned, same duration but different pitch
+    public int TruthGraces, RecognisedGraces, MatchedGraces;   // grace notes, compared per measure by pitch
     public bool ClefCorrect, KeyCorrect, TimeCorrect;
     public int MeasuresExactlyRight;                   // all events of the measure aligned with pitch+duration
     public List<string> Details { get; } = new();
@@ -29,7 +30,8 @@ public sealed class ComparisonResult
     {
         TruthMeasures += o.TruthMeasures; RecognisedMeasures += o.RecognisedMeasures; TruthNotes += o.TruthNotes; RecognisedNotes += o.RecognisedNotes;
         MatchedPitch += o.MatchedPitch; MatchedPitchAndDuration += o.MatchedPitchAndDuration; TruthRests += o.TruthRests; RecognisedRests += o.RecognisedRests;
-        MatchedRests += o.MatchedRests; MatchedDurationOnly += o.MatchedDurationOnly; MeasuresExactlyRight += o.MeasuresExactlyRight;
+        MatchedRests += o.MatchedRests; MatchedDurationOnly += o.MatchedDurationOnly;
+        TruthGraces += o.TruthGraces; RecognisedGraces += o.RecognisedGraces; MatchedGraces += o.MatchedGraces; MeasuresExactlyRight += o.MeasuresExactlyRight;
     }
 
     public string Summary() =>
@@ -74,6 +76,11 @@ public static class ScoreComparer
             {
                 var tev = Flatten(tm); var rev = rm != null ? Flatten(rm) : new List<Ev>();
                 if (rm != null) pairedRecognised.Add(rm);
+                // grace notes take no time: compared separately, as a multiset of pitches per measure
+                var tg = tm.Events.Where(e => e.Grace).SelectMany(e => e.Notes.Select(x => x.Pitch.ToString())).ToList();
+                var rg = rm?.Events.Where(e => e.Grace).SelectMany(e => e.Notes.Select(x => x.Pitch.ToString())).ToList() ?? new List<string>();
+                r.TruthGraces += tg.Count; r.RecognisedGraces += rg.Count;
+                foreach (var p in tg) { int k = rg.IndexOf(p); if (k >= 0) { r.MatchedGraces++; rg.RemoveAt(k); } }
                 CountMeasure(r, tev, rev, tm.Number);
             }
             foreach (var rm in rp.Measures.Where(m => !pairedRecognised.Contains(m)))
@@ -94,7 +101,7 @@ public static class ScoreComparer
     private static List<Ev> Flatten(ScoreMeasure m)
     {
         var list = new List<Ev>();
-        foreach (var voice in m.Events.GroupBy(e => e.Voice).OrderBy(g => g.Key))
+        foreach (var voice in m.Events.Where(e => !e.Grace).GroupBy(e => e.Voice).OrderBy(g => g.Key))
         {
             int pos = 0;
             foreach (var e in voice.OrderBy(e => e.X))
@@ -216,6 +223,8 @@ public static class ScoreComparer
             total.Add(r); n++; if (r.ClefCorrect) clefOk++; if (r.KeyCorrect) keyOk++; if (r.TimeCorrect) timeOk++;
         }
         sb.AppendLine($"{"TOTAL",-28} {total.RecognisedMeasures + "/" + total.TruthMeasures,8} {total.MeasureAccuracy,6:P0} {total.NotePrecision,7:P1} {total.NoteRecall,7:P1} {total.DurationAccuracy,6:P0} {total.RestPrecision,6:P0} {total.RestRecall,6:P0} {clefOk}/{n} {keyOk}/{n} {timeOk}/{n}");
+        if (total.TruthGraces + total.RecognisedGraces > 0)
+            sb.AppendLine($"grace notes: {total.MatchedGraces} matched of {total.TruthGraces} in the truth, {total.RecognisedGraces} recognised (P {(total.RecognisedGraces == 0 ? 0 : total.MatchedGraces / (double)total.RecognisedGraces):P0}, R {(total.TruthGraces == 0 ? 0 : total.MatchedGraces / (double)total.TruthGraces):P0})");
         return sb.ToString();
     }
 

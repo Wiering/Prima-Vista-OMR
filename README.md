@@ -350,6 +350,34 @@ keeps the fingering numbers of the Bach edition from becoming triplets. Tuplet t
 `--style tuplets`, seed 5): 128/128 measures, note P 98.4% / R 98.6%, durations 94% with strict duration
 comparison, 84% of measures entirely right. Rests recognised twice from a split glyph are merged.
 
+## Tremolos, grace notes, 64ths
+
+* Tremolos: a hollow head never carries flags or beams, so strokes on the stem of a half note are tremolo slashes.
+  A lone one is a single-note tremolo (the written value stays, MusicXML `<tremolo type="single">`); a beamed
+  pair of hollow notes is an alternating tremolo, where each note shows the value of the whole figure and so lasts
+  half of it (time modification 2:1, tremolo start/stop, no beams). Mahler 2 for two pianos page 3: 19 -> 31
+  fitting measures, Bruckner 9 four hands page 4: 31 -> 46. Tremolos on black heads (quarter notes with slashes)
+  are not recognised yet.
+* Grace notes are carried end to end: score model (`ScoreEvent.Grace`, slash), MusicXML writer and reader
+  (`<grace slash="yes"/>`, no duration), the comparer (grace notes are compared separately, by pitch per measure,
+  and leave the note statistics alone) and the generator. The recogniser marks notes whose heads are small (vertical
+  and horizontal ink through the head well under a normal head) on a short stem as grace candidates; they become
+  grace notes only when the measure overflows by exactly those notes, so a false candidate never spoils a measure
+  that adds up. Recall is still low (a few percent on the ornaments set): the head verifier was not trained on
+  cue-size heads, so many grace notes are not found as small heads at all.
+* 64ths: the fourth beam lies beyond the usual 2.6-space scan from the stem end; when three beams are found the scan
+  reaches 3.3 spaces (only then, so that other ink near short stems is never counted as a beam). Ornaments set:
+  durations 87 -> 96 %.
+* `pvomr gen --style ornaments` writes 16ths, runs of 32nds and 64ths and grace notes (one slashed 8th or two or
+  three 16ths). Twelve pieces, seed 5: 194/192 measures, note P 85.5 % / R 91.4 % (the missed grace notes count as
+  extra notes), durations 96 %.
+* A beamed pair with exactly one dotted note whose two notes were read alike (two 8ths or two 16ths: the short hook
+  of the second beam is credited to the wrong stem or lost) is offered to the duration check as dotted 8th + 16th
+  (dotted 16th + 32nd for 32nds) and taken when it makes the voice fill the measure. Bach Suite page 3 (Allemande):
+  15 -> 24 of 34 measures. The glyph model retrained on 2026-10-11 was compared again with its predecessor on the
+  suite pages: with the current code they are within one measure of each other (the earlier gap was closed by
+  later fixes), so the new model stays.
+
 ## Harder synthetic set and real pages
 
 `pvomr gen --style hard` adds dense beamed rhythms (8ths/16ths), a second voice with stems down, ties, more

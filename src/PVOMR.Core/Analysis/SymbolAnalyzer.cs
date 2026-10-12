@@ -225,6 +225,7 @@ public sealed class SymbolAnalyzer
             ContinueBeams(syms, staff);
             AttachDotsAndAccidentals(syms, staff);
             DetectHairpinsAndSlurs(syms, staff);
+            MarkGraceNotes(syms, staff);
             foreach (var s in syms.OrderBy(s => s.Bounds.X0))
             {
                 var m = FindMeasure(staff, s);
@@ -1907,7 +1908,8 @@ public sealed class SymbolAnalyzer
         sym.Notes.AddRange(st.Heads.OrderByDescending(h => h.Step));
         bool hollow = st.Heads.All(h => h.HeadType == "half");
         sym.Duration = hollow ? "half" : st.Flags switch { 0 => "quarter", 1 => "8th", 2 => "16th", 3 => "32nd", _ => "64th" };
-        if (hollow && st.Flags > 0) sym.Attributes["note"] = "hollow head with flags/beams";
+        // a hollow head never carries flags or beams: the strokes are tremolo slashes (repeated notes)
+        if (hollow && st.Flags > 0) { sym.Attributes["note"] = "hollow head with flags/beams"; sym.Attributes["tremolo"] = Math.Min(st.Flags, 4).ToString(); }
     }
 
     private void FindHeads(Stem st, Staff staff, double headW, double headH)
@@ -2082,6 +2084,85 @@ public sealed class SymbolAnalyzer
         return p.Label is "digit" or "text" or "dynamic" && p.Probability >= 0.6;
     }
 
+    /// <summary>
+    /// Grace notes are printed small: a note, chord or beamed group whose black heads are all clearly narrower than a
+    /// normal head (measured on the ink, just off the head's centre line so a ledger line through it does not count)
+    /// is marked as grace notes ("grace" attribute; a single flagged one is slashed, an acciaccatura).
+    /// </summary>
+    private void MarkGraceNotes(List<MusicSymbol> syms, Staff staff)
+    {
+        double ss = staff.Space;
+        // a small black head (also one the verifier took for hollow): short vertical ink through its centre; a real
+        // hollow head has no ink at its centre at all
+        bool Small(Note n) => HeadInkHeight(n.HeadX, n.HeadY, ss) is double h && h < 0.8 * ss && h > 0.3 * ss
+                              && HeadInkWidth(n.HeadX, n.HeadY, ss) is double w && w < 0.95 * ss;
+        // grace stems are short too (about 2.5 spaces from head to end against 3 or more)
+        bool ShortStem(MusicSymbol s)
+        {
+            if (!s.Attributes.TryGetValue("stemx", out var sx)) return true;
+            var parts = sx.Split(',');
+            if (parts.Length < 3 || !double.TryParse(parts[2], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double end)) return true;
+            double far = s.StemUp == true ? s.Notes.Max(n => n.HeadY) : s.Notes.Min(n => n.HeadY);
+            return Math.Abs(end - far) < 2.9 * ss;
+        }
+        foreach (var s in syms)
+        {
+            if (_opt.Verbose)
+                foreach (var n in s.Notes.Concat(s.Children.SelectMany(c => c.Notes)))
+                    s.Attributes["headh"] = (s.Attributes.GetValueOrDefault("headh") + " " + (HeadInkHeight(n.HeadX, n.HeadY, ss) is double hh ? (hh / ss).ToString("0.00") : "-")).Trim();
+            if (s.Kind is SymbolKind.Note or SymbolKind.Chord && s.StemUp.HasValue && s.Notes.Count > 0 && s.Notes.All(Small) && ShortStem(s))
+            {
+                s.Attributes["grace"] = s.Flags == 1 ? "slash" : "1";
+                s.Attributes.Remove("tremolo");
+            }
+            else if (s.Kind == SymbolKind.NoteGroup && s.Children.Count > 0 && s.Children.All(c => c.Notes.Count > 0 && c.Notes.All(Small) && ShortStem(c)))
+            {
+                s.Attributes["grace"] = "1";
+                foreach (var c in s.Children) { c.Attributes["grace"] = "1"; c.Attributes.Remove("tremolo"); }
+            }
+        }
+    }
+
+    /// <summary>The vertical ink run through a head's centre (looking a fifth of a space to either side when the exact
+    /// centre column misses), or null when there is no ink there (a hollow head).</summary>
+    private double? HeadInkHeight(double cx, double cy, double ss)
+    {
+        int y = (int)Math.Round(cy);
+        double? best = null;
+        foreach (int dx in new[] { 0, -(int)(0.15 * ss), (int)(0.15 * ss) })
+        {
+            int x = (int)Math.Round(cx) + dx;
+            if (!_ns[x, y]) continue;
+            int t = y, b = y;
+            while (_ns[x, t - 1] && y - t < 2 * ss) t--;
+            while (_ns[x, b + 1] && b - y < 2 * ss) b++;
+            double h = b - t + 1;
+            if (best == null || h < best) best = h;
+        }
+        return best;
+    }
+
+    /// <summary>The ink width of a black head: the shortest run through the head's centre column over the rows a
+    /// quarter space above and below its centre (null when there is no ink there).</summary>
+    private double? HeadInkWidth(double cx, double cy, double ss)
+    {
+        int x = (int)Math.Round(cx);
+        double best = double.MaxValue;
+        foreach (double off in new[] { -0.25, 0.25 })
+        {
+            int y = (int)Math.Round(cy + off * ss);
+            int xs = x;
+            // the centre column may just miss the ink of a small head: look a little to both sides
+            if (!_ns[xs, y]) { for (int d = 1; d <= (int)(0.2 * ss) && !_ns[xs, y]; d++) xs = _ns[x - d, y] ? x - d : _ns[x + d, y] ? x + d : xs; }
+            if (!_ns[xs, y]) return null;
+            int l = xs, r = xs;
+            while (_ns[l - 1, y] && xs - l < 3 * ss) l--;
+            while (_ns[r + 1, y] && r - xs < 3 * ss) r++;
+            best = Math.Min(best, r - l + 1);
+        }
+        return best;
+    }
+
     /// <summary>A ledger line through or right above/below the head: a thin horizontal run of at least 1.3 staff spaces within one space of the centre.</summary>
     private bool HasLedgerLine(double cx, double cy, double ss)
     {
@@ -2220,6 +2301,13 @@ public sealed class SymbolAnalyzer
         int minBand = Math.Max(3, (int)Math.Round(0.3 * ss));
         // the free end of the stem is opposite to the heads
         int yEnd = st.Up ? st.Top : st.Bottom;
+        int best = Count(2.6);
+        // a fourth beam (64ths) lies beyond the usual reach: look further only when three were found
+        if (best == 3) best = Math.Max(best, Count(3.3));
+        return Math.Min(best, 4);
+
+        int Count(double reach)
+        {
         int best = 0;
         foreach (double off in new[] { 0.25, 0.45, 0.7, -0.25, -0.45, -0.7 })
         {
@@ -2227,8 +2315,8 @@ public sealed class SymbolAnalyzer
             int x = (dx > 0 ? st.X1 : st.X0) + dx;
             if (x < c.X0 || x > c.X1) continue;
             int bands = 0, run = 0, runTop = 0;
-            int yFrom = st.Up ? yEnd - (int)(0.3 * ss) : yEnd - (int)(2.6 * ss);
-            int yTo = st.Up ? yEnd + (int)(2.6 * ss) : yEnd + (int)(0.3 * ss);
+            int yFrom = st.Up ? yEnd - (int)(0.3 * ss) : yEnd - (int)(reach * ss);
+            int yTo = st.Up ? yEnd + (int)(reach * ss) : yEnd + (int)(0.3 * ss);
             // stop when reaching the head area
             if (st.Up) yTo = Math.Min(yTo, (int)(st.Heads.Min(h => h.HeadY) - 0.8 * ss));
             else yFrom = Math.Max(yFrom, (int)(st.Heads.Max(h => h.HeadY) + 0.8 * ss));
@@ -2244,7 +2332,8 @@ public sealed class SymbolAnalyzer
             }
             if (bands > best) best = bands;
         }
-        return Math.Min(best, 4);
+        return best;
+        }
     }
 
     // ------------------------------------------------------------------ post-processing

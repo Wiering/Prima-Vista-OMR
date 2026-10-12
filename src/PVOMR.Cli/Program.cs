@@ -35,7 +35,7 @@ static int Usage()
           --fit               per page: how many measures add up to the time signature (the misfits with --verbose)
 
         sub-commands:
-          pvomr gen --out <dir> [--count 12] [--seed 1] [--measures 16] [--piano|--single] [--musescore <exe>]
+          pvomr gen --out <dir> [--count 12] [--seed 1] [--measures 16] [--piano|--single] [--style hard|tuplets|ornaments] [--musescore <exe>]
                               generate synthetic pieces (MusicXML ground truth + PDF rendered by MuseScore)
           pvomr crops --dir <synth dir> [--dir ...] --out <crops dir> [--fonts <dir>] [--variants 30] [--no-augment]
                               labelled training crops from synthetic pages (needs the SVG export) and from the SMuFL fonts

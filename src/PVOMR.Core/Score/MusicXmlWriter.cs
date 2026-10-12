@@ -294,13 +294,14 @@ public static class MusicXmlWriter
         {
             var n = e.Notes[ni];
             w.WriteStartElement("note");
+            if (e.Grace) { w.WriteStartElement("grace"); if (e.GraceSlash) w.WriteAttributeString("slash", "yes"); w.WriteEndElement(); }
             if (ni > 0) w.WriteElementString("chord", "");
             w.WriteStartElement("pitch");
             w.WriteElementString("step", n.Pitch.Step);
             if (n.Pitch.Alter != 0) w.WriteElementString("alter", n.Pitch.Alter.ToString());
             w.WriteElementString("octave", n.Pitch.Octave.ToString());
             w.WriteEndElement();
-            w.WriteElementString("duration", e.Duration.ToString());
+            if (!e.Grace) w.WriteElementString("duration", e.Duration.ToString());   // grace notes take no time
             bool tieStart = n.TieStart && _o.Ties, tieStop = n.TieStop && _o.Ties;
             if (tieStart) { w.WriteStartElement("tie"); w.WriteAttributeString("type", "start"); w.WriteEndElement(); }
             if (tieStop) { w.WriteStartElement("tie"); w.WriteAttributeString("type", "stop"); w.WriteEndElement(); }
@@ -323,7 +324,8 @@ public static class MusicXmlWriter
             bool artic = _o.Articulations && (e.Articulations.Count > 0 || e.Fermata);
             bool slurs = _o.Slurs && (e.SlurStarts.Count > 0 || e.SlurStops.Count > 0);
             bool tuplet = _o.TupletBrackets && (e.TupletStart || e.TupletStop);
-            bool notations = tieStart || tieStop || (ni == 0 && (artic || slurs || tuplet));
+            bool tremolo = e.TremoloMarks > 0 && e.TremoloType != null;   // always written: it changes what is played
+            bool notations = tieStart || tieStop || (ni == 0 && (artic || slurs || tuplet || tremolo));
             if (notations)
             {
                 w.WriteStartElement("notations");
@@ -344,6 +346,12 @@ public static class MusicXmlWriter
                         w.WriteEndElement();
                     }
                     if (artic && e.Fermata) w.WriteElementString("fermata", "");
+                    if (tremolo)
+                    {
+                        w.WriteStartElement("ornaments");
+                        w.WriteStartElement("tremolo"); w.WriteAttributeString("type", e.TremoloType!); w.WriteString(e.TremoloMarks.ToString()); w.WriteEndElement();
+                        w.WriteEndElement();
+                    }
                 }
                 w.WriteEndElement();
             }
