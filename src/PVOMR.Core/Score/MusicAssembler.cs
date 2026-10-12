@@ -38,16 +38,26 @@ public static class MusicAssembler
         if (systems.Count == 0) { score.Warnings.Add("no systems found"); return score; }
 
         int maxStaves = systems.Max(s => s.sys.Staves.Count);
-        bool grand = options.GrandStaff ?? (maxStaves == 2 && systems.All(s => s.sys.Staves.Count == 2) && LooksLikeGrandStaff(systems[0].sys));
-        int partCount = grand ? 1 : maxStaves;
-        for (int i = 0; i < partCount; i++)
-            score.Parts.Add(new Part { Id = $"P{i + 1}", Name = grand ? "Piano" : partCount == 1 ? "Part" : $"Part {i + 1}", StaffCount = grand ? 2 : 1 });
         // reference layout: the first system with the full staff count; other systems are aligned to it by clef
         var reference = systems.First(s => s.sys.Staves.Count == maxStaves).sys;
         if (systems.Any(s => s.sys.Staves.Count != maxStaves))
             score.Warnings.Add("systems have different staff counts; staves are aligned to the fullest system by clef and order; absent parts get rest measures");
+        // parts: one per staff, except keyboard (and harp) staves joined by a brace, which form one two-staff part
+        var layout = PartLayout(systems.Select(s => s.sys).ToList(), reference, options.GrandStaff);
+        int partCount = layout.Count;
+        int keyboardParts = layout.Count(l => l.Length == 2), keyboards = 0;
+        for (int i = 0; i < partCount; i++)
+        {
+            bool two = layout[i].Length == 2;
+            string name = two ? (keyboardParts > 1 ? $"Piano {++keyboards}" : "Piano") : partCount == 1 ? "Part" : $"Part {i + 1}";
+            score.Parts.Add(new Part { Id = $"P{i + 1}", Name = name, StaffCount = two ? 2 : 1 });
+        }
+        // reference staff -> (part, staff number within the part)
+        var partOf = new (int part, int staffNo)[maxStaves];
+        for (int i = 0; i < partCount; i++)
+            for (int k = 0; k < layout[i].Length; k++) partOf[layout[i][k]] = (i, k + 1);
 
-        var contexts = new StaffContext[partCount * (grand ? 2 : 1)];
+        var contexts = new StaffContext[partCount * 2];
         for (int i = 0; i < contexts.Length; i++) contexts[i] = new StaffContext();
         var partMeasureCount = new int[partCount];
         int page = 0; PageAnalysis? lastPage = null;
@@ -57,32 +67,40 @@ public static class MusicAssembler
             bool newPage = pg != lastPage; lastPage = pg; if (newPage) page++;
             // measures of the system: by boundary index; each staff has its own Measure list aligned by x
             int measureCount = sys.Staves.Max(s => s.Measures.Count);
-            int[] partOfStaff = grand ? new[] { 0, 0 } : AlignStaves(sys, reference);
+            int[] refOfStaff = AlignStaves(sys, reference);
+            // this system's staff for each (part, staff number), if present
+            var staffAt = new int[partCount, 2];
+            for (int i = 0; i < partCount; i++) { staffAt[i, 0] = -1; staffAt[i, 1] = -1; }
+            for (int k = 0; k < sys.Staves.Count; k++)
+            {
+                var (pi, sn) = partOf[Math.Min(refOfStaff[k], maxStaves - 1)];
+                if (staffAt[pi, sn - 1] < 0) staffAt[pi, sn - 1] = k;
+            }
             for (int mi = 0; mi < measureCount; mi++)
             {
                 for (int pi = 0; pi < partCount; pi++)
                 {
                     var part = score.Parts[pi];
                     var sm = new ScoreMeasure { Page = pg.PageNumber, NewSystem = mi == 0, NewPage = mi == 0 && newPage };
-                    int staffCount = grand ? 2 : 1;
                     bool any = false;
-                    for (int sIdx = 0; sIdx < staffCount; sIdx++)
+                    for (int sIdx = 0; sIdx < part.StaffCount; sIdx++)
                     {
-                        int staffPos = grand ? sIdx : Array.IndexOf(partOfStaff, pi);
-                        if (staffPos < 0 || staffPos >= sys.Staves.Count) continue;
+                        int staffPos = staffAt[pi, sIdx];
+                        if (staffPos < 0) continue;
                         var staff = sys.Staves[staffPos];
                         if (mi >= staff.Measures.Count) continue;
                         var m = staff.Measures[mi];
                         any = true;
-                        var ctx = contexts[grand ? sIdx : pi];
-                        var sibling = grand && sys.Staves.Count == 2 ? sys.Staves[1 - sIdx] : null;
-                        BuildMeasure(sm, m, staff, sIdx + 1, ctx, mi == 0, partMeasureCount[pi] == 0, sibling, grand ? 2 - sIdx : 0);
+                        var ctx = contexts[pi * 2 + sIdx];
+                        int otherPos = part.StaffCount == 2 ? staffAt[pi, 1 - sIdx] : -1;
+                        var sibling = otherPos >= 0 ? sys.Staves[otherPos] : null;
+                        BuildMeasure(sm, m, staff, sIdx + 1, ctx, mi == 0, partMeasureCount[pi] == 0, sibling, sibling != null ? 2 - sIdx : 0);
                         if (options.MeasureMap != null) { options.MeasureMap[m] = sm; options.MeasureStaff ??= new(); options.MeasureStaff[m] = sIdx + 1; }
                     }
                     if (!any)
                     {
                         // the part has no staff in this system (instrument omitted): a whole-measure rest keeps the parts aligned
-                        var ctx = contexts[pi];
+                        var ctx = contexts[pi * 2];
                         sm.Events.Add(new ScoreEvent { IsRest = true, MeasureRest = true, Type = "whole", Duration = ctx.Time?.Length ?? 4 * Score.Divisions, Voice = 1, Staff = 1 });
                         if (partMeasureCount[pi] == 0) { sm.Clefs[0] = ClefSpec.Treble; sm.KeyFifths = 0; }
                     }
@@ -129,6 +147,44 @@ public static class MusicAssembler
     {
         if (a == ClefKind.Unknown || b == ClefKind.Unknown) return 0.6;
         return a == b ? 0 : 1;
+    }
+
+    /// <summary>
+    /// Which reference staves form a part: a braced pair is one two-staff part when it is keyboard-like (any braced
+    /// pair in a system of up to four staves; in larger, orchestral systems only treble over bass, since a brace there
+    /// may also join e.g. cellos and basses). A score of two-staff systems only keeps the earlier rule: one piano part
+    /// when the clefs look like a grand staff (or a brace is seen), or as forced by the option.
+    /// </summary>
+    private static List<int[]> PartLayout(List<StaffSystem> systems, StaffSystem reference, bool? forceGrand)
+    {
+        int n = reference.Staves.Count;
+        var layout = new List<int[]>();
+        if (n == 2 && systems.All(s => s.Staves.Count == 2))
+        {
+            bool braced = systems.Any(s => s.Staves[0].BraceToNext);
+            bool grand = forceGrand ?? (LooksLikeGrandStaff(reference) || braced);
+            if (grand) { layout.Add(new[] { 0, 1 }); return layout; }
+        }
+        if (forceGrand == false || n < 2) { for (int i = 0; i < n; i++) layout.Add(new[] { i }); return layout; }
+        // a pair counts as braced when any system with the full staff count has the brace (a broken brace is missed)
+        var full = systems.Where(s => s.Staves.Count == n).ToList();
+        for (int i = 0; i < n; i++)
+        {
+            // the braced layout must be common: a single braced system in a part of single staves is a divisi
+            // passage ("div." cellos on two staves), not a keyboard part
+            int bracedSystems = i + 1 < n ? full.Count(s => s.Staves[i].BraceToNext) : 0;
+            bool braced = bracedSystems > 0 && (full.Count * 3 >= systems.Count || bracedSystems >= 3);
+            if (braced && KeyboardPair(reference, i)) { layout.Add(new[] { i, i + 1 }); i++; }
+            else layout.Add(new[] { i });
+        }
+        return layout;
+    }
+
+    private static bool KeyboardPair(StaffSystem sys, int i)
+    {
+        if (sys.Staves.Count <= 4) return true;
+        var a = sys.Staves[i].Clef; var b = sys.Staves[i + 1].Clef;
+        return a is ClefKind.Treble or ClefKind.Unknown && b is ClefKind.Bass or ClefKind.Unknown && !(a == ClefKind.Unknown && b == ClefKind.Unknown);
     }
 
     private static bool LooksLikeGrandStaff(StaffSystem sys)
@@ -277,14 +333,14 @@ public static class MusicAssembler
                 ScoreEvent? drop1 = uncertain.FirstOrDefault(u => sum - u.Duration == expected);
                 if (drop1 != null)
                 {
-                    sm.Events.Remove(drop1); sm.Fit.Dropped++;
+                    sm.Events.Remove(drop1); sm.Fit.DroppedPerStaff[Math.Clamp(staffNo - 1, 0, 1)]++;
                     sm.Warnings.Add($"staff {staffNo} voice {voice.Key}: dropped uncertain {drop1} at x={drop1.X} to fit {time}");
                     continue;
                 }
                 var pair = uncertain.SelectMany((a, i) => uncertain.Skip(i + 1).Select(b => (a, b))).FirstOrDefault(p => sum - p.a.Duration - p.b.Duration == expected);
                 if (pair.a != null)
                 {
-                    sm.Events.Remove(pair.a); sm.Events.Remove(pair.b); sm.Fit.Dropped += 2;
+                    sm.Events.Remove(pair.a); sm.Events.Remove(pair.b); sm.Fit.DroppedPerStaff[Math.Clamp(staffNo - 1, 0, 1)] += 2;
                     sm.Warnings.Add($"staff {staffNo} voice {voice.Key}: dropped uncertain {pair.a} and {pair.b} to fit {time}");
                     continue;
                 }
@@ -641,10 +697,11 @@ public static class MusicAssembler
                 if (expected != null && inForceMeasure?.Time?.Symbol != null && inForceMeasure.Time.Length == expected && inForceMeasure.Page == run[0].Page) continue;
                 var informative = run.Where(m => !(m.Events.Count == 1 && m.Events[0].IsRest && m.Events[0].Type == "whole") && m.Events.Count > 0).ToList();
                 if (informative.Count < 4) continue;
-                int Main(ScoreMeasure m) => m.Events.GroupBy(e => e.Staff).Select(g => g.GroupBy(e => e.Voice).Select(v => v.Sum(e => e.Duration)).Max()).Max();
-                int fitting = expected == null ? 0 : informative.Count(m => Main(m) == expected);
-                if (expected != null && fitting * 5 >= informative.Count) continue;   // at least a fifth fits: the signature stands
-                var sums = informative.Select(Main).Where(x => x > 0).ToList();
+                // one sample per staff (the fullest voice): the two staves of a piano measure are judged separately
+                var sums = informative.SelectMany(m => m.Events.GroupBy(e => e.Staff).Select(g => g.GroupBy(e => e.Voice).Select(v => v.Sum(e => e.Duration)).Max()))
+                                      .Where(x => x > 0).ToList();
+                int fitting = expected == null ? 0 : sums.Count(x => x == expected);
+                if (expected != null && fitting * 5 >= sums.Count) continue;   // at least a fifth fits: the signature stands
                 if (sums.Count < 4) continue;
                 int mode = sums.GroupBy(x => x).OrderByDescending(g => g.Count()).ThenByDescending(g => g.Key).First().Key;
                 int share = sums.Count(x => x == mode);
@@ -663,7 +720,7 @@ public static class MusicAssembler
                 {
                     if (m != first && m.Time != null) m.Time = null;
                     m.Warnings.RemoveAll(w => w.Contains("duration") || w.Contains("dropped uncertain"));
-                    m.Fit.Sums.Clear(); m.Fit.Dropped = 0;
+                    m.Fit.Sums.Clear(); m.Fit.DroppedPerStaff[0] = m.Fit.DroppedPerStaff[1] = 0;
                     for (int st = 1; st <= part.StaffCount; st++) Validate(m, t, st);
                 }
             }

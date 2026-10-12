@@ -83,8 +83,70 @@ public static class SystemBuilder
             double top = sys.Staves.Min(s => s.TopY(s.Left)), bot = sys.Staves.Max(s => s.BottomY(s.Left));
             sys.Bounds = new Rect((int)left, (int)top, (int)right, (int)bot);
             BuildMeasures(sys);
+            DetectBraces(bin, sys, log);
         }
         return systems;
+    }
+
+    /// <summary>
+    /// Marks adjacent staves joined by a curly brace at the left edge. Per row the ink run nearest to the staves (left
+    /// of the system line) is traced over the stroke's whole height, which may overshoot the staves a little: a brace
+    /// has its tips well to the right of its middle (the cusp points left), a bracket or system line is straight, and
+    /// a stroke that runs on past the pair belongs to a bracket over more staves.
+    /// </summary>
+    private static void DetectBraces(BinaryImage bin, StaffSystem sys, List<string> log)
+    {
+        bool dump = Environment.GetEnvironmentVariable("PVOMR_BRACEDUMP") == "1";
+        for (int i = 0; i + 1 < sys.Staves.Count; i++)
+        {
+            Staff a = sys.Staves[i], b = sys.Staves[i + 1];
+            double ss = (a.Space + b.Space) / 2;
+            double left = Math.Min(a.Left, b.Left);
+            int xFrom = (int)Math.Round(left - 0.35 * ss), xTo = (int)Math.Max(0, Math.Round(left - 4.0 * ss));
+            int top = (int)Math.Round(a.TopY(left)), bottom = (int)Math.Round(b.BottomY(left));
+            int y0 = (int)Math.Max(0, top - 2.5 * ss), y1 = (int)Math.Min(bin.Height - 1, bottom + 2.5 * ss);
+            if (bottom - top < 6 * ss || xFrom <= xTo) continue;
+            var lx = new int?[y1 - y0 + 1];
+            var rx = new int?[y1 - y0 + 1];
+            for (int y = y0; y <= y1; y++)
+            {
+                int x = xFrom;
+                while (x >= xTo && !bin[x, y]) x--;
+                if (x < xTo) continue;
+                rx[y - y0] = x;
+                while (x - 1 >= xTo && bin[x - 1, y]) x--;
+                lx[y - y0] = x;
+            }
+            // the stroke: the run of inked rows (gaps up to a third of a space bridged) through the middle of the pair
+            int midRow = (top + bottom) / 2 - y0, gapMax = (int)Math.Max(2, 0.8 * ss);
+            if (lx[midRow] == null) { if (dump) log.Add($"brace? staves {a.Index + 1}/{b.Index + 1}: no ink beside the middle"); continue; }
+            int e0 = midRow, e1 = midRow;
+            for (int r = midRow, gap = 0; r >= 0; r--) { if (lx[r] != null) { e0 = r; gap = 0; } else if (++gap > gapMax) break; }
+            for (int r = midRow, gap = 0; r < lx.Length; r++) { if (lx[r] != null) { e1 = r; gap = 0; } else if (++gap > gapMax) break; }
+            int len = e1 - e0 + 1;
+            bool runsOn = e0 == 0 || e1 == lx.Length - 1;
+            bool covers = y0 + e0 <= top + 1.5 * ss && y0 + e1 >= bottom - 1.5 * ss;
+            double Median(int r0, int r1, int?[]? arr = null)
+            {
+                arr ??= lx;
+                var v = new List<int>();
+                for (int r = Math.Max(e0, r0); r <= Math.Min(e1, r1); r++) if (arr[r] is int x) v.Add(x);
+                if (v.Count == 0) return double.NaN;
+                v.Sort(); return v[v.Count / 2];
+            }
+            int tip = (int)Math.Max(2, 0.04 * len);
+            double tipTop = Median(e0, e0 + tip), tipBot = Median(e1 - tip, e1);
+            double cusp = Enumerable.Range(e0 + (int)(0.35 * len), (int)(0.3 * len)).Where(r => lx[r] != null).Select(r => (double)lx[r]!.Value).DefaultIfEmpty(double.NaN).Min();
+            // the right edge: the swellings of the two arms stand out to the right of the thin middle
+            double swellTop = Median(e0 + (int)(0.2 * len), e0 + (int)(0.35 * len), rx), swellBot = Median(e0 + (int)(0.65 * len), e0 + (int)(0.8 * len), rx);
+            double midRight = Median(e0 + (int)(0.47 * len), e0 + (int)(0.53 * len), rx);
+            double leftCurve = Math.Min(tipTop, tipBot) - cusp, rightDip = Math.Min(swellTop, swellBot) - midRight;
+            if (dump) log.Add($"brace? staves {a.Index + 1}/{b.Index + 1}: stroke y {y0 + e0}-{y0 + e1} (staves {top}-{bottom}), tips x {tipTop}/{tipBot}, cusp x {cusp}, right edge {swellTop}/{midRight}/{swellBot} (ss {ss:0.0}){(runsOn ? ", runs on" : "")}");
+            if (runsOn || !covers || double.IsNaN(cusp) || double.IsNaN(tipTop) || double.IsNaN(tipBot)) continue;
+            if (!(leftCurve >= 0.4 * ss || leftCurve >= 0.2 * ss && rightDip >= 0.3 * ss)) continue;
+            a.BraceToNext = true;
+            log.Add($"brace joins staves {a.Index + 1} and {b.Index + 1}");
+        }
     }
 
     private static void BuildMeasures(StaffSystem sys)

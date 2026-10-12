@@ -34,7 +34,7 @@ dotnet run --project src/PVOMR.Cli -c Release -- "D:\OMR\Scores\Bach - Cello Sui
 `--musicxml <file>` assembles all analysed pages into a score and writes MusicXML 4.0 (score-partwise).
 The `Score` namespace holds a semantic model (parts, measures, voices, events with durations in
 divisions, directions, slurs/ties), `MusicAssembler` builds it from the page analyses (staff-to-part
-mapping, automatic grand staff for two-staff systems, voice assignment by stem direction, beams,
+mapping, automatic grand staves, voice assignment by stem direction, beams,
 dots, accidentals, fermatas, articulations, dynamics, hairpins, slurs vs ties, barline styles and
 repeats, measure numbering across systems and pages, pickup measures) and validates every voice
 against the time signature: a missing time signature is inferred from the most common measure
@@ -75,7 +75,9 @@ staff-less binary image.
    heads do not count) yields candidate line rows, grouped into five equidistant lines (one line
    may be missing). Groups are linked across strips into chains, fragments are merged, each line
    is refined at full resolution and stored as a polyline, so curved book scans work. Candidates
-   are validated by line continuity, which rejects equally spaced text lines.
+   are validated by line continuity, which rejects equally spaced text lines. Stacks of ledger lines are
+   not staves: a short candidate near a longer staff is dropped, and so is a wider one (up to 85 % of the
+   longer staff) hanging about one space below or above it, as under the very low notes of a four-hand secondo.
 4. **Staff removal, bar lines, systems** (`StaffRemover`, `BarlineDetector`, `SystemBuilder`):
    lines are erased where no symbol crosses them: a vertical ink run through the line up to one and a half
    times its thickness is the line itself, a run up to twice the thickness is erased only when its neighbouring
@@ -238,7 +240,20 @@ Debussy Petite Suite score, whose systems have 2 to 12 staves, exports as 12 par
 15 px staves of these scores the clefs (including alto and tenor), key signatures and time signatures are
 read by the template-placement pass described above; Beethoven 3 page 2 (jagged bilevel scan), Brahms 4 page 2
 and the Dover Bach Suite 3 page 3 read the right key on every staff but one. Instrument names are not read
-(parts are numbered), and a grand staff inside an orchestral score is still treated as two parts.
+(parts are numbered).
+
+Grand staves: the system builder looks for a curly brace left of every pair of adjacent staves. Per row the ink
+nearest to the staves is traced over the whole stroke (which may overshoot the staves): a brace has its tips to
+the right of its middle cusp and its arms bulge out to the right of the thin middle, while a bracket or system
+line is straight and a stroke that runs on past the pair belongs to a bracket over more staves
+(`PVOMR_BRACEDUMP=1` prints the measurements). A braced pair becomes one two-staff part (named Piano) when it
+is keyboard-like: any braced pair in a system of up to four staves (violin or clarinet and piano, songs, four-hand
+piano with both players on one page), but in larger systems only treble over bass, because orchestral editions
+also brace cellos and basses. A pair counts as braced when any system with the full staff count shows the brace,
+so one broken brace stroke does not split the part. Scores of two-staff systems keep the earlier rule (one piano
+part when the clefs look like a grand staff or a brace is seen); `--grand-staff` and `--separate-staves` force
+either way. Cross-staff notes and voices then work as for solo piano, and the measure-fit check counts the two
+staves of a piano measure separately (notes dropped on one staff no longer mark the other one).
 
 ## Correction GUI (src/PVOMR.Gui)
 

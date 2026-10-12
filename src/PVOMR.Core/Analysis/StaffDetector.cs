@@ -191,16 +191,21 @@ public static class StaffDetector
         keep = keep.Where(st =>
         {
             double w = st.Right - st.Left;
-            if (w >= 0.5 * maxWidth) return true;
             double xm = (st.Left + st.Right) / 2;
             foreach (var o in keep)
             {
-                if (o == st || o.Right - o.Left < 2 * w) continue;
+                // well under half the width: anywhere within seven spaces of the longer staff; a wider candidate only
+                // when it hangs about one space off the longer staff (a stack of ledger lines under low notes; real
+                // staves are never that close)
+                double ow = o.Right - o.Left;
+                bool shortOne = w < 0.5 * maxWidth && ow >= 2 * w, closeOne = w < 0.85 * ow;
+                if (o == st || !(shortOne || closeOne)) continue;
                 if (xm < o.Left || xm > o.Right) continue;
                 double r = st.Space / o.Space;
                 if (r < 0.9 || r > 1.1) continue;
                 double dTop = o.TopY(xm) - st.BottomY(xm), dBot = st.TopY(xm) - o.BottomY(xm);
-                if ((dTop > -0.5 * st.Space && dTop < 7 * st.Space) || (dBot > -0.5 * st.Space && dBot < 7 * st.Space))
+                double reach = shortOne ? 7 : 2;
+                if ((dTop > -0.5 * st.Space && dTop < reach * st.Space) || (dBot > -0.5 * st.Space && dBot < reach * st.Space))
                 {
                     result.Log.Add($"rejected short staff candidate at y={st.CenterY:0} x={st.Left:0}-{st.Right:0}: ledger-line zone of a longer staff");
                     return false;

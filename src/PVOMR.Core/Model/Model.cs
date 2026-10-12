@@ -60,6 +60,8 @@ public sealed class Staff
     public int KeyFifths { get; set; }
     public string? TimeSignature { get; set; }
     /// <summary>User corrections: when set they override what the interpreter reads from the symbols.</summary>
+    /// <summary>A curly brace joins this staff and the next one of the system: the two are one keyboard (or harp) part.</summary>
+    public bool BraceToNext { get; set; }
     public ClefKind? ForcedClef { get; set; }
     public int? ForcedKey { get; set; }
     public string? ForcedTime { get; set; }
