@@ -57,6 +57,7 @@ public static class MusicAssembler
         for (int i = 0; i < partCount; i++)
             for (int k = 0; k < layout[i].Length; k++) partOf[layout[i][k]] = (i, k + 1);
 
+        var namesOf = Enumerable.Range(0, partCount).Select(_ => new List<string>()).ToArray();
         var contexts = new StaffContext[partCount * 2];
         for (int i = 0; i < contexts.Length; i++) contexts[i] = new StaffContext();
         var partMeasureCount = new int[partCount];
@@ -75,6 +76,7 @@ public static class MusicAssembler
             {
                 var (pi, sn) = partOf[Math.Min(refOfStaff[k], maxStaves - 1)];
                 if (staffAt[pi, sn - 1] < 0) staffAt[pi, sn - 1] = k;
+                if (sys.Staves[k].InstrumentName is string nm) namesOf[pi].Add(nm);
             }
             for (int mi = 0; mi < measureCount; mi++)
             {
@@ -110,6 +112,7 @@ public static class MusicAssembler
                 }
             }
         }
+        NameParts(score, namesOf, pages);
         foreach (var part in score.Parts) FinishPart(part, score);
         return score;
     }
@@ -128,19 +131,79 @@ public static class MusicAssembler
         for (int i = 1; i <= n; i++)
             for (int j = 1; j <= m; j++)
             {
-                double c = ClefCost(sys.Staves[i - 1].Clef, reference.Staves[j - 1].Clef);
+                double c = StaffCost(sys.Staves[i - 1], reference.Staves[j - 1], reference);
                 cost[i, j] = Math.Min(cost[i - 1, j - 1] + c, cost[i, j - 1]);
             }
         var result = new int[n];
         int a = n, b = m;
         while (a > 0 && b > 0)
         {
-            double c = ClefCost(sys.Staves[a - 1].Clef, reference.Staves[b - 1].Clef);
+            double c = StaffCost(sys.Staves[a - 1], reference.Staves[b - 1], reference);
             if (Math.Abs(cost[a, b] - (cost[a - 1, b - 1] + c)) < 1e-9) { result[a - 1] = b - 1; a--; b--; }
             else b--;
         }
         while (a > 0) { result[a - 1] = Math.Max(0, a - 1); a--; }
         return result;
+    }
+
+    /// <summary>How unlikely it is that a staff of a sparser system is the given staff of the reference system: the
+    /// instrument names decide when both were read and understood, otherwise the clefs.</summary>
+    private static double StaffCost(Staff s, Staff reference, StaffSystem refSystem)
+    {
+        var a = Instruments.Match(s.InstrumentName); var b = Instruments.Match(reference.InstrumentName);
+        if (a != null && b != null) return a.Id == b.Id ? 0 : 2;
+        // a named staff should not take an unnamed reference staff while the reference names that instrument elsewhere
+        if (a != null && refSystem.Staves.Any(r => r != reference && Instruments.Match(r.InstrumentName)?.Id == a.Id)) return 2;
+        return ClefCost(s.Clef, reference.Clef);
+    }
+
+    /// <summary>
+    /// Part names from the instrument names read left of the staves: the longest reading is the full name (first
+    /// system), the shortest one a different abbreviation; the instrument (playback sound) is the majority match. A
+    /// single part without names takes an instrument named in a short line of the first page's header ("Violoncello").
+    /// </summary>
+    private static void NameParts(Score score, List<string>[] namesOf, IReadOnlyList<PageAnalysis> pages)
+    {
+        var bassWord = new bool[score.Parts.Count];
+        for (int i = 0; i < score.Parts.Count; i++)
+        {
+            var part = score.Parts[i];
+            var readings = namesOf[i].Select(n => (text: n, inst: Instruments.Match(n, out bool bw, out bool fz), bw, fz)).ToList();
+            var known = readings.Where(r => r.inst != null).ToList();
+            if (known.Count > 0)
+            {
+                var top = known.GroupBy(r => r.inst!.Id).OrderByDescending(g => g.Count()).First().ToList();
+                part.Instrument = top[0].inst;
+                bassWord[i] = top.All(r => r.bw);
+                // prefer readings that matched without OCR tolerance; the longest is the full name
+                var fullR = top.OrderBy(r => r.fz).ThenByDescending(r => r.text.Length).First();
+                var shortR = top.OrderBy(r => r.fz).ThenBy(r => r.text.Length).First();
+                string full = Instruments.DisplayName(fullR.text, fullR.inst!, fullR.fz), shortest = Instruments.DisplayName(shortR.text, shortR.inst!, shortR.fz);
+                part.Name = full;
+                if (shortest.Length < full.Length && shortest.Length <= 8) part.Abbreviation = shortest;
+            }
+            else if (readings.Count > 0)
+            {
+                // a name that is not in the table is still printed text; keep the most frequent longer reading
+                var name = readings.GroupBy(r => r.text).OrderByDescending(g => g.Count()).ThenByDescending(g => g.Key.Length).First().Key;
+                if (Instruments.LooksLikeName(name)) part.Name = name;
+            }
+            if (part.Instrument == null && part.StaffCount == 2) part.Instrument = Instruments.Match("Piano");
+        }
+        // "Basso" is the bass voice when the other parts are voices, otherwise the double basses
+        if (score.Parts.Count(p => p.Instrument?.Voice == true) >= 2)
+            for (int i = 0; i < score.Parts.Count; i++) if (bassWord[i]) score.Parts[i].Instrument = Instruments.Bass;
+        if (score.Parts.Count == 1 && score.Parts[0].Instrument == null && score.Parts[0].StaffCount == 1)
+        {
+            foreach (var line in pages.Take(1).SelectMany(p => p.HeaderText))
+            {
+                if (Instruments.Tokens(line).Count > 3) continue;
+                var inst = Instruments.Match(line, out bool bw);
+                if (inst == null || bw && Instruments.Tokens(line).Count == 1 && Instruments.Tokens(line)[0].Length <= 1) continue;
+                score.Parts[0].Instrument = inst; score.Parts[0].Name = line;
+                break;
+            }
+        }
     }
 
     private static double ClefCost(ClefKind a, ClefKind b)

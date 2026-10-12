@@ -14,6 +14,10 @@ public sealed class Part
 {
     public string Id { get; set; } = "P1";
     public string Name { get; set; } = "Part 1";
+    /// <summary>The short name printed on later systems (e.g. "Vc."), when one was read.</summary>
+    public string? Abbreviation { get; set; }
+    /// <summary>The recognised instrument (sound for playback), null when the name was not understood.</summary>
+    public Instrument? Instrument { get; set; }
     public int StaffCount { get; set; } = 1;
     public List<ScoreMeasure> Measures { get; } = new();
 }

@@ -417,7 +417,7 @@ public partial class MainWindow : Window
             var staff = _selStaff ?? _selSym?.Staff;
             if (staff != null)
             {
-                StaffInfo.Text = $"Staff {staff.Index + 1} (system {staff.SystemIndex + 1}): clef {staff.Clef}, key {KeyLabel(staff.KeyFifths)}, time {staff.TimeSignature ?? "?"}, {staff.Measures.Count} measures, staff space {staff.Space:0.0} px"
+                StaffInfo.Text = $"Staff {staff.Index + 1} (system {staff.SystemIndex + 1}){(staff.InstrumentName != null ? $", \"{staff.InstrumentName}\"" : "")}: clef {staff.Clef}, key {KeyLabel(staff.KeyFifths)}, time {staff.TimeSignature ?? "?"}, {staff.Measures.Count} measures, staff space {staff.Space:0.0} px"
                                  + (staff.ForcedClef != null || staff.ForcedKey != null || staff.ForcedTime != null ? "  [corrected]" : "");
                 StaffClefBox.SelectedItem = staff.ForcedClef?.ToString() ?? Auto;
                 StaffKeyBox.SelectedItem = staff.ForcedKey is int k ? KeyLabel(k) : Auto;

@@ -112,7 +112,7 @@ def report(m):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", required=True)
-    ap.add_argument("--exe", default=os.path.join(os.path.dirname(__file__), "..", "src", "PVOMR.Cli", "bin", "Release", "net9.0", "PVOMR.Cli.exe"))
+    ap.add_argument("--exe", default=os.path.join(os.path.dirname(__file__), "..", "src", "PVOMR.Cli", "bin", "Release", "net9.0-windows10.0.19041.0", "PVOMR.Cli.exe"))
     ap.add_argument("--manifest", default=None)
     ap.add_argument("--max-pages", type=int, default=6, help="pages per file to process (from the first)")
     ap.add_argument("--timeout", type=int, default=300, help="seconds per page")

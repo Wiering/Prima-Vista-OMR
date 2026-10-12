@@ -24,7 +24,7 @@ public sealed class RecognitionEngine
 
     public RecognitionEngine(string? fontDir = null, string? modelPath = null)
     {
-        var options = new AnalysisOptions { FontDirectory = fontDir };
+        var options = new AnalysisOptions { FontDirectory = fontDir, TextRecognizer = PVOMR.Ocr.WindowsTextRecognizer.TryCreate() };
         var glyphs = GlyphLibrary.Load(fontDir, Log);
         var classifier = modelPath == "none" ? null : GlyphClassifier.Load(modelPath, Log);
         var heads = modelPath == "none" ? null : GlyphClassifier.Load(null, Log, "heads");

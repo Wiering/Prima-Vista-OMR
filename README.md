@@ -240,7 +240,7 @@ Debussy Petite Suite score, whose systems have 2 to 12 staves, exports as 12 par
 15 px staves of these scores the clefs (including alto and tenor), key signatures and time signatures are
 read by the template-placement pass described above; Beethoven 3 page 2 (jagged bilevel scan), Brahms 4 page 2
 and the Dover Bach Suite 3 page 3 read the right key on every staff but one. Instrument names are not read
-(parts are numbered).
+(see "Instrument names" below).
 
 Grand staves: the system builder looks for a curly brace left of every pair of adjacent staves. Per row the ink
 nearest to the staves is traced over the whole stroke (which may overshoot the staves): a brace has its tips to
@@ -254,6 +254,37 @@ so one broken brace stroke does not split the part. Scores of two-staff systems 
 part when the clefs look like a grand staff or a brace is seen); `--grand-staff` and `--separate-staves` force
 either way. Cross-staff notes and voices then work as for solo piano, and the measure-fit check counts the two
 staves of a piano measure separately (notes dropped on one staff no longer mark the other one).
+
+## Instrument names
+
+The instrument names printed left of the staves are read with the OCR engine built into Windows 10/11
+(`src/PVOMR.Ocr`, `Windows.Media.Ocr`; nothing to download, it uses an installed OCR language, English
+preferred). The core library only defines the `ITextRecognizer` interface and stays platform-neutral; the
+command line and the GUI therefore target `net9.0-windows10.0.19041.0` (the executable is now under
+`bin/Release/net9.0-windows10.0.19041.0/`). `--no-ocr` switches it off.
+
+* Per system the margin left of the staves is read twice (enlarged to about 25 and 35 px per staff space;
+  each size wins on different print) and every text line goes to the staff whose middle is nearest; a name
+  between the staves of a braced pair names the pair. Staves still without a name are read once more on
+  their own (short abbreviations are often skipped in a large crop). Per staff the reading that names an
+  instrument wins.
+* The text above the first system is read too (`PageAnalysis.HeaderText`); a single part without a name in
+  the margin takes an instrument named in a short header line ("CELLO", "Violini I").
+* `Score/Instruments` knows the usual names, plurals and abbreviations in Italian, German, French, English and
+  Dutch (Flauti, Hautbois, Klarinette, Fagotti, Corni, Trombe, Posaunen, Pauken, Arpa, Violini, Bratsche,
+  Violoncello, C.-Bassi, Soprano ... Basso), skips "in B", numerals and "e"/"und", takes the first instrument
+  word ("Violoncello e Basso" is a cello part, "Trombone basso e Tuba" a trombone part) and tolerates OCR slips
+  by edit distance ("Tronube" is a trumpet). "Basso" is the bass voice when the other parts are voices.
+* Parts get the printed full name (the longest reading, OCR slips replaced by the instrument's name plus its
+  numeral), a short abbreviation when later systems print one, and a MusicXML `score-instrument` and
+  `midi-instrument` with the General MIDI program, so MuseScore plays a violin part as a violin.
+* Systems that leave out instruments are aligned to the full system by name where names were read, and by
+  clef otherwise; a named staff is not aligned to an unnamed reference staff while the reference names that
+  instrument elsewhere (Debussy Petite Suite: the harp no longer lands on the clarinet part).
+* Results: Beethoven 5, Mozart 34 and the Tchaikovsky Swan Lake suite get nearly all parts named with the
+  right sound; Debussy's small italic abbreviations ("Htb", "Fl.") are only partly readable by the engine.
+  `PVOMR_OCRDUMP=1` (with `--verbose`) prints every OCR line and the staff readings; `PVOMR_OCRSAVE=<dir>`
+  writes the crops handed to the engine as PGM images.
 
 ## Correction GUI (src/PVOMR.Gui)
 

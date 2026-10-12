@@ -14,4 +14,6 @@ public sealed class AnalysisOptions
     public bool DebugImages { get; set; }
     /// <summary>Path of the ONNX glyph classifier (null = search the default locations).</summary>
     public string? ModelPath { get; set; }
+    /// <summary>OCR engine for instrument names and header text (null = no text is read).</summary>
+    public ITextRecognizer? TextRecognizer { get; set; }
 }

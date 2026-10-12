@@ -28,6 +28,7 @@ static int Usage()
           --model <file>      ONNX glyph classifier (default: models/glyphs.onnx if present; "none" = templates only)
           --binarize <m>      auto | otsu | sauvola (default auto)
           --no-deskew         skip skew correction
+          --no-ocr            do not read instrument names and header text (Windows OCR)
           --quiet             only print the summary line per page
           --augment <spec>    degrade the image first, e.g. blur=1.2,noise=0.08,skew=1.5,scale=0.6,contrast=0.6,speckle=0.002
           --verbose           print analysis notes and bounding boxes
@@ -59,7 +60,7 @@ var inputs = new List<string>();
 string? pages = null, outDir = null, fonts = null, musicXml = null, augment = null, model = null, omit = null;
 bool? grandStaff = null;
 double dpi = 300;
-bool debug = false, json = false, quiet = false, verbose = false, deskew = true, diag = false, fit = false;
+bool debug = false, json = false, quiet = false, verbose = false, deskew = true, diag = false, fit = false, ocr = true;
 var binMethod = BinarizationMethod.Auto;
 for (int i = 0; i < args.Length; i++)
 {
@@ -81,6 +82,7 @@ for (int i = 0; i < args.Length; i++)
         case "--fonts": fonts = Next(); break;
         case "--binarize": binMethod = Enum.Parse<BinarizationMethod>(Next(), true); break;
         case "--no-deskew": deskew = false; break;
+        case "--no-ocr": ocr = false; break;
         case "--quiet": quiet = true; break;
         case "--verbose": verbose = true; break;
         case "--diag": diag = true; break;
@@ -94,7 +96,8 @@ for (int i = 0; i < args.Length; i++)
 if (inputs.Count == 0) return Usage();
 
 var log = new List<string>();
-var options = new AnalysisOptions { Dpi = dpi, Deskew = deskew, Binarization = binMethod, FontDirectory = fonts, Verbose = verbose, DebugImages = debug };
+var options = new AnalysisOptions { Dpi = dpi, Deskew = deskew, Binarization = binMethod, FontDirectory = fonts, Verbose = verbose, DebugImages = debug,
+                                   TextRecognizer = ocr ? PVOMR.Ocr.WindowsTextRecognizer.TryCreate() : null };
 var glyphs = GlyphLibrary.Load(fonts, log);
 var classifier = model == "none" ? null : GlyphClassifier.Load(model, log);
 var headVerifier = model == "none" ? null : GlyphClassifier.Load(null, log, "heads");

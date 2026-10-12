@@ -27,7 +27,7 @@ public static class TextReport
             {
                 double xm = (st.Left + st.Right) / 2;
                 string bars = string.Join(", ", st.Barlines.Select(b => $"{BarName(b.Kind)}@{b.X:0}{(b.Spanning ? $"(to staff {b.StaffTo + 1})" : "")}"));
-                sb.AppendLine($"    Staff {st.Index + 1}: x {st.Left:0}-{st.Right:0}, lines y {st.TopY(xm):0}..{st.BottomY(xm):0}, space {st.Space:0.0}px, clef {st.Clef}, key {Analysis.MusicInterpreter.KeyName(st.KeyFifths)}, time {st.TimeSignature ?? "?"}, {st.Barlines.Count} barlines [{bars}]");
+                sb.AppendLine($"    Staff {st.Index + 1}: x {st.Left:0}-{st.Right:0}, lines y {st.TopY(xm):0}..{st.BottomY(xm):0}, space {st.Space:0.0}px, clef {st.Clef}, key {Analysis.MusicInterpreter.KeyName(st.KeyFifths)}, time {st.TimeSignature ?? "?"}, {st.Barlines.Count} barlines [{bars}]{(st.InstrumentName != null ? $", name \"{st.InstrumentName}\"" : "")}");
                 foreach (var m in st.Measures)
                 {
                     var syms = m.Symbols.OrderBy(s => s.Kind is SymbolKind.Note or SymbolKind.Chord or SymbolKind.NoteGroup && s.Notes.Count > 0 ? s.Notes.Min(n => n.HeadX) : s.Bounds.CenterX).ToList();

@@ -80,11 +80,27 @@ public static class MusicXmlWriter
         w.WriteEndElement();
 
         w.WriteStartElement("part-list");
+        int channel = 1;
         foreach (var p in score.Parts)
         {
             w.WriteStartElement("score-part");
             w.WriteAttributeString("id", p.Id);
             w.WriteElementString("part-name", p.Name);
+            if (p.Abbreviation != null) w.WriteElementString("part-abbreviation", p.Abbreviation);
+            if (p.Instrument != null)
+            {
+                // the sound for playback: MuseScore and others pick the instrument from the General MIDI program
+                string iid = p.Id + "-I1";
+                w.WriteStartElement("score-instrument"); w.WriteAttributeString("id", iid);
+                w.WriteElementString("instrument-name", p.Instrument.Name);
+                w.WriteEndElement();
+                w.WriteStartElement("midi-instrument"); w.WriteAttributeString("id", iid);
+                w.WriteElementString("midi-channel", channel.ToString());
+                w.WriteElementString("midi-program", p.Instrument.Program.ToString());
+                w.WriteEndElement();
+                channel = channel % 16 + 1;
+                if (channel == 10) channel = 11;   // channel 10 is percussion in General MIDI
+            }
             w.WriteEndElement();
         }
         w.WriteEndElement();

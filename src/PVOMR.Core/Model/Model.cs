@@ -60,6 +60,8 @@ public sealed class Staff
     public int KeyFifths { get; set; }
     public string? TimeSignature { get; set; }
     /// <summary>User corrections: when set they override what the interpreter reads from the symbols.</summary>
+    /// <summary>The instrument name printed left of the staff (OCR; null when none was read).</summary>
+    public string? InstrumentName { get; set; }
     /// <summary>A curly brace joins this staff and the next one of the system: the two are one keyboard (or harp) part.</summary>
     public bool BraceToNext { get; set; }
     public ClefKind? ForcedClef { get; set; }
@@ -172,6 +174,8 @@ public sealed class PageAnalysis
     public List<Staff> Staves { get; } = new();
     public List<StaffSystem> Systems { get; } = new();
     public List<MusicSymbol> PageSymbols { get; } = new();  // symbols not attached to a staff (titles, text ...)
+    /// <summary>Lines of text above the first system (OCR): title, composer, the instrument of a part.</summary>
+    public List<string> HeaderText { get; } = new();
     public List<string> Notes { get; } = new();
     public TimeSpan Elapsed { get; set; }
 }

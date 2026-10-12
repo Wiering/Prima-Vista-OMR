@@ -125,6 +125,11 @@ public sealed class PageAnalyzer
         ctx.Components = comps;
         BarlineDetector.Detect(bin0, noStaff, comps, result.Staves, result.Notes);
         result.Systems.AddRange(SystemBuilder.Build(bin0, result.Staves, result.Notes));
+        if (_opt.TextRecognizer != null)
+        {
+            InstrumentNameReader.Read(gray, result, _opt.TextRecognizer);
+            foreach (var st in result.Staves.Where(s => s.InstrumentName != null)) result.Notes.Add($"staff {st.Index + 1} instrument name: {st.InstrumentName}");
+        }
 
         // 4. symbols
         var symbolAnalyzer = new SymbolAnalyzer(_glyphs, bin0, noStaff, comps, result, _opt, _classifier, _headVerifier);
