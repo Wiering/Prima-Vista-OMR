@@ -69,6 +69,10 @@ public static class MusicAssembler
             // measures of the system: by boundary index; each staff has its own Measure list aligned by x
             int measureCount = sys.Staves.Max(s => s.Measures.Count);
             int[] refOfStaff = AlignStaves(sys, reference);
+            // staves in a compound metre written against simple time on another staff of the system (9/8 over 3/4):
+            // their notes are triplets of the simple metre
+            var sysTimes = sys.Staves.Select(st => ParseTime(st.TimeSignature)).ToList();
+            var tripletStaves = sys.Staves.Where((st, k) => sysTimes[k] is TimeSpec t && sysTimes.Any(o => o != null && t.TripletsAgainst(o))).ToHashSet();
             // this system's staff for each (part, staff number), if present
             var staffAt = new int[partCount, 2];
             for (int i = 0; i < partCount; i++) { staffAt[i, 0] = -1; staffAt[i, 1] = -1; }
@@ -78,12 +82,16 @@ public static class MusicAssembler
                 if (staffAt[pi, sn - 1] < 0) staffAt[pi, sn - 1] = k;
                 if (sys.Staves[k].InstrumentName is string nm) namesOf[pi].Add(nm);
             }
-            for (int mi = 0; mi < measureCount; mi++)
+            // a sliver at the system start holding only clef, key and time (a thick or repeat bar line right after the
+            // time signature) is no measure of its own: its signs go into the next measure
+            bool sliver = measureCount > 1 && sys.Staves.All(st => st.Measures.Count > 1 && !st.Measures[0].Symbols.Any(IsMusic));
+            int firstMi = sliver ? 1 : 0;
+            for (int mi = firstMi; mi < measureCount; mi++)
             {
                 for (int pi = 0; pi < partCount; pi++)
                 {
                     var part = score.Parts[pi];
-                    var sm = new ScoreMeasure { Page = pg.PageNumber, NewSystem = mi == 0, NewPage = mi == 0 && newPage };
+                    var sm = new ScoreMeasure { Page = pg.PageNumber, NewSystem = mi == firstMi, NewPage = mi == firstMi && newPage };
                     bool any = false;
                     for (int sIdx = 0; sIdx < part.StaffCount; sIdx++)
                     {
@@ -92,12 +100,17 @@ public static class MusicAssembler
                         var staff = sys.Staves[staffPos];
                         if (mi >= staff.Measures.Count) continue;
                         var m = staff.Measures[mi];
+                        var built = sliver && mi == 1 ? Merge(staff.Measures[0], m) : m;
                         any = true;
                         var ctx = contexts[pi * 2 + sIdx];
                         int otherPos = part.StaffCount == 2 ? staffAt[pi, 1 - sIdx] : -1;
                         var sibling = otherPos >= 0 ? sys.Staves[otherPos] : null;
-                        BuildMeasure(sm, m, staff, sIdx + 1, ctx, mi == 0, partMeasureCount[pi] == 0, sibling, sibling != null ? 2 - sIdx : 0);
-                        if (options.MeasureMap != null) { options.MeasureMap[m] = sm; options.MeasureStaff ??= new(); options.MeasureStaff[m] = sIdx + 1; }
+                        BuildMeasure(sm, built, staff, sIdx + 1, ctx, mi == firstMi, partMeasureCount[pi] == 0, sibling, sibling != null ? 2 - sIdx : 0, tripletStaves.Contains(staff));
+                        if (options.MeasureMap != null)
+                        {
+                            options.MeasureStaff ??= new();
+                            foreach (var mm in sliver && mi == 1 ? new[] { staff.Measures[0], m } : new[] { m }) { options.MeasureMap[mm] = sm; options.MeasureStaff[mm] = sIdx + 1; }
+                        }
                     }
                     if (!any)
                     {
@@ -115,6 +128,17 @@ public static class MusicAssembler
         NameParts(score, namesOf, pages);
         foreach (var part in score.Parts) FinishPart(part, score);
         return score;
+    }
+
+    private static bool IsMusic(MusicSymbol s) => s.Kind is SymbolKind.Note or SymbolKind.Chord or SymbolKind.NoteGroup or SymbolKind.Rest;
+
+    /// <summary>A system-start sliver and the measure after it as one measure (the sliver's left bar line is the system line).</summary>
+    private static Measure Merge(Measure sliver, Measure next)
+    {
+        var m = new Measure { Index = next.Index, X0 = sliver.X0, X1 = next.X1, Staff = next.Staff, LeftBarline = next.LeftBarline ?? sliver.LeftBarline, RightBarline = next.RightBarline };
+        m.Symbols.AddRange(sliver.Symbols);
+        m.Symbols.AddRange(next.Symbols);
+        return m;
     }
 
     /// <summary>
@@ -259,7 +283,7 @@ public static class MusicAssembler
 
     // ------------------------------------------------------------------ one staff-measure
 
-    private static void BuildMeasure(ScoreMeasure sm, Measure m, Staff staff, int staffNo, StaffContext ctx, bool firstInSystem, bool firstOfPart, Staff? sibling = null, int siblingNo = 0)
+    private static void BuildMeasure(ScoreMeasure sm, Measure m, Staff staff, int staffNo, StaffContext ctx, bool firstInSystem, bool firstOfPart, Staff? sibling = null, int siblingNo = 0, bool triplets = false)
     {
         double ss = staff.Space;
         sm.X0 = (int)m.X0; sm.X1 = (int)m.X1;
@@ -280,12 +304,15 @@ public static class MusicAssembler
         else if (firstOfPart && staffNo == 1) { sm.KeyFifths = staff.KeyFifths; ctx.Key = staff.KeyFifths; }
 
         var time = ParseTime(staff.TimeSignature);
+        // a signature printed on this staff is recorded for it even when unchanged (the other staff may change alone)
+        if (syms.Any(s => s.Kind == SymbolKind.TimeSignature) && time != null) sm.StaffTimes[staffNo - 1] = time;
         if (syms.Any(s => s.Kind == SymbolKind.TimeSignature) && time != null && (ctx.Time == null || !ctx.Time.Equals(time)))
         {
             if (staffNo == 1) sm.Time = time;
+            sm.StaffTimes[staffNo - 1] = time;
             ctx.Time = time;
         }
-        else if (ctx.Time == null && time != null) { if (staffNo == 1) sm.Time = time; ctx.Time = time; }
+        else if (ctx.Time == null && time != null) { if (staffNo == 1) sm.Time = time; sm.StaffTimes[staffNo - 1] = time; ctx.Time = time; }
         else if (firstOfPart && ctx.Time == null && staffNo == 1) sm.Warnings.Add("time signature unknown");
 
         // events
@@ -376,13 +403,24 @@ public static class MusicAssembler
         // validation against the time signature
         if (ctx.Time != null) Validate(sm, ctx.Time, staffNo);
         else if (events.Count == 1 && events[0].IsRest && events[0].Type == "whole") events[0].MeasureRest = true;
+
+        // a compound staff against simple time (9/8 over 3/4): checked against its own signature above, then its
+        // notes become triplets so that both staves span the same measure (3 written eighths = 2 real ones)
+        if (triplets && ctx.Time is { Compound: true })
+            foreach (var e in events.Where(e => sm.Events.Contains(e)))
+            {
+                e.Duration = e.Duration * 2 / 3;
+                if (e.TupletActual == 0) { e.TupletActual = 3; e.TupletNormal = 2; }
+                else { e.TupletActual *= 3; e.TupletNormal *= 2; }
+            }
     }
 
     /// <summary>Checks every voice of a staff against the measure length; drops uncertain events when that makes the measure add up.</summary>
     private static void Validate(ScoreMeasure sm, TimeSpec time, int staffNo)
     {
         int expected = time.Length;
-        sm.Fit.Expected = expected;
+        if (staffNo == 1 || sm.Fit.Expected == null) sm.Fit.Expected = expected;
+        sm.Fit.ExpectedPerStaff[Math.Clamp(staffNo - 1, 0, 1)] = expected;
         foreach (var voice in sm.Events.Where(e => e.Staff == staffNo).GroupBy(e => e.Voice).ToList())
         {
             var evs = voice.ToList();
@@ -754,6 +792,8 @@ public static class MusicAssembler
             foreach (var run in runs)
             {
                 if (run.Count < 4) continue;
+                // staves with their own metres (9/8 over 3/4) were each checked against their own signature
+                if (run.Any(m => m.StaffTimes[0] is TimeSpec a && m.StaffTimes[1] is TimeSpec b && (a.TripletsAgainst(b) || b.TripletsAgainst(a)))) continue;
                 int? expected = run[0].Fit.Expected;
                 // a signature read from the C or cut-C glyph is reliable; only digit readings and carried values are questioned
                 var inForceMeasure = part.Measures.LastOrDefault(m => m.Number <= run[0].Number && m.Time != null);

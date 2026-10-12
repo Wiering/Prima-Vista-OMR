@@ -37,6 +37,13 @@ public sealed record TimeSpec(int Beats, int BeatType, string? Symbol = null)
 {
     /// <summary>Measure length in divisions.</summary>
     public int Length => Beats * 4 * Score.Divisions / BeatType;
+    /// <summary>A compound metre (6/8, 9/8, 12/8, 6/16 ...): beats grouped in threes.</summary>
+    public bool Compound => BeatType >= 8 && Beats % 3 == 0;
+    /// <summary>
+    /// Written against <paramref name="simple"/> as triplets: a compound signature whose measure is one and a half
+    /// times as long (9/8 over 3/4, 6/8 over 2/4, 12/8 over C), so that its eighths are the other staff's triplet eighths.
+    /// </summary>
+    public bool TripletsAgainst(TimeSpec simple) => Compound && !simple.Compound && Length * 2 == simple.Length * 3;
     public override string ToString() => $"{Beats}/{BeatType}";
 }
 
@@ -47,6 +54,9 @@ public sealed class MeasureFit
 {
     /// <summary>Expected length in divisions, null when no time signature is known.</summary>
     public int? Expected { get; set; }
+    /// <summary>Expected length per staff of the part when the staves have their own time signatures (9/8 over 3/4).</summary>
+    public int?[] ExpectedPerStaff { get; } = new int?[2];
+    public int? ExpectedFor(int staff) => ExpectedPerStaff[Math.Clamp(staff - 1, 0, 1)] ?? Expected;
     /// <summary>Summed durations per (staff, voice) before any uncertain event was dropped.</summary>
     public List<(int Staff, int Voice, int Sum)> Sums { get; } = new();
     /// <summary>Uncertain events dropped to make the measure fit, per staff of the part (index 0 = staff 1).</summary>
@@ -55,12 +65,12 @@ public sealed class MeasureFit
     // the fullest voice of each staff must fill the measure; a second voice may stop early (a held note under a
     // moving line has no written rests), but no voice may overflow
     public bool Fits => Expected == null || (!TooLong && !TooShort);
-    public bool TooLong => Expected != null && Sums.Any(s => s.Sum > Expected);
-    public bool TooShort => Expected != null && Sums.GroupBy(s => s.Staff).Any(g => g.Max(s => s.Sum) < Expected);
+    public bool TooLong => Expected != null && Sums.Any(s => s.Sum > ExpectedFor(s.Staff));
+    public bool TooShort => Expected != null && Sums.GroupBy(s => s.Staff).Any(g => g.Max(s => s.Sum) < ExpectedFor(g.Key));
     /// <summary>The same check restricted to one staff of a two-staff part (1 = upper, 2 = lower).</summary>
     public MeasureFit ForStaff(int staffNo)
     {
-        var f = new MeasureFit { Expected = Expected };
+        var f = new MeasureFit { Expected = ExpectedFor(staffNo) };
         f.DroppedPerStaff[0] = DroppedPerStaff[Math.Clamp(staffNo - 1, 0, 1)];
         f.Sums.AddRange(Sums.Where(s => s.Staff == staffNo));
         return f;
@@ -75,6 +85,9 @@ public sealed class ScoreMeasure
     public ClefSpec?[] Clefs { get; set; } = new ClefSpec?[2];   // per staff, only when (re)stated in this measure
     public int? KeyFifths { get; set; }
     public TimeSpec? Time { get; set; }
+    /// <summary>The time signature stated on each staff of the part in this measure (differs between the staves
+    /// only for a per-staff metre such as 9/8 over 3/4).</summary>
+    public TimeSpec?[] StaffTimes { get; } = new TimeSpec?[2];
     public BarStyle LeftBar { get; set; } = BarStyle.None;
     public BarStyle RightBar { get; set; } = BarStyle.Regular;
     public bool RepeatForward { get; set; }

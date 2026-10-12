@@ -25,7 +25,7 @@ public static class MusicInterpreter
                 var staff = sys.Staves[k];
                 // inherit from the staff at the same position in the previous system when nothing is found
                 Staff? prev = PrevStaff(page, sys, k, carried);
-                InterpretStaff(staff, prev, null);
+                InterpretStaff(staff, prev, null, sys: sys);
             }
             // staves of one system share the key signature: a staff whose key signature was not recognised adopts the
             // key read on the other staves (the majority of those that have one), then its pitches are recomputed
@@ -38,7 +38,7 @@ public static class MusicInterpreter
                     var staff = sys.Staves[k];
                     if (staff.Measures.Any(m => m.Symbols.Any(sy => sy.Kind == SymbolKind.KeySignature)) || staff.KeyFifths == key || staff.ForcedKey != null) continue;
                     Staff? prev = PrevStaff(page, sys, k, carried);
-                    InterpretStaff(staff, prev, key);
+                    InterpretStaff(staff, prev, key, sys: sys);
                 }
             }
             // staves of one system share the time signature: adopt the majority reading for staves without one
@@ -47,7 +47,16 @@ public static class MusicInterpreter
             {
                 // all staves of a system carry the same time signature: the majority reading overrules misread digits
                 string time = times.GroupBy(t => t).OrderByDescending(g => g.Count()).First().Key;
-                foreach (var st in sys.Staves) if (st.ForcedTime == null) st.TimeSignature = time;
+                // ... except a staff in a compound metre written against simple time (9/8 over 3/4, 12/8 over C), or the
+                // simple staff against a compound majority: such pairs are per-staff metres, not misreadings
+                var maj = Score.MusicAssembler.ParseTime(time);
+                foreach (var st in sys.Staves)
+                {
+                    if (st.ForcedTime != null) continue;
+                    var own = Score.MusicAssembler.ParseTime(st.TimeSignature);
+                    if (own != null && maj != null && (own.TripletsAgainst(maj) || maj.TripletsAgainst(own))) continue;
+                    st.TimeSignature = time;
+                }
             }
         }
         CompleteKeysAcrossSystems(page);
@@ -115,13 +124,13 @@ public static class MusicInterpreter
                                                   : sys.Index > 0;   // no signature of its own: inherited an incomplete reading
                 if (!fix) continue;
                 Staff? prev = sys.Index > 0 && page.Systems[sys.Index - 1].Staves.Count == count ? page.Systems[sys.Index - 1].Staves[k] : null;
-                InterpretStaff(staff, prev, target, forcedOverrides: true);
+                InterpretStaff(staff, prev, target, forcedOverrides: true, sys: sys);
                 page.Notes.Add($"system {sys.Index + 1} staff {k + 1}: key {own} completed to {target} from the other systems");
             }
         }
     }
 
-    private static void InterpretStaff(Staff staff, Staff? prev, int? forcedKey, bool forcedOverrides = false)
+    private static void InterpretStaff(Staff staff, Staff? prev, int? forcedKey, bool forcedOverrides = false, StaffSystem? sys = null)
     {
         var clef = staff.ForcedClef ?? prev?.Clef ?? ClefKind.Unknown;
         int fifths = staff.ForcedKey ?? forcedKey ?? prev?.KeyFifths ?? 0;
@@ -157,6 +166,11 @@ public static class MusicInterpreter
                     // single digits of a time signature fill half the staff; smaller ones are fingerings or text
                     bool bigEnough = s.Attributes.ContainsKey("stack") || s.Name is "timeSigCommon" or "timeSigCutCommon" || s.Bounds.Height >= 1.6 * staff.Space;
                     if (!bigEnough) s.Attributes["time"] = "too small (ignored)";
+                    // a change of metre inside a system is printed on every staff at the same place; a lone C on one staff
+                    // only is something else (a cautionary bracket "(" taken for a C); digit pairs are reliable enough
+                    else if (mi > 0 && s.Name is "timeSigCommon" or "timeSigCutCommon" && sys != null && sys.Staves.Count > 1 && !sys.Staves.Any(o => o != staff && o.Measures.Any(om =>
+                                 om.Symbols.Any(os => os.Kind == SymbolKind.TimeSignature && Math.Abs(os.Bounds.CenterX - cx) < 2.5 * staff.Space))))
+                        s.Attributes["time"] = "not on the other staves (ignored)";
                     else if (cy > staff.TopY(cx) - 0.3 * staff.Space && cy < staff.BottomY(cx) + 0.3 * staff.Space) timeDigits.Add(s);
                     else s.Attributes["time"] = "outside staff (ignored)";
                 }

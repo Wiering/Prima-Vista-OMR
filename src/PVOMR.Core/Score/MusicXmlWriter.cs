@@ -110,6 +110,16 @@ public static class MusicXmlWriter
         w.WriteEndDocument();
     }
 
+    private static void WriteTime(XmlWriter w, TimeSpec t, int? staff)
+    {
+        w.WriteStartElement("time");
+        if (staff != null) w.WriteAttributeString("number", staff.ToString());
+        if (t.Symbol != null) w.WriteAttributeString("symbol", t.Symbol);
+        w.WriteElementString("beats", t.Beats.ToString());
+        w.WriteElementString("beat-type", t.BeatType.ToString());
+        w.WriteEndElement();
+    }
+
     private static void WritePart(XmlWriter w, Part part, Score score)
     {
         w.WriteStartElement("part");
@@ -137,14 +147,12 @@ public static class MusicXmlWriter
                 {
                     w.WriteStartElement("key"); w.WriteElementString("fifths", (m.KeyFifths ?? 0).ToString()); w.WriteEndElement();
                 }
-                if (m.Time != null)
+                if (part.StaffCount == 2 && m.StaffTimes[0] != null && m.StaffTimes[1] != null && m.StaffTimes[0] != m.StaffTimes[1])
                 {
-                    w.WriteStartElement("time");
-                    if (m.Time.Symbol != null) w.WriteAttributeString("symbol", m.Time.Symbol);
-                    w.WriteElementString("beats", m.Time.Beats.ToString());
-                    w.WriteElementString("beat-type", m.Time.BeatType.ToString());
-                    w.WriteEndElement();
+                    // a time signature per staff (9/8 over 3/4); the compound staff's notes carry a 3:2 time modification
+                    for (int s = 0; s < 2; s++) WriteTime(w, m.StaffTimes[s]!, s + 1);
                 }
+                else if (m.Time != null) WriteTime(w, m.Time, null);
                 if (first && part.StaffCount > 1) w.WriteElementString("staves", part.StaffCount.ToString());
                 for (int s = 0; s < part.StaffCount; s++)
                 {

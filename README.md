@@ -255,6 +255,20 @@ part when the clefs look like a grand staff or a brace is seen); `--grand-staff`
 either way. Cross-staff notes and voices then work as for solo piano, and the measure-fit check counts the two
 staves of a piano measure separately (notes dropped on one staff no longer mark the other one).
 
+Per-staff time signatures: a staff in a compound metre written against simple time on another staff of the
+system, with a measure one and a half times as long (9/8 over 3/4, 6/8 over 2/4, 12/8 over C, as in Handel's
+Chaconne HWV 448), keeps its own signature instead of adopting the system's majority reading; any other
+disagreement is still treated as a misread digit. The measure fit checks each staff against its own signature
+(`MeasureFit.ExpectedPerStaff`), then the compound staff's notes become triplets of the simple metre (duration
+times 2/3, time modification 3:2) so that both staves fill the same measure, and the MusicXML states one `<time>`
+per staff. MuseScore imports this as triplets in the simple metre: it shows 3/4 on both staves but plays
+correctly. Handel Chaconne page 2: fit 62 -> 87 %. A change of metre inside a system is printed on every staff at the same place, so a
+lone C or cut-C on one staff only is ignored: a cautionary bracket "(" around a note had been read as a C and turned
+Handel page 3 into 4/4 (12 -> 92 %). The measure fit now checks each staff of a piano part against its own
+expected length (before, both staves were checked against the staff validated last). A sliver
+at the start of a system holding only clef, key and time (a thick or repeat bar line right after the time
+signature) is merged into the next measure instead of becoming an empty measure.
+
 ## Instrument names
 
 The instrument names printed left of the staves are read with the OCR engine built into Windows 10/11

@@ -15,11 +15,14 @@ static class Diagnostics
         catch (Exception ex) { Console.WriteLine($"  fit: assembler failed: {ex.Message}"); return; }
         int total = 0, ok = 0, tooLong = 0, tooShort = 0, dropped = 0, unknown = 0;
         var misfits = new List<string>();
+        var seen = new HashSet<(PVOMR.Core.Score.ScoreMeasure, int)>();
         foreach (var st in p.Staves)
             foreach (var m in st.Measures)
             {
                 total++;
                 if (!map.TryGetValue(m, out var sm)) { unknown++; continue; }
+                // a system-start sliver merged into the next measure is counted once, with that measure
+                if (!seen.Add((sm, staffOf.GetValueOrDefault(m, 1)))) { total--; continue; }
                 var f = sm.Fit.ForStaff(staffOf.GetValueOrDefault(m, 1));
                 if (f.Expected == null) { unknown++; continue; }
                 if (f.Fits && f.Dropped == 0) { ok++; continue; }
