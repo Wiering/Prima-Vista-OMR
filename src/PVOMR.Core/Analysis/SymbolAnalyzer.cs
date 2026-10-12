@@ -824,9 +824,10 @@ public sealed class SymbolAnalyzer
     /// <summary>Unknown fragments are merged with close neighbours and matched again (F clef + dots, broken glyphs).</summary>
     private void MergeAndRematch(List<(MusicSymbol sym, Component comp)> items, Staff staff)
     {
+        // (the "cnn" attribute is a --verbose note only: it must not change which text counts as unknown)
         if (_lib == null && _clf == null) return;
         double ss = staff.Space;
-        var unknown = items.Where(p => p.sym.Kind == SymbolKind.Unknown || (p.sym.Kind == SymbolKind.Text && p.sym.Attributes.Count == 0)
+        var unknown = items.Where(p => p.sym.Kind == SymbolKind.Unknown || (p.sym.Kind == SymbolKind.Text && p.sym.Attributes.Keys.All(k => k == "cnn"))
                                     || (p.sym.Kind is SymbolKind.Flag or SymbolKind.Articulation or SymbolKind.Breath or SymbolKind.Ornament && p.sym.Confidence < 0.85)).ToList();
         foreach (var u in unknown)
         {
@@ -1315,7 +1316,8 @@ public sealed class SymbolAnalyzer
             var (fill, core, band, sideBand) = HollowStats(c, staff);
             double stepHollow = staff.StepAt(c.CenterX, c.CenterY);
             bool ledgerOk = stepHollow > -2.5 && stepHollow < 10.5 || HasLedgerLine(c.CenterX, c.CenterY, ss);
-            if (ledgerOk && (band >= 0.45 || sideBand >= 0.5) && core <= 0.3 && fill >= 0.2 && fill <= 0.8)
+            if (ledgerOk && (band >= 0.45 || sideBand >= 0.5) && core <= 0.3 && fill >= 0.2 && fill <= 0.8
+                && !ConfidentNonHead(c, ss))
             {
                 var n = new Note { Head = sym.Bounds, HeadType = w >= 1.35 ? "whole" : "half" };
                 n.Step = (int)Math.Round(staff.StepAt(n.HeadX, n.HeadY));
@@ -1371,6 +1373,12 @@ public sealed class SymbolAnalyzer
                 }
                 // a bar-shaped match (whole/half rest, tenuto) must have the body of a rest to be one; thinner bars are slur pieces
                 if (m.Score >= thr && m.Template.Name is "restWhole" or "restHalf" && !WholeHalfRestPlausible(c, staff)) thr = double.MaxValue;
+                // a lone head well outside the staff needs a ledger line, as on the classifier path; text letters (o, c, e) do not have one
+                if (m.Score >= thr && m.Template.Kind == SymbolKind.Note)
+                {
+                    double stepHere = staff.StepAt(c.CenterX, c.CenterY);
+                    if ((stepHere < -2.5 || stepHere > 10.5) && !HasLedgerLine(c.CenterX, c.CenterY, ss)) thr = double.MaxValue;
+                }
                 if (m.Score >= thr)
                 {
                     sym.Kind = m.Template.Kind; sym.Name = m.Template.Name; sym.Confidence = Math.Round(m.Score, 2);
@@ -2066,6 +2074,14 @@ public sealed class SymbolAnalyzer
     }
 
     /// <summary>A beam (or its end) under a head candidate: ink continues (within a band that tolerates the beam slope) for more than 1.5 staff spaces from the centre.</summary>
+    /// <summary>The classifier is sure this hollow-looking component is a fingering digit or a letter, not a head.</summary>
+    private bool ConfidentNonHead(Component c, double ss)
+    {
+        if (_clf == null) return false;
+        var p = _clf.Classify(_cm.Mask(c), c.Width, c.Height, ss);
+        return p.Label is "digit" or "text" or "dynamic" && p.Probability >= 0.6;
+    }
+
     /// <summary>A ledger line through or right above/below the head: a thin horizontal run of at least 1.3 staff spaces within one space of the centre.</summary>
     private bool HasLedgerLine(double cx, double cy, double ss)
     {

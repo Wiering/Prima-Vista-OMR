@@ -103,7 +103,9 @@ staff-less binary image.
    a flag or the thick end of a beam and is dropped, as is a stem whose heads are all hollow inside a group of
    black heads (a sharp or natural taken for a note); a head candidate that is not part of the stem's component
    needs a very confident detector. A hollow head with beams found with little confidence is dropped (ledger
-   lines around a stem), hollow heads outside the staff need a ledger line, whole and half rests must be solid
+   lines around a stem), heads outside the staff need a ledger line on every path (classifier, hollow-head shape
+   test and template matching; the letters of "dolce" or "cresc." under a staff were read as low half notes), a
+   hollow-looking blob the classifier confidently calls a digit or text is no stemless head (fingerings), whole and half rests must be solid
    bars at least 0.4 spaces thick inside the staff (slurs sliced by the staff lines and ledger remnants are not),
    and different digits over one beamed group are fingerings rather than tuplet numbers. Beams are counted only
    from bands at least 0.3 spaces thick (ledger lines crossing a stem are thinner); on small staves a rest-shaped
@@ -117,7 +119,9 @@ staff-less binary image.
    seen twice and is dropped. Voices on a staff: an up-stem and a down-stem note at the same x start two voices,
    split by stem direction (rests by their height); when the measure length is known it arbitrates among a few
    candidate splits (single voice, by direction with the rests on either side, flipped, long notes against short
-   ones) and the one whose main voice fills the measure without any voice overflowing wins. A second voice may
+   ones) and the one whose main voice fills the measure without any voice overflowing wins; a split that keeps every
+   note beats one that only fits after dropping uncertain notes, and a stemless whole or half note struck together
+   with a note of the moving line (a held open-string double stop) may form the second voice on its own. A second voice may
    stop early, as a held bass note under a moving line has no written rests; the duration check accepts that and
    flags only an overflowing voice or a main voice that does not fill the measure. Cross-staff beaming (piano arpeggios running from one staff into the other under
    one beam) is handled in two ways: a head found at the far end of a stem inside the neighbouring staff of the
@@ -389,6 +393,8 @@ Baseline (12 generated pieces, 192 measures), 2026-10-10:
   per staff after kind classification and at the end.
 * `PVOMR_KEYDUMP=1` prints every clef/key/time placement decision of the start-of-staff pass (hypothesis,
   score, competing digit score, position); `PVOMR_KEYSCAN=1` adds the per-column scores of the scan.
+* `PVOMR_VOICEDUMP=1` prints, per staff-measure with a known length, the events (type, `?` = uncertain, x, stem
+  direction) and which voice split won at what cost.
 * The models were trained on MuseScore renders only; on old engravings they occasionally see heads in beam ends
   (vetoed geometrically) or rests in text dashes (size/position checks). Real labelled pages would fix this at the source.
 * Rhythm reconstruction is per voice and measure; tuplets, grace notes and cross-staff beaming are

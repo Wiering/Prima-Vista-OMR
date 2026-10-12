@@ -546,10 +546,13 @@ public static class MusicAssembler
             }
             double Cost(Func<ScoreEvent, bool> isSecond)
             {
-                int a = Repaired(events.Where(e => !isSecond(e)).ToList()), b = Repaired(events.Where(isSecond).ToList());
-                if (b == 0) return Math.Abs(a - L);
+                var va = events.Where(e => !isSecond(e)).ToList(); var vb = events.Where(isSecond).ToList();
+                int a = Repaired(va), b = Repaired(vb);
+                // a repair (dropping notes) costs a little: of two splits that both add up, the one keeping every note wins
+                double repairs = (a != va.Sum(e => e.Duration) ? 0.5 : 0) + (b != vb.Sum(e => e.Duration) ? 0.5 : 0);
+                if (b == 0) return Math.Abs(a - L) + repairs;
                 // the second voice may stop early (a held bass note under a moving line); it must not overflow
-                return Math.Abs(a - L) + (b > L ? (b - L) : 0.25 * (L - b));
+                return Math.Abs(a - L) + (b > L ? (b - L) : 0.25 * (L - b)) + repairs;
             }
             var candidates = new List<(string name, Func<ScoreEvent, bool> isSecond)>
             {
@@ -571,7 +574,12 @@ public static class MusicAssembler
                 {
                     if (name != "single" && name != "long notes" && !bothDirections) continue;
                     // a second voice made only of uncertain notes is a stray head hiding from the duration check
-                    if (name != "single" && !events.Any(e => isSecond(e) && !e.Uncertain && !e.IsRest)) continue;
+                    // (exception: held long notes struck together with a note of the moving voice, such as a drone
+                    // double stop; stemless, so uncertain, but a glyph that lines up with a head is no stray mark)
+                    if (name != "single" && !events.Any(e => isSecond(e) && !e.Uncertain && !e.IsRest)
+                        && !(name == "long notes" && events.Where(isSecond).All(e => !e.IsRest && e.Notes.Count > 0
+                                && e.Y > staff.TopY(e.X) - 2 * ss && e.Y < staff.BottomY(e.X) + 2 * ss
+                                && events.Any(o => !isSecond(o) && !o.IsRest && Math.Abs(o.X - e.X) < 0.8 * ss)))) continue;
                     double c = Cost(isSecond);
                     // an alternative split must make the measure add up exactly; a direction-based one may also merely
                     // improve a measure that really has stems both ways (a single-voice measure with a wrong duration
@@ -579,6 +587,8 @@ public static class MusicAssembler
                     bool directionBased = name.StartsWith("direction") && bothDirections;
                     if (c < best.cost - 1e-9 && (c < 1e-9 || directionBased)) best = (name, isSecond, c);
                 }
+            if (Environment.GetEnvironmentVariable("PVOMR_VOICEDUMP") == "1")
+                Console.Error.WriteLine($"voices L={L} total={total} pick={best.name} cost={best.cost:0.##} events=" + string.Join(" ", events.Select(e => $"{e.Type}{(e.Uncertain ? "?" : "")}@{e.X}{(e.StemUp == null ? "" : e.StemUp == true ? "u" : "d")}")));
             foreach (var e in events) second[e] = best.isSecond(e);
             twoVoices = events.Any(e => second[e]);
         }
