@@ -418,6 +418,27 @@ What music must look like is checked once the symbols are found, mostly where a 
 Fifth of the corpus: +23 for the beam ends, -13 for the rest (all pages within 3 measures); Brandenburg 6 viola
 parts 433 -> 435.
 
+Second round:
+
+* a bar line crossed by a tie or slur is still a bar line: the component may be wide in a few rows only
+  (+159 fitting measures on a fifth of the corpus, 57 pages better, 7 worse);
+* an accidental always precedes a note: a hollow head after an orphan accidental, and stemless hollow heads (also
+  merged with their ledger line) that the head verifier is sure of, are whole notes;
+* accidentals merged with a slur: for a head without accidental, the ink in the accidental's place (cut around its
+  vertical strokes) goes to the glyph classifier, a template match as second opinion;
+* heads do not overlap: of two heads of different stems that cover each other (not the head two voices share) the
+  one with less ink goes; notes left without heads are dropped;
+* pieces under a beam: also further from the beam when a stem runs to it, also "time signatures" outside the
+  signature zone; beam counts of joined notes are counted at their own stem (one side only at a group's end), also
+  for stems short of the beam; the gap search skips heads the group has and its beam test applies near the beam only;
+* a hairpin's open end must show two lines of its own ink: steep slur ends made slurs "diminuendo hairpins" (Brahms 4
+  p1: all 24 checked were slurs);
+* experimental, off by default (PVOMR_INKCENTRE=1): a black head's centre from its own ink run (stem-down heads were
+  read a step low); no effect on the synthetic sets, costs fitting measures on real pages.
+
+Fifth of the corpus +203 (125 pages better, 58 worse); synthetic hard 95.5/95.9 -> 96.9/96.7 (84 % exact);
+Brandenburg 6 viola parts 435 -> 464.
+
 ## Tuplets
 
 Triplets (and other tuplets) are supported end to end: the generator (`--style tuplets`, also part of `hard`)

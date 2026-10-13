@@ -225,7 +225,11 @@ public sealed class SymbolAnalyzer
             ContinueBeams(syms, staff);
             LinkNotesUnderBeamEnds(syms, staff);
             LinkFragmentsUnderBeams(syms, staff);
+            DropOverlappingHeads(syms, staff);
             DropSymbolsOnHeads(syms, staff);
+            AccidentalsInUnknowns(syms, staff);
+            DropNotesWithoutHeads(syms);
+            HeadsAfterAccidentals(syms, staff);
             AttachDotsAndAccidentals(syms, staff);
             DetectHairpinsAndSlurs(syms, staff);
             MarkGraceNotes(syms, staff);
@@ -1033,23 +1037,29 @@ public sealed class SymbolAnalyzer
             var p = v.Split(',');
             return (int.Parse(p[0]), int.Parse(p[1]), int.Parse(p[2]));
         }
-        var beamed = syms.Where(s => s.StemUp != null && (s.Kind is SymbolKind.Note or SymbolKind.Chord && s.Flags > 0 && StemOf(s) != null
+        // a group's direction is that of its notes (the group symbol itself often carries none)
+        static bool? Dir(MusicSymbol s) => s.Kind == SymbolKind.NoteGroup
+            ? (s.Children.Count(c => c.StemUp == true) * 2 > s.Children.Count ? true : s.Children.Count(c => c.StemUp == false) * 2 > s.Children.Count ? false : null)
+            : s.StemUp;
+        var beamed = syms.Where(s => Dir(s) != null && (s.Kind is SymbolKind.Note or SymbolKind.Chord && s.Flags > 0 && StemOf(s) != null
                                      || s.Kind == SymbolKind.NoteGroup && s.Children.Count > 0 && s.Children.All(c => StemOf(c) != null))).ToList();
         foreach (var b in beamed)
         {
-            bool up = b.StemUp == true;
+            bool up = Dir(b) == true;
             var members = b.Kind == SymbolKind.NoteGroup ? b.Children.ToList() : new List<MusicSymbol> { b };
             var ends = members.Select(m => (x: (StemOf(m)!.Value.x0 + StemOf(m)!.Value.x1) / 2.0, y: (double)StemOf(m)!.Value.end)).OrderBy(e => e.x).ToList();
             double slope = ends.Count >= 2 && ends[^1].x > ends[0].x ? (ends[^1].y - ends[0].y) / (ends[^1].x - ends[0].x) : 0;
             double BeamAt(double x) => ends[0].y + slope * (x - ends[0].x);
-            var pieces = syms.Where(s => s.Kind is SymbolKind.Text or SymbolKind.Unknown && s != b
-                                         && s.Bounds.CenterX > b.Bounds.X0 && s.Bounds.CenterX < b.Bounds.X1
+            // text, unknown, and "time signatures" outside the signature zone (a head touching an accidental)
+            var pieces = syms.Where(s => (s.Kind is SymbolKind.Text or SymbolKind.Unknown || s.Kind == SymbolKind.TimeSignature && !s.Attributes.ContainsKey("timezone")) && s != b
+                                         && s.Bounds.X1 > b.Bounds.X0 + 0.3 * ss && s.Bounds.X0 < b.Bounds.X1 - 0.3 * ss
                                          && !members.Any(m => Math.Abs((StemOf(m)!.Value.x0 + StemOf(m)!.Value.x1) / 2.0 - s.Bounds.CenterX) < 0.8 * ss)
                                          && s.Bounds.Height >= 1.0 * ss && s.Bounds.Height <= 3.5 * ss && s.Bounds.Width <= 2.0 * ss
                                          && (up ? s.Bounds.Y0 - BeamAt(s.Bounds.CenterX) : BeamAt(s.Bounds.CenterX) - s.Bounds.Y1) is double gap
-                                         && gap >= 0 && gap <= 1.0 * ss + 0.6 * ss * Math.Max(1, b.Flags)).ToList();
+                                         && gap >= 0 && gap <= 4.5 * ss).ToList();
+            double nearGap = 1.0 * ss + 0.6 * ss * Math.Max(1, b.Flags);
             // separate notes read as quarters standing under the beam, their stems pointing at it and ending short of it
-            var quarters = syms.Where(s => s != b && s.Kind is SymbolKind.Note or SymbolKind.Chord && s.Flags == 0 && s.StemUp == b.StemUp && StemOf(s) is not null
+            var quarters = syms.Where(s => s != b && s.Kind is SymbolKind.Note or SymbolKind.Chord && s.Flags == 0 && s.StemUp == up && StemOf(s) is not null
                                            && s.Notes.All(n => n.HeadType == "black")
                                            && (StemOf(s)!.Value.x0 + StemOf(s)!.Value.x1) / 2.0 is double qx && qx > b.Bounds.X0 + 0.3 * ss && qx < b.Bounds.X1 - 0.3 * ss
                                            && !members.Any(m => Math.Abs((StemOf(m)!.Value.x0 + StemOf(m)!.Value.x1) / 2.0 - qx) < 0.8 * ss)
@@ -1059,7 +1069,8 @@ public sealed class SymbolAnalyzer
             foreach (var q in quarters)
             {
                 var nearest = members.OrderBy(m => Math.Abs(m.Bounds.CenterX - q.Bounds.CenterX)).First();
-                q.Flags = nearest.Flags;
+                var qs = StemOf(q)!.Value;
+                q.Flags = BeamsAt((qs.x0 + qs.x1) / 2, BeamAt((qs.x0 + qs.x1) / 2.0), up, ss) is int bc and >= 1 ? bc : nearest.Flags;
                 q.Duration = q.Flags switch { 1 => "8th", 2 => "16th", 3 => "32nd", _ => "64th" };
                 q.Attributes["beam"] = "stem short of the beam";
                 added.Add(q);
@@ -1080,11 +1091,16 @@ public sealed class SymbolAnalyzer
                 if (found == null) continue;
                 var (hx, hy, score, hollow) = found.Value;
                 if (hollow) continue;
+                // further from the beam (a long stretch of its stem belongs to the beam's piece): a stem must run from
+                // the head to the beam
+                double pieceGap = up ? piece.Bounds.Y0 - BeamAt(piece.Bounds.CenterX) : BeamAt(piece.Bounds.CenterX) - piece.Bounds.Y1;
+                if (pieceGap > nearGap && !StemToBeam((int)Math.Round(hx), (int)Math.Round(hy), up, BeamAt(hx), ss)) continue;
                 var nearest = members.Concat(added).OrderBy(m => Math.Abs(m.Bounds.CenterX - hx)).First();
                 var head = new Note { Head = new Rect((int)Math.Round(hx - 0.59 * ss), (int)Math.Round(hy - 0.5 * ss), (int)Math.Round(hx + 0.59 * ss), (int)Math.Round(hy + 0.5 * ss)), HeadType = "black", Confidence = score };
                 head.Step = (int)Math.Round(staff.StepAt(hx, hy));
                 int sx = (int)Math.Round(up ? hx + 0.5 * ss : hx - 0.5 * ss);
-                var note = new MusicSymbol { Kind = SymbolKind.Note, Name = "note", Staff = staff, Bounds = piece.Bounds, Confidence = 0.6, StemUp = up, Flags = nearest.Flags };
+                int pf = BeamsAt(sx, BeamAt(sx), up, ss) is int pc and >= 1 ? pc : nearest.Flags;
+                var note = new MusicSymbol { Kind = SymbolKind.Note, Name = "note", Staff = staff, Bounds = piece.Bounds, Confidence = 0.6, StemUp = up, Flags = pf };
                 note.Duration = note.Flags switch { 1 => "8th", 2 => "16th", 3 => "32nd", _ => "64th" };
                 note.Notes.Add(head);
                 note.Attributes["stemx"] = $"{sx},{sx},{(int)Math.Round(BeamAt(sx))}";
@@ -1114,6 +1130,177 @@ public sealed class SymbolAnalyzer
     }
 
     /// <summary>
+    /// An accidental that touches a slur (or other ink) becomes part of a larger unknown or text piece. For every head
+    /// without an accidental, the ink of such pieces in the accidental's place (left of the head, at its height) is
+    /// cut out and given to the glyph classifier: a sure sharp, flat or natural is attached to the head.
+    /// </summary>
+    private void AccidentalsInUnknowns(List<MusicSymbol> syms, Staff staff)
+    {
+        if (_clf == null) return;
+        double ss = staff.Space;
+        var pieces = syms.Where(s => s.Kind is SymbolKind.Unknown or SymbolKind.Text or SymbolKind.Slur).ToList();
+        if (pieces.Count == 0) return;
+        var heads = syms.Where(s => s.Kind is SymbolKind.Note or SymbolKind.Chord or SymbolKind.NoteGroup)
+                        .SelectMany(s => s.Notes.Concat(s.Children.SelectMany(c => c.Notes))).Distinct().Where(h => h.Accidental == int.MinValue).ToList();
+        foreach (var h in heads)
+        {
+            int wx0 = (int)Math.Round(h.Head.X0 - 1.5 * ss), wx1 = h.Head.X0 - 1;
+            int wy0 = (int)Math.Round(h.HeadY - 1.8 * ss), wy1 = (int)Math.Round(h.HeadY + 1.8 * ss);
+            var over = pieces.Where(p => p.Bounds.X0 <= wx1 && p.Bounds.X1 >= wx0 && p.Bounds.Y0 <= wy1 && p.Bounds.Y1 >= wy0).ToList();
+            if (over.Count == 0) continue;
+            // the components of those pieces, within the window
+            var labels = new HashSet<int>();
+            foreach (var p in over)
+                for (int y = Math.Max(p.Bounds.Y0, wy0); y <= Math.Min(p.Bounds.Y1, wy1); y++)
+                    for (int x = Math.Max(p.Bounds.X0, wx0); x <= Math.Min(p.Bounds.X1, wx1); x++)
+                        if (x >= 0 && y >= 0 && x < _cm.Width && y < _cm.Height && _cm.Labels[y * _cm.Width + x] is int l && l > 0) labels.Add(l);
+            int ix0 = int.MaxValue, iy0 = int.MaxValue, ix1 = -1, iy1 = -1;
+            for (int y = Math.Max(0, wy0); y <= Math.Min(_cm.Height - 1, wy1); y++)
+                for (int x = Math.Max(0, wx0); x <= Math.Min(_cm.Width - 1, wx1); x++)
+                    if (labels.Contains(_cm.Labels[y * _cm.Width + x])) { ix0 = Math.Min(ix0, x); ix1 = Math.Max(ix1, x); iy0 = Math.Min(iy0, y); iy1 = Math.Max(iy1, y); }
+            if (ix1 < 0) continue;
+            // a slur through the window widens it: keep the columns around the accidental's vertical strokes (every
+            // accidental has one at least 1.2 spaces long)
+            int sx0 = int.MaxValue, sx1 = -1;
+            for (int x = ix0; x <= ix1; x++)
+            {
+                int run = 0, best = 0;
+                for (int y = iy0; y <= iy1; y++) { if (labels.Contains(_cm.Labels[y * _cm.Width + x])) { run++; best = Math.Max(best, run); } else run = 0; }
+                if (best >= 1.2 * ss) { sx0 = Math.Min(sx0, x); sx1 = Math.Max(sx1, x); }
+            }
+            if (sx1 < 0) continue;
+            ix0 = Math.Max(ix0, (int)Math.Round(sx0 - 0.4 * ss)); ix1 = Math.Min(ix1, (int)Math.Round(sx1 + 0.55 * ss));
+            // the vertical extent of the ink in those columns
+            iy0 = int.MaxValue; iy1 = -1;
+            for (int y = Math.Max(0, wy0); y <= Math.Min(_cm.Height - 1, wy1); y++)
+                for (int x = ix0; x <= ix1; x++)
+                    if (labels.Contains(_cm.Labels[y * _cm.Width + x])) { iy0 = Math.Min(iy0, y); iy1 = Math.Max(iy1, y); }
+            if (iy1 < 0) continue;
+            int w = ix1 - ix0 + 1, hgt = iy1 - iy0 + 1;
+            if (hgt < 1.3 * ss || w < 0.3 * ss || w > 1.5 * ss) continue;
+            var mask = new byte[w * hgt];
+            for (int y = iy0; y <= iy1; y++)
+                for (int x = ix0; x <= ix1; x++)
+                    if (labels.Contains(_cm.Labels[y * _cm.Width + x])) mask[(y - iy0) * w + (x - ix0)] = 1;
+            var pr = _clf.Classify(mask, w, hgt, ss);
+            if (!pr.Label.StartsWith("acc_") || pr.Probability < 0.6)
+            {
+                // the classifier hesitates over the bits of slur left in the crop: a clear template match decides
+                if (_lib == null || pr.Label.StartsWith("head_") || pr.Label.StartsWith("rest_")) continue;
+                var mt = _lib.Match(mask, w, hgt, ss, 0.35, t => t.Kind == SymbolKind.Accidental);
+                if (mt.Count == 0 || mt[0].Score < 0.72) continue;
+                string nm = mt[0].Template.Name;
+                string lab = nm.Contains("Sharp") ? "acc_sharp" : nm.Contains("Flat") ? "acc_flat" : nm.Contains("Natural") ? "acc_natural" : "";
+                if (lab.Length == 0 || nm.Contains("Double")) continue;
+                pr = new GlyphClassifier.Prediction { Label = lab, Probability = (float)mt[0].Score };
+            }
+            // the accidental's centre must be at the head's height (flats sit a little higher)
+            double acy = pr.Label == "acc_flat" ? iy0 + 0.7 * hgt : (iy0 + iy1) / 2.0;
+            if (Math.Abs(acy - h.HeadY) > 0.6 * ss) continue;
+            h.Accidental = pr.Label switch { "acc_sharp" => 1, "acc_flat" => -1, _ => 0 };
+            h.AccidentalName = pr.Label switch { "acc_sharp" => "accidentalSharp", "acc_flat" => "accidentalFlat", _ => "accidentalNatural" };
+            // a piece that was nothing but the accidental is used up
+            foreach (var p in over.Where(p => p.Kind != SymbolKind.Slur && p.Bounds.X0 >= wx0 - 2 && p.Bounds.X1 <= wx1 + 2).ToList()) { syms.Remove(p); pieces.Remove(p); }
+        }
+    }
+
+    /// <summary>
+    /// Note heads do not overlap. Two heads of different stems that cover each other without sitting on the same spot
+    /// (the head two voices share) cannot both be real (a "head" found next to a real one, with the stroke of a flat
+    /// as its stem): the one with less ink inside its outline goes, and a stem left without heads with it.
+    /// </summary>
+    private void DropOverlappingHeads(List<MusicSymbol> syms, Staff staff)
+    {
+        double ss = staff.Space;
+        var owners = new List<(Note head, MusicSymbol sym, MusicSymbol? group)>();
+        foreach (var s in syms)
+        {
+            if (s.Kind is SymbolKind.Note or SymbolKind.Chord) foreach (var n in s.Notes) owners.Add((n, s, null));
+            else if (s.Kind == SymbolKind.NoteGroup) foreach (var c in s.Children) foreach (var n in c.Notes) owners.Add((n, c, s));
+        }
+        int Ink(Note n)
+        {
+            double cx = n.HeadX, cy = n.HeadY, rx = Math.Max(1, n.Head.Width / 2.0), ry = Math.Max(1, n.Head.Height / 2.0);
+            int ink = 0;
+            for (int y = n.Head.Y0; y <= n.Head.Y1; y++)
+                for (int x = n.Head.X0; x <= n.Head.X1; x++)
+                {
+                    double dx = (x - cx) / rx, dy = (y - cy) / ry;
+                    if (dx * dx + dy * dy <= 1 && x >= 0 && y >= 0 && x < _ns.Width && y < _ns.Height && _ns[x, y]) ink++;
+                }
+            return ink;
+        }
+        var gone = new HashSet<Note>();
+        for (int i = 0; i < owners.Count; i++)
+            for (int j = i + 1; j < owners.Count; j++)
+            {
+                var (a, sa, _) = owners[i]; var (b, sb, _) = owners[j];
+                if (sa == sb || gone.Contains(a) || gone.Contains(b)) continue;
+                double dx = Math.Abs(a.HeadX - b.HeadX), dy = Math.Abs(a.HeadY - b.HeadY);
+                if (dx < 0.25 * ss && dy < 0.3 * ss) continue;          // one head shared by two voices
+                if (dx >= 0.8 * ss || dy >= 0.6 * ss) continue;          // side by side or a step apart: fine
+                var loser = Ink(a) >= Ink(b) ? owners[j] : owners[i];
+                if (loser.sym.Attributes.ContainsKey("corrected") || loser.sym.Attributes.ContainsKey("added")) continue;
+                gone.Add(loser.head);
+                if (_opt.Verbose) loser.sym.Attributes["overlap"] = "head removed (overlaps a stronger head)";
+            }
+        if (gone.Count == 0) return;
+        foreach (var (head, sym, group) in owners.Where(o => gone.Contains(o.head)))
+        {
+            sym.Notes.Remove(head);
+            group?.Notes.Remove(head);
+            if (sym.Notes.Count > 0) continue;
+            if (group != null)
+            {
+                group.Children.Remove(sym);
+                if (group.Children.Count == 0) syms.Remove(group);
+                else if (group.Children.Count == 1)
+                {
+                    // one note left: no group any more
+                    var only = group.Children[0];
+                    syms[syms.IndexOf(group)] = only;
+                }
+            }
+            else syms.Remove(sym);
+        }
+    }
+
+    /// <summary>The number of beams crossing a stem at x: separate ink runs in a narrow column, starting at the
+    /// outer beam line and going towards the heads, as long as the gaps stay small (null when none).</summary>
+    private int? BeamsAt(int x, double beamY, bool up, double ss)
+    {
+        int dir = up ? 1 : -1, y = (int)Math.Round(beamY - dir * 0.3 * ss), end = (int)Math.Round(beamY + dir * 2.0 * ss);
+        int runs = 0, gap = 0; bool inRun = false;
+        for (; up ? y <= end : y >= end; y += dir)
+        {
+            if (y < 0 || y >= _ns.Height) break;
+            // a beam fills the columns on one side of the stem at least (both in the middle of a group, only the inner
+            // side at its ends); the stem alone does not
+            int step = (int)Math.Max(1, ss / 8);
+            bool Ink(int dx) { int xx = x + dx * step; return xx >= 0 && xx < _ns.Width && _ns[xx, y]; }
+            bool beam = Enumerable.Range(-5, 5).Count(Ink) >= 5 || Enumerable.Range(1, 5).Count(Ink) >= 5;
+            if (beam) { if (!inRun) { runs++; inRun = true; } gap = 0; }
+            else { inRun = false; if (runs > 0 && ++gap > 0.6 * ss) break; }
+        }
+        return runs == 0 ? null : Math.Min(runs, 4);
+    }
+
+    /// <summary>The repairs above can take every head away from a note: such notes (and empty groups) are dropped,
+    /// a group left with one note becomes that note.</summary>
+    private static void DropNotesWithoutHeads(List<MusicSymbol> syms)
+    {
+        for (int i = syms.Count - 1; i >= 0; i--)
+        {
+            var s = syms[i];
+            if (s.Kind is SymbolKind.Note or SymbolKind.Chord && s.Notes.Count == 0) { syms.RemoveAt(i); continue; }
+            if (s.Kind != SymbolKind.NoteGroup) continue;
+            s.Children.RemoveAll(c => c.Notes.Count == 0);
+            if (s.Children.Count == 0) syms.RemoveAt(i);
+            else if (s.Children.Count == 1 && !s.Attributes.ContainsKey("tuplet")) syms[i] = s.Children[0];
+        }
+    }
+
+    /// <summary>
     /// One piece of ink is one symbol: a head found by a note (often through a gap in its stem) is not also a rest,
     /// text or unknown symbol of its own. Such a symbol centred on a used head is dropped.
     /// </summary>
@@ -1123,7 +1310,7 @@ public sealed class SymbolAnalyzer
         var heads = syms.Where(s => s.Kind is SymbolKind.Note or SymbolKind.Chord or SymbolKind.NoteGroup)
                         .SelectMany(s => s.Notes.Concat(s.Children.SelectMany(c => c.Notes))).ToList();
         if (heads.Count == 0) return;
-        syms.RemoveAll(s => s.Kind is SymbolKind.Rest or SymbolKind.Text or SymbolKind.Unknown && s.Bounds.Height <= 2.5 * ss && s.Bounds.Width <= 2.0 * ss
+        syms.RemoveAll(s => s.Kind is SymbolKind.Rest or SymbolKind.Text or SymbolKind.Unknown && s.Bounds.Height <= 2.5 * ss && s.Bounds.Width <= 2.6 * ss
                             && !s.Attributes.ContainsKey("corrected") && !s.Attributes.ContainsKey("added")
                             && heads.Any(h => Math.Abs(h.HeadX - s.Bounds.CenterX) <= 0.5 * ss && Math.Abs(h.HeadY - s.Bounds.CenterY) <= 0.6 * ss
                                               && h.Head.X0 <= s.Bounds.X1 && h.Head.X1 >= s.Bounds.X0));
@@ -1941,7 +2128,14 @@ public sealed class SymbolAnalyzer
             {
                 double end = st.Up ? st.Top : st.Bottom, atBeam = BeamAt(st.X);
                 double shortBy = st.Up ? end - atBeam : atBeam - end;
-                if (shortBy >= 0.4 * ss && shortBy <= 2.5 * ss) { st.Flags = majority; if (_opt.Verbose) st.Trace += "[SHORT:majority]"; }
+                if (shortBy >= 0.4 * ss && shortBy <= 2.5 * ss)
+                {
+                    // the beams actually crossing the stem's line decide when they can be counted (a partial beam that
+                    // stops at the neighbour leaves this stem with fewer); otherwise the majority
+                    int? there = BeamsAt(st.X, atBeam, st.Up, ss);
+                    st.Flags = there is int t && t >= Math.Max(1, st.Flags) && t < majority ? t : majority;
+                    if (_opt.Verbose) st.Trace += st.Flags == majority ? "[SHORT:majority]" : $"[SHORT:{st.Flags} beams counted]";
+                }
             }
 
         // 2. sharps and naturals that touch the group: two thin head-less strokes right before a head
@@ -2053,7 +2247,7 @@ public sealed class SymbolAnalyzer
                     var a = ordered[i]; var b = ordered[i + 1];
                     double gap = b.X - a.X;
                     if (gap < 1.7 * typical) continue;
-                    var found = FindHeadInGap(c, staff, a.X + 0.8 * ss, b.X - 0.8 * ss, up, BeamAt);
+                    var found = FindHeadInGap(c, staff, a.X + 0.8 * ss, b.X - 0.8 * ss, up, BeamAt, taken: withHeads.SelectMany(w => w.Heads).ToList());
                     if (found == null) continue;
                     var (hx, hy, score, hollow) = found.Value;
                     var head = new Note { Head = new Rect((int)Math.Round(hx - 0.59 * ss), (int)Math.Round(hy - 0.5 * ss), (int)Math.Round(hx + 0.59 * ss), (int)Math.Round(hy + 0.5 * ss)), HeadType = hollow ? "half" : "black", Confidence = score };
@@ -2117,7 +2311,7 @@ public sealed class SymbolAnalyzer
     }
 
     /// <summary>Best note head (verifier) inside the component between two x positions, or null.</summary>
-    private (double x, double y, double score, bool hollow)? FindHeadInGap(Component c, Staff staff, double xFrom, double xTo, bool up, Func<double, double> beamAt, bool viaStem = false)
+    private (double x, double y, double score, bool hollow)? FindHeadInGap(Component c, Staff staff, double xFrom, double xTo, bool up, Func<double, double> beamAt, bool viaStem = false, IReadOnlyList<Note>? taken = null)
     {
         double ss = staff.Space;
         if (xTo - xFrom < 0.6 * ss) return null;
@@ -2148,9 +2342,13 @@ public sealed class SymbolAnalyzer
             }
             double stepF = staff.StepAt(x, y);
             if ((stepF <= -2.5 || stepF >= 10.5) && OtherStaffAt(staff, x, y) == null && !HasLedgerLine(x, y, ss)) continue;
-            if (LooksLikeBeam(x, y, ss, 1) || LooksLikeBeam(x, y, ss, -1)) continue;
+            // not on a head the group already has (it would be found again next to its own stem)
+            if (taken != null && taken.Any(t => Math.Abs(t.HeadX - x) < 0.7 * ss && Math.Abs(t.HeadY - y) < 0.6 * ss)) continue;
+            // a beam is only near the beam line: further out, ink running on sideways is a slur or the next head
+            if (Math.Abs(y - beamY) < 2.0 * ss && (LooksLikeBeam(x, y, ss, 1) || LooksLikeBeam(x, y, ss, -1))) continue;
             best = (x, y, p, ph > pb);
         }
+        if (best is { } bb && !bb.hollow && InkCentreY(bb.x, bb.y, ss) is double iy) best = (bb.x, iy, bb.score, bb.hollow);
         return best;
     }
 
@@ -2311,6 +2509,9 @@ public sealed class SymbolAnalyzer
                 // centre: probability-weighted mean of the positions around the maximum (the scan is coarse and the model saturates)
                 var near = cands.Where(o => Math.Abs(o.y - c.y) <= 0.5 * ss && o.p >= 0.8 * c.p).ToList();
                 double cyRef = near.Sum(o => o.y * o.p) / near.Sum(o => o.p);
+                // the windows along the stem still see the head below (stem down) or above it: the mean is pulled
+                // towards the stem. A black head's own ink, the run straight through its middle, gives the centre
+                if (!c.hollow && InkCentreY(cx, cyRef, ss) is double inkY) cyRef = inkY;
                 found.Add((c.p, cx, cyRef, c.hollow, sign));
             }
         }
@@ -2347,6 +2548,39 @@ public sealed class SymbolAnalyzer
         st.Heads.RemoveAll(h => h.HeadY < st.Top - (reach + 0.1) * ss || h.HeadY > st.Bottom + (reach + 0.1) * ss);
     }
 
+    /// <summary>The vertical centre of a black head from its ink: the run through (cx, near cy) in the staff-less image
+    /// on three columns across the head, when the runs have a head's height (null otherwise).</summary>
+    // experimental (PVOMR_INKCENTRE=1): corrects some stem-down heads read a step low, but costs fitting measures on
+    // real pages (dots and voices follow the moved heads) and leaves heads that touch a neighbour wrong
+    private static readonly bool NoInkCentre = Environment.GetEnvironmentVariable("PVOMR_INKCENTRE") != "1";
+
+    private double? InkCentreY(double cx, double cy, double ss)
+    {
+        if (NoInkCentre) return null;
+        var mids = new List<double>();
+        foreach (double dx in new[] { -0.2, 0.0, 0.2 })
+        {
+            int x = (int)Math.Round(cx + dx * ss);
+            if (x < 0 || x >= _ns.Width) continue;
+            int y = -1;
+            for (int d = 0; d <= 0.5 * ss && y < 0; d++)
+            {
+                int ya = (int)Math.Round(cy) + d, yb = (int)Math.Round(cy) - d;
+                if (ya >= 0 && ya < _ns.Height && _ns[x, ya]) y = ya; else if (yb >= 0 && yb < _ns.Height && _ns[x, yb]) y = yb;
+            }
+            if (y < 0) continue;
+            int top = y, bot = y;
+            while (top > 0 && _ns[x, top - 1] && y - top < 2 * ss) top--;
+            while (bot < _ns.Height - 1 && _ns[x, bot + 1] && bot - y < 2 * ss) bot++;
+            int len = bot - top + 1;
+            if (len >= 0.6 * ss && len <= 1.3 * ss) mids.Add((top + bot) / 2.0);
+        }
+        if (mids.Count < 2) return null;
+        mids.Sort();
+        double m = mids[mids.Count / 2];
+        return Math.Abs(m - cy) <= 0.45 * ss ? m : null;
+    }
+
     /// <summary>A beam (or its end) under a head candidate: ink continues (within a band that tolerates the beam slope) for more than 1.5 staff spaces from the centre.</summary>
     /// <summary>The classifier is sure this hollow-looking component is a fingering digit or a letter, not a head.</summary>
     private bool ConfidentNonHead(Component c, double ss)
@@ -2354,6 +2588,60 @@ public sealed class SymbolAnalyzer
         if (_clf == null) return false;
         var p = _clf.Classify(_cm.Mask(c), c.Width, c.Height, ss);
         return p.Label is "digit" or "text" or "dynamic" && p.Probability >= 0.6;
+    }
+
+    /// <summary>
+    /// An accidental always stands before a note. When none follows it but a head-sized piece read as text or unknown
+    /// does, at the accidental's height, and the head verifier calls it a hollow head, it is a whole note (stemless
+    /// hollow heads are no shape the note analysis builds from). The accidental and a dot after it attach as usual.
+    /// </summary>
+    private void HeadsAfterAccidentals(List<MusicSymbol> syms, Staff staff)
+    {
+        if (_heads == null) return;
+        double ss = staff.Space;
+        int iBlack = _heads.LabelIndex("head_black"), iHalf = _heads.LabelIndex("head_half");
+        var heads = syms.Where(s => s.Kind is SymbolKind.Note or SymbolKind.Chord or SymbolKind.NoteGroup).SelectMany(s => s.Notes.Concat(s.Children.SelectMany(c => c.Notes))).ToList();
+        foreach (var acc in syms.Where(s => s.Kind == SymbolKind.Accidental).ToList())
+        {
+            double ay = AccidentalCenterY(acc);
+            // a note already follows: nothing to rescue
+            if (heads.Any(h => h.Head.X0 > acc.Bounds.X1 - 0.25 * ss && h.Head.X0 < acc.Bounds.X1 + 1.6 * ss && Math.Abs(h.HeadY - ay) <= 0.6 * ss)) continue;
+            var piece = syms.Where(s => s.Kind is SymbolKind.Text or SymbolKind.Unknown && s.Bounds.X0 > acc.Bounds.X1 - 0.25 * ss && s.Bounds.X0 < acc.Bounds.X1 + 1.6 * ss
+                                        && Math.Abs(s.Bounds.CenterY - ay) <= 0.6 * ss && s.Bounds.Width >= 0.9 * ss && s.Bounds.Width <= 2.0 * ss
+                                        && s.Bounds.Height >= 0.6 * ss && s.Bounds.Height <= 1.5 * ss)
+                            .OrderBy(s => s.Bounds.X0).FirstOrDefault();
+            if (piece == null) continue;
+            if (MakeWholeNote(piece, staff, 0.6, iBlack, iHalf) is Note note) { piece.Attributes["head"] = "after an accidental"; heads.Add(note); }
+        }
+        // stemless hollow heads anywhere (whole notes, also merged with their ledger line): sure verdicts only, and
+        // outside the staff a ledger line must be there
+        foreach (var piece in syms.Where(s => s.Kind is SymbolKind.Text or SymbolKind.Unknown or SymbolKind.Ledger
+                                              && s.Bounds.Width >= 1.1 * ss && s.Bounds.Width <= 2.8 * ss && s.Bounds.Height >= 0.7 * ss && s.Bounds.Height <= 1.6 * ss).ToList())
+        {
+            double step = staff.StepAt(piece.Bounds.CenterX, piece.Bounds.CenterY);
+            if (step < -6 || step > 14) continue;
+            bool outside = step < -1.5 || step > 9.5;
+            if (outside && piece.Kind != SymbolKind.Ledger && !HasLedgerLine(piece.Bounds.CenterX, piece.Bounds.CenterY, ss)) continue;
+            if (heads.Any(h => Math.Abs(h.HeadX - piece.Bounds.CenterX) < 0.8 * ss && Math.Abs(h.HeadY - piece.Bounds.CenterY) < 0.8 * ss)) continue;
+            if (MakeWholeNote(piece, staff, 0.85, iBlack, iHalf) is Note note) { piece.Attributes["head"] = "hollow, stemless"; heads.Add(note); }
+        }
+    }
+
+    /// <summary>Turns a piece into a whole note when the head verifier calls it hollow with at least the given probability.</summary>
+    private Note? MakeWholeNote(MusicSymbol piece, Staff staff, double minP, int iBlack, int iHalf)
+    {
+        double ss = staff.Space;
+        // a ledger line merged with the head widens the piece; the head sits at its vertical centre
+        double cx = piece.Bounds.CenterX, cy = piece.Bounds.CenterY;
+        var probs = _heads!.ClassifyGrids(new List<float[]> { Eval.CropExtractor.WindowGrid(_ns, cx, cy, ss) }, (float)Eval.CropExtractor.HeadWindow, (float)Eval.CropExtractor.HeadWindow);
+        double pb = iBlack >= 0 ? probs[0][iBlack] : 0, ph = iHalf >= 0 ? probs[0][iHalf] : 0;
+        if (ph < minP || ph < pb) return null;
+        var head = new Rect((int)Math.Round(cx - 0.75 * ss), (int)Math.Round(cy - 0.5 * ss), (int)Math.Round(cx + 0.75 * ss), (int)Math.Round(cy + 0.5 * ss));
+        var note = new Note { Head = head, HeadType = "whole", Confidence = ph };
+        note.Step = (int)Math.Round(staff.StepAt(cx, cy));
+        piece.Kind = SymbolKind.Note; piece.Name = "note"; piece.Duration = "whole"; piece.StemUp = null; piece.Confidence = Math.Round(ph, 2);
+        piece.Notes.Clear(); piece.Notes.Add(note);
+        return note;
     }
 
     /// <summary>
@@ -2743,13 +3031,34 @@ public sealed class SymbolAnalyzer
             // measure ink height at the left and right ends
             int lh = InkHeight(r.X0 + 1, r), rh = InkHeight(r.X1 - 1, r);
             int mh = InkHeight((r.X0 + r.X1) / 2, r);
-            if (r.Height >= 0.6 * ss && ((lh <= 0.25 * ss && rh >= 0.5 * ss) || (rh <= 0.25 * ss && lh >= 0.5 * ss)) && mh < r.Height)
+            // the open end of a hairpin is two thin lines with paper between them; a slur's steep end is one stroke
+            int wideX = lh > rh ? r.X0 + 1 : r.X1 - 1;
+            // only the slur's own ink (the largest component in its box): a head or stem inside the box is no line
+            var counts = new Dictionary<int, int>();
+            for (int y = r.Y0; y <= r.Y1; y++) for (int x = r.X0; x <= r.X1; x++) { int l = _cm.Labels[y * _cm.Width + x]; if (l > 0) counts[l] = counts.GetValueOrDefault(l) + 1; }
+            int own = counts.Count == 0 ? -1 : counts.OrderByDescending(kv => kv.Value).First().Key;
+            bool twoLines = Enumerable.Range(0, Math.Max(1, (int)(0.6 * ss))).Any(d => InkRuns(wideX + (lh > rh ? d : -d), r, own) >= 2);
+            if (r.Height >= 0.6 * ss && ((lh <= 0.25 * ss && rh >= 0.5 * ss) || (rh <= 0.25 * ss && lh >= 0.5 * ss)) && mh < r.Height && twoLines)
             {
                 s.Kind = SymbolKind.Hairpin; s.Name = lh < rh ? "crescendo hairpin" : "diminuendo hairpin"; s.Confidence = 0.6;
             }
             else { s.Name = "slur/tie"; s.Confidence = 0.5; }
             s.Attributes["width"] = $"{r.Width / ss:0.0}ss";
         }
+    }
+
+    /// <summary>Separate ink runs in one column of a rectangle.</summary>
+    private int InkRuns(int x, Rect r, int label = -1)
+    {
+        if (x < 0 || x >= _ns.Width) return 0;
+        int runs = 0; bool inRun = false;
+        for (int y = r.Y0; y <= r.Y1; y++)
+        {
+            bool on = y >= 0 && y < _ns.Height && (label < 0 ? _ns[x, y] : _cm.Labels[y * _cm.Width + x] == label);
+            if (on && !inRun) runs++;
+            inRun = on;
+        }
+        return runs;
     }
 
     private int InkHeight(int x, Rect r)

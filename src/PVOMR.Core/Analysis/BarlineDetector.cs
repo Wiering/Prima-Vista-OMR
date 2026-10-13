@@ -237,7 +237,24 @@ public static class BarlineDetector
                 if (cm.Labels[y * cm.Width + x] == comp.Label) { if (x < minX) minX = x; if (x > maxX) maxX = x; }
         if (maxX < 0) return true;
         if (BarDump) Console.Error.WriteLine($"   comp label {comp.Label} bbox ({comp.X0},{comp.Y0})-({comp.X1},{comp.Y1}) extent in band {minX}-{maxX} (limit {Math.Max(1.0 * ss, 3 * c.Width + 2):0})");
-        if (maxX - minX + 1 > Math.Max(1.0 * ss, 3 * c.Width + 2)) return false;
+        double limit = Math.Max(1.0 * ss, 3 * c.Width + 2);
+        if (maxX - minX + 1 > limit)
+        {
+            // a tie or slur crossing the line widens the component over a few rows only: the line is still thin when
+            // most rows of the staff band hold nothing wider than the line itself
+            int rows = 0, wide = 0;
+            for (int y = Math.Max(0, y0); y <= Math.Min(cm.Height - 1, y1); y++)
+            {
+                int rMin = int.MaxValue, rMax = -1;
+                for (int x = Math.Max(0, x0); x <= Math.Min(cm.Width - 1, x1); x++)
+                    if (cm.Labels[y * cm.Width + x] == comp.Label) { if (x < rMin) rMin = x; if (x > rMax) rMax = x; }
+                if (rMax < 0) continue;
+                rows++;
+                if (rMax - rMin + 1 > 3 * c.Width + 2) wide++;
+            }
+            if (BarDump) Console.Error.WriteLine($"   rows {rows}, wide {wide}");
+            if (rows == 0 || wide > 0.2 * rows) return false;
+        }
         // a stem whose (hollow) head broke off: foreign ink fragments right beside either end of the run
         foreach (int yEnd in new[] { c.RunTop, c.RunBottom })
         {
