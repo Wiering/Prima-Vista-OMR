@@ -149,6 +149,8 @@ public sealed class ScoreEvent
     public bool GraceSlash { get; set; }
     /// <summary>Printed small: becomes a grace note only when the measure overflows by exactly such notes.</summary>
     public bool GraceCandidate { get; set; }
+    /// <summary>A fragment in the dot position (a dot eroded by staff removal): dotted only when the measure then adds up.</summary>
+    public bool DotCandidate { get; set; }
     /// <summary>Alternative note value for a dotted beamed pair read alike (applied when it makes the measure fit).</summary>
     public string? AltType { get; set; }
     public ScoreEvent? AltPair { get; set; }

@@ -95,6 +95,8 @@ public static class BarlineDetector
                 }
                 // the line at the very start of the staff is the system's initial barline (bracket/brace strokes join it)
                 if (bar.X0 <= staff.Left + 0.6 * ss && bar.Kind != BarlineKind.RepeatStart) bar.Kind = BarlineKind.SystemStart;
+                // a thick stroke right at the start of the staff is the heavy bar of a C clef (old editions), not a bar line
+                else if (bar.Kind == BarlineKind.Thick && bar.X0 <= staff.Left + 2.5 * ss) bar.Kind = BarlineKind.SystemStart;
                 bar.StaffTo = si;
                 bars.Add(bar);
             }
@@ -293,12 +295,24 @@ public static class BarlineDetector
         int xc = (xa + xb) / 2;
         double y2 = staff.Lines[1].YAt(xc), y3 = staff.Lines[2].YAt(xc), y4 = staff.Lines[3].YAt(xc);
         int r = (int)Math.Max(2, 0.3 * ss);
-        bool Dot(double yc)
+        // a repeat dot is a small compact blob alone in its space: a note head, stem or beam beside the line is not
+        double? Dot(double yc)
         {
             int cnt = noStaff.CountBlack(xa, (int)(yc - r), xb + 1, (int)(yc + r) + 1);
             int area = (xb - xa + 1) * (2 * r + 1);
-            return cnt >= 0.12 * area && cnt <= 0.75 * area;
+            if (cnt < 0.12 * area || cnt > 0.75 * area) return null;
+            // inside the space, clear of what the staff removal leaves of the lines
+            int y0 = (int)Math.Round(yc - 0.38 * ss), y1 = (int)Math.Round(yc + 0.38 * ss);
+            int bx0 = int.MaxValue, bx1 = int.MinValue, by0 = int.MaxValue, by1 = int.MinValue;
+            for (int y = y0; y <= y1; y++)
+                for (int x = xa; x <= xb; x++)
+                    if (noStaff[x, y]) { bx0 = Math.Min(bx0, x); bx1 = Math.Max(bx1, x); by0 = Math.Min(by0, y); by1 = Math.Max(by1, y); }
+            if (bx1 - bx0 + 1 > 0.75 * ss || by1 - by0 + 1 > 0.75 * ss) return null;
+            // clear of the window's far side (a head or beam cut off there is not a dot; towards the bar line the dot may
+            // reach the edge), and not through the whole height of the space (a stem); a dot may touch a line
+            if ((dir < 0 ? bx0 <= xa : bx1 >= xb) || (by0 <= y0 && by1 >= y1)) return null;
+            return (bx0 + bx1) / 2.0;
         }
-        return Dot((y2 + y3) / 2) && Dot((y3 + y4) / 2);
+        return Dot((y2 + y3) / 2) is double a && Dot((y3 + y4) / 2) is double b && Math.Abs(a - b) <= 0.35 * ss;
     }
 }

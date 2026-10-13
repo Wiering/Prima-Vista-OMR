@@ -15,7 +15,7 @@ namespace PVOMR.Gui;
 /// Shows the (deskewed) page image with the recognised staves, bar lines and symbols drawn over it. Wheel zooms around
 /// the pointer, dragging pans, a click selects the smallest symbol under the pointer.
 /// </summary>
-public enum ViewMode { Select, AddNote, AddRest, Move }
+public enum ViewMode { Select, AddNote, AddRest, AddBarline, Move }
 
 public sealed class PageView : Control
 {
@@ -32,8 +32,11 @@ public sealed class PageView : Control
     private bool _dragging, _moved;
     private MusicSymbol? _selected;
     private Staff? _selectedStaff;
+    private Barline? _selectedBarline;
 
     public event Action<MusicSymbol?, Staff?>? SelectionChanged;
+    /// <summary>A bar line was clicked (with its staff).</summary>
+    public event Action<Barline, Staff>? BarlineSelected;
     /// <summary>A click in an Add mode: image coordinates and the staff under the pointer.</summary>
     public event Action<Point, Staff?>? AddRequested;
     /// <summary>A symbol was dragged in Move mode by (dx, dy) image pixels (already applied to the symbol).</summary>
@@ -45,7 +48,7 @@ public sealed class PageView : Control
         set
         {
             _mode = value;
-            Cursor = value switch { ViewMode.AddNote or ViewMode.AddRest => new Cursor(StandardCursorType.Cross), ViewMode.Move => new Cursor(StandardCursorType.SizeAll), _ => Cursor.Default };
+            Cursor = value switch { ViewMode.AddNote or ViewMode.AddRest or ViewMode.AddBarline => new Cursor(StandardCursorType.Cross), ViewMode.Move => new Cursor(StandardCursorType.SizeAll), _ => Cursor.Default };
         }
     }
 
@@ -60,6 +63,7 @@ public sealed class PageView : Control
 
     public MusicSymbol? Selected { get => _selected; set { _selected = value; InvalidateVisual(); } }
     public Staff? SelectedStaff => _selectedStaff;
+    public Barline? SelectedBarline => _selectedBarline;
     public double Zoom => _zoom;
 
     public PageView()
@@ -73,7 +77,7 @@ public sealed class PageView : Control
         _page = page;
         _bitmap = page == null ? null : ToBitmap(page.Context.Gray);
         _analysis = page?.Analysis;
-        _selected = null; _selectedStaff = null;
+        _selected = null; _selectedStaff = null; _selectedBarline = null;
         if (fit) FitPage();
         InvalidateVisual();
     }
@@ -198,7 +202,7 @@ public sealed class PageView : Control
             return;
         }
         var img = ToImage(e.GetPosition(this));
-        if (_mode is ViewMode.AddNote or ViewMode.AddRest) AddRequested?.Invoke(img, StaffAt(img.X, img.Y));
+        if (_mode is ViewMode.AddNote or ViewMode.AddRest or ViewMode.AddBarline) AddRequested?.Invoke(img, StaffAt(img.X, img.Y));
         else SelectAt(img);
     }
 
@@ -208,6 +212,22 @@ public sealed class PageView : Control
     {
         if (_analysis == null) return;
         int x = (int)Math.Round(img.X), y = (int)Math.Round(img.Y);
+        // a bar line (when shown) under the pointer, within a few screen pixels of its ink
+        if (ShowBarlines)
+        {
+            double tol = Math.Max(2, 4 / _zoom);
+            foreach (var st in _analysis.Staves)
+            {
+                if (y < st.TopY(x) - 0.5 * st.Space || y > st.BottomY(x) + 0.5 * st.Space) continue;
+                var bar = st.Barlines.Where(b => x >= b.X0 - tol && x <= b.X1 + tol).OrderBy(b => Math.Abs(b.X - x)).FirstOrDefault();
+                if (bar == null) continue;
+                _selected = null; _selectedStaff = st; _selectedBarline = bar;
+                InvalidateVisual();
+                BarlineSelected?.Invoke(bar, st);
+                return;
+            }
+        }
+        _selectedBarline = null;
         MusicSymbol? best = null; Staff? bestStaff = null; long bestArea = long.MaxValue;
         void Consider(MusicSymbol s, Staff? staff)
         {
@@ -232,9 +252,9 @@ public sealed class PageView : Control
         SelectionChanged?.Invoke(best, bestStaff);
     }
 
-    public void Select(MusicSymbol? symbol, Staff? staff)
+    public void Select(MusicSymbol? symbol, Staff? staff, Barline? barline = null)
     {
-        _selected = symbol; _selectedStaff = staff;
+        _selected = symbol; _selectedStaff = staff; _selectedBarline = barline;
         InvalidateVisual();
     }
 
@@ -296,6 +316,8 @@ public sealed class PageView : Control
                     var brush = new SolidColorBrush(b.Kind == BarlineKind.Single ? Color.FromArgb(120, 0, 0, 255) : Color.FromArgb(150, 255, 0, 255));
                     double yt = st.TopY(b.X), yb = st.BottomY(b.X);
                     context.FillRectangle(brush, new Avalonia.Rect(b.X0 - 1, yt, b.X1 - b.X0 + 3, yb - yt));
+                    if (b == _selectedBarline)
+                        context.DrawRectangle(null, new Pen(new SolidColorBrush(Color.FromRgb(255, 200, 0)), 2.5 / _zoom), new Avalonia.Rect(b.X0 - 4, yt - 0.6 * st.Space, b.X1 - b.X0 + 9, yb - yt + 1.2 * st.Space));
                 }
         }
         var typeface = new Typeface("Inter");
@@ -319,7 +341,7 @@ public sealed class PageView : Control
                 }
         }
         foreach (var s in a.PageSymbols) if (ShowBoxes) DrawSymbol(context, s, (float)a.StaffSpace, typeface, thin);
-        if (_selected == null && _selectedStaff != null)
+        if (_selected == null && _selectedStaff != null && _selectedBarline == null)
         {
             var st = _selectedStaff;
             var pen = new Pen(new SolidColorBrush(Color.FromArgb(200, 255, 140, 0)), 2 * thin);

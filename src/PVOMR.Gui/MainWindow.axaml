@@ -39,6 +39,7 @@
       <RadioButton Name="SelectMode" GroupName="mode" Content="Select" IsChecked="True"/>
       <RadioButton Name="AddNoteMode" GroupName="mode" Content="Add note"/>
       <RadioButton Name="AddRestMode" GroupName="mode" Content="Add rest"/>
+      <RadioButton Name="AddBarlineMode" GroupName="mode" Content="Add bar line"/>
       <RadioButton Name="MoveMode" GroupName="mode" Content="Move"/>
       <Border Width="1" Background="#808080" Margin="6,2"/>
       <CheckBox Name="StaffLinesCheck" Content="Staff lines" IsChecked="True"/>
@@ -72,6 +73,17 @@
           <StackPanel Orientation="Horizontal" Spacing="6">
             <Button Name="ApplyStaffButton" Content="Apply to staff"/>
             <Button Name="ClearStaffButton" Content="Back to automatic"/>
+          </StackPanel>
+
+          <TextBlock Classes="h" Text="Bar line"/>
+          <TextBlock Name="BarlineInfo" TextWrapping="Wrap" Text="Click a bar line to select it; 'Add bar line' adds one where you click."/>
+          <Grid ColumnDefinitions="60,*" Margin="0,4,0,0">
+            <TextBlock Classes="lbl" Grid.Column="0" Text="Type"/>
+            <ComboBox Name="BarKindBox" Grid.Column="1" HorizontalAlignment="Stretch" Margin="0,2"/>
+          </Grid>
+          <StackPanel Orientation="Horizontal" Spacing="6">
+            <Button Name="ApplyBarButton" Content="Apply"/>
+            <Button Name="DeleteBarButton" Content="Delete bar line"/>
           </StackPanel>
 
           <TextBlock Classes="h" Text="Symbol"/>

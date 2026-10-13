@@ -134,6 +134,7 @@ public sealed class PageAnalyzer
         // 4. symbols
         var symbolAnalyzer = new SymbolAnalyzer(_glyphs, bin0, noStaff, comps, result, _opt, _classifier, _headVerifier);
         symbolAnalyzer.Run();
+        MeasureSplitter.SplitMissedBarlines(result);
 
         // 5. musical interpretation (clefs, key signatures, pitches)
         MusicInterpreter.Interpret(result, previous);

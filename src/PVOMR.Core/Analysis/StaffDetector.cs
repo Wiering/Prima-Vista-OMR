@@ -171,7 +171,13 @@ public static class StaffDetector
         // Remove staves that overlap with a longer staff (duplicates from fragmented chains).
         var keep = new List<Staff>();
         foreach (var st in staves.OrderByDescending(s => s.Right - s.Left))
+        {
+            // the same staff found again further along (its line was lost under a beam lying on the staff): the
+            // longer candidate takes over the extent of the other
+            var same = keep.FirstOrDefault(k => Overlaps(k, st) && SameLines(k, st));
+            if (same != null) { Extend(bin, same, st, maxRun); result.Log.Add($"staff candidate at y={st.CenterY:0} x={st.Left:0}-{st.Right:0} joined to the staff at x={same.Left:0}-{same.Right:0}"); continue; }
             if (!keep.Any(k => Overlaps(k, st) || SharesLine(k, st))) keep.Add(st);
+        }
         // Merge collinear fragments of the same staff (chains broken by clutter).
         keep = MergeFragments(bin, keep, maxRun, result.Log);
         // Validate: staff lines must be continuous thin ink (rejects equally spaced text rows).
@@ -186,6 +192,12 @@ public static class StaffDetector
         }
         keep = valid;
         foreach (var st in keep) ShiftIfOutsideLineIsBetter(bin, st, maxRun, result.Log);
+        // a candidate shifted by one line can land on another staff: keep the longer one
+        var unique = new List<Staff>();
+        foreach (var st in keep.OrderByDescending(s => s.Right - s.Left))
+            if (!unique.Any(k => Overlaps(k, st) && SameLines(k, st))) unique.Add(st);
+            else result.Log.Add($"dropped staff at y={st.CenterY:0} x={st.Left:0}-{st.Right:0}: lies on a longer staff after shifting");
+        keep = unique;
         // Short candidates right next to a much longer staff with the same spacing are ledger-line structures.
         double maxWidth = keep.Count == 0 ? 0 : keep.Max(st => st.Right - st.Left);
         keep = keep.Where(st =>
@@ -398,6 +410,32 @@ public static class StaffDetector
             foreach (var lb in b.Lines)
                 if (Math.Abs(la.YAt(xm) - lb.YAt(xm)) < 0.3 * a.Space) return true;
         return false;
+    }
+
+    /// <summary>All five lines of the two staves coincide where they overlap.</summary>
+    private static bool SameLines(Staff a, Staff b)
+    {
+        double xo = Math.Min(a.Right, b.Right) - Math.Max(a.Left, b.Left);
+        if (xo < 2 * a.Space || Math.Abs(a.Space / b.Space - 1) > 0.1) return false;
+        double xm = Math.Max(a.Left, b.Left) + xo / 2;
+        for (int k = 0; k < 5; k++) if (Math.Abs(a.Lines[k].YAt(xm) - b.Lines[k].YAt(xm)) > 0.45 * a.Space) return false;
+        return true;
+    }
+
+    /// <summary>Widens <paramref name="a"/> to the extent of <paramref name="b"/> (the same staff) with b's line points.</summary>
+    private static void Extend(BinaryImage bin, Staff a, Staff b, int maxRun)
+    {
+        if (b.Right <= a.Right + a.Space && b.Left >= a.Left - a.Space) return;
+        for (int k = 0; k < 5; k++)
+        {
+            var pts = a.Lines[k].Points;
+            var right = b.Lines[k].Points.Where(p => p.X > pts[^1].X).ToList();
+            var left = b.Lines[k].Points.Where(p => p.X < pts[0].X).ToList();
+            pts.AddRange(right); pts.InsertRange(0, left);
+        }
+        a.Right = Math.Max(a.Right, b.Right); a.Left = Math.Min(a.Left, b.Left);
+        int thinRun = Math.Max(maxRun, (int)Math.Round(2.5 * a.LineThickness));
+        foreach (var line in a.Lines) Refine(bin, line, a, thinRun);
     }
 
     private static bool Overlaps(Staff a, Staff b)

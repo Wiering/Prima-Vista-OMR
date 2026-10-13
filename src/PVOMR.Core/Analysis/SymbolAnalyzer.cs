@@ -1582,6 +1582,7 @@ public sealed class SymbolAnalyzer
         if (c.Height < minLen) return stems;
         int label = c.Label;
         Stem? cur = null;
+        var cols = new Dictionary<int, (int len, int top)>();   // longest vertical run per column
         for (int x = c.X0; x <= c.X1; x++)
         {
             int bestLen = 0, bestTop = 0, run = 0, runTop = 0;
@@ -1592,6 +1593,7 @@ public sealed class SymbolAnalyzer
                 else { if (run > bestLen) { bestLen = run; bestTop = runTop; } run = 0; }
             }
             bool stemCol = bestLen >= minLen;
+            cols[x] = (bestLen, bestTop);
             if (stemCol)
             {
                 int bestBottom = bestTop + bestLen - 1;
@@ -1612,6 +1614,19 @@ public sealed class SymbolAnalyzer
         }
         // keep thin candidates only
         double maxW = Math.Max(3, 0.45 * ss);
+        // a chord of heads a third apart (a triad) merges into a blob taller than the minimum stem length, so the stem
+        // runs on into columns of head ink: the stem is then the thin set of columns whose run is clearly the longest
+        for (int i = 0; i < stems.Count; i++)
+        {
+            var s = stems[i];
+            if (s.X1 - s.X0 + 1 <= maxW) continue;
+            var lens = Enumerable.Range(s.X0, s.X1 - s.X0 + 1).Select(x => cols[x].len).OrderBy(l => l).ToList();
+            int blob = lens[lens.Count / 2];   // the typical column: head ink
+            var top = Enumerable.Range(s.X0, s.X1 - s.X0 + 1).Where(x => cols[x].len >= blob + 1.0 * ss).ToList();
+            if (top.Count == 0 || top.Max() - top.Min() + 1 > maxW || top.Max() - top.Min() + 1 != top.Count) continue;
+            int bx = top.OrderByDescending(x => cols[x].len).First();
+            stems[i] = new Stem { X = bx, X0 = top.Min(), X1 = top.Max(), Top = top.Min(x => cols[x].top), Bottom = top.Max(x => cols[x].top + cols[x].len - 1) };
+        }
         return stems.Where(s => s.X1 - s.X0 + 1 <= maxW).ToList();
     }
 
@@ -2408,6 +2423,20 @@ public sealed class SymbolAnalyzer
                 stac.sym.Attributes["articulation"] = "staccato";
                 syms.Remove(d);
             }
+        }
+        // an augmentation dot next to a staff line loses most of its ink to the staff removal and is left as a small
+        // unknown or text fragment: such a fragment in the dot position of an undotted note makes it a dot candidate,
+        // which the duration check takes only when the measure then adds up
+        var frags = syms.Where(s => s.Kind is SymbolKind.Unknown or SymbolKind.Text && s.Bounds.Width <= 0.6 * ss && s.Bounds.Height <= 0.5 * ss
+                                    && s.Bounds.Width >= 2 && s.Bounds.Height >= 2).ToList();
+        foreach (var f in frags)
+        {
+            var cand = notes.Where(p => p.note.Dots == 0 && f.Bounds.CenterX > p.note.Head.X1 + 0.1 * ss && f.Bounds.CenterX < p.note.Head.X1 + 1.2 * ss
+                                        && Math.Abs(f.Bounds.CenterY - p.note.HeadY) <= 0.7 * ss)
+                            .OrderBy(p => Math.Abs(f.Bounds.CenterX - p.note.Head.X1)).FirstOrDefault();
+            // not when another head lies between the head and the fragment (the fragment belongs to that one)
+            if (cand.note == null || notes.Any(p => p.note != cand.note && p.note.HeadX > cand.note.HeadX + 0.3 * ss && p.note.Head.X0 < f.Bounds.CenterX)) continue;
+            cand.sym.Attributes["dotcand"] = "1";
         }
         var accs = syms.Where(s => s.Kind == SymbolKind.Accidental).ToList();
         foreach (var a in accs)

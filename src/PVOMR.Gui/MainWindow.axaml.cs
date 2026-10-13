@@ -12,6 +12,7 @@ public partial class MainWindow : Window
 {
     private static readonly string[] Durations = { "whole", "half", "quarter", "8th", "16th", "32nd", "64th" };
     private static readonly string[] Stems = { "(none)", "up", "down" };
+    private static readonly string[] BarKinds = Enum.GetNames<BarlineKind>().Where(n => n != nameof(BarlineKind.SystemStart)).ToArray();
     private const string Auto = "(automatic)";
 
     private RecognitionEngine? _engine;
@@ -22,6 +23,7 @@ public partial class MainWindow : Window
     private PageResult? _current;
     private MusicSymbol? _selSym;
     private Staff? _selStaff;
+    private Barline? _selBar;
     private Measure? _selMeasure;
     private List<MusicSymbol> _measureItems = new();
     private List<(Staff staff, Measure measure, MeasureFit fit)> _fitItems = new();
@@ -37,6 +39,7 @@ public partial class MainWindow : Window
         KindBox.ItemsSource = Enum.GetNames<SymbolKind>();
         DurationBox.ItemsSource = Durations;
         StemBox.ItemsSource = Stems;
+        BarKindBox.ItemsSource = BarKinds;
         StaffClefBox.ItemsSource = new[] { Auto }.Concat(Enum.GetNames<ClefKind>().Where(n => n != "Unknown")).ToArray();
         StaffKeyBox.ItemsSource = new[] { Auto }.Concat(Enumerable.Range(-7, 15).Select(KeyLabel)).ToArray();
 
@@ -68,8 +71,12 @@ public partial class MainWindow : Window
         SelectMode.IsCheckedChanged += (_, _) => { if (SelectMode.IsChecked == true) View.Mode = ViewMode.Select; };
         AddNoteMode.IsCheckedChanged += (_, _) => { if (AddNoteMode.IsChecked == true) View.Mode = ViewMode.AddNote; };
         AddRestMode.IsCheckedChanged += (_, _) => { if (AddRestMode.IsChecked == true) View.Mode = ViewMode.AddRest; };
+        AddBarlineMode.IsCheckedChanged += (_, _) => { if (AddBarlineMode.IsChecked == true) View.Mode = ViewMode.AddBarline; };
         MoveMode.IsCheckedChanged += (_, _) => { if (MoveMode.IsChecked == true) View.Mode = ViewMode.Move; };
-        View.SelectionChanged += (s, st) => { _selSym = s; _selStaff = st; UpdateInspector(); };
+        View.SelectionChanged += (s, st) => { _selSym = s; _selStaff = st; _selBar = null; UpdateInspector(); };
+        View.BarlineSelected += (b, st) => { _selSym = null; _selStaff = st; _selBar = b; UpdateInspector(); };
+        ApplyBarButton.Click += (_, _) => ApplyBarline();
+        DeleteBarButton.Click += (_, _) => DeleteBarline();
         View.AddRequested += AddSymbol;
         View.MoveFinished += (s, dx, dy) => RecordOnly(new SymbolEdit { Op = "move", Dx = dx, Dy = dy }, s);
         ApplyStaffButton.Click += (_, _) => ApplyStaff(clear: false);
@@ -240,10 +247,44 @@ public partial class MainWindow : Window
         Changed();
     }
 
+    /// <summary>Records and applies a bar line edit (identified by its staff and position) and refreshes.</summary>
+    private void BarEdit(SymbolEdit e, string failure)
+    {
+        if (_current == null || _store == null) return;
+        if (!CorrectionStore.Apply(_current, e)) { Status(failure); return; }
+        _store.Record(_page, e);
+        Changed();
+    }
+
+    private void ApplyBarline()
+    {
+        if (_selBar == null || _selStaff == null || BarKindBox.SelectedItem is not string kind) return;
+        if (kind == _selBar.Kind.ToString()) { Status("nothing changed"); return; }
+        BarEdit(new SymbolEdit { Op = "setBar", Staff = _selStaff.Index, X0 = _selBar.X0, X1 = _selBar.X1, Kind = kind }, "the bar line could not be changed");
+    }
+
+    private void DeleteBarline()
+    {
+        if (_selBar == null || _selStaff == null) return;
+        var (bar, staff) = (_selBar, _selStaff);
+        _selBar = null;
+        View.Select(null, staff);
+        BarEdit(new SymbolEdit { Op = "deleteBar", Staff = staff.Index, X0 = bar.X0, X1 = bar.X1 }, "this bar line cannot be deleted (first or last line of the staff)");
+    }
+
     private void AddSymbol(Avalonia.Point p, Staff? staff)
     {
         if (_current == null || _store == null) return;
         if (staff == null) { Status("click inside a staff to add a symbol"); return; }
+        if (View.Mode == ViewMode.AddBarline)
+        {
+            int bx = (int)Math.Round(p.X), half = (int)Math.Max(1, Math.Round(staff.LineThickness / 2));
+            BarEdit(new SymbolEdit { Op = "addBar", Staff = staff.Index, X0 = bx - half, X1 = bx + half, Kind = nameof(BarlineKind.Single) },
+                    "no bar line can be added here (too close to another one)");
+            var newBar = MeasureSplitterBarAt(staff, bx);
+            if (newBar != null) { _selBar = newBar; _selStaff = staff; View.Select(null, staff, newBar); UpdateInspector(); }
+            return;
+        }
         double ss = staff.Space;
         bool rest = View.Mode == ViewMode.AddRest;
         var e = new SymbolEdit { Op = "add", Staff = staff.Index, Kind = rest ? "Rest" : "Note", Duration = "quarter" };
@@ -266,6 +307,13 @@ public partial class MainWindow : Window
         _selSym = added; _selStaff = staff;
         View.Select(added, staff);
         Changed();
+    }
+
+    private Barline? MeasureSplitterBarAt(Staff staff, double x)
+    {
+        // the staff object may have been replaced by the re-interpretation: look it up by index
+        var st = _current != null && staff.Index < _current.Analysis.Staves.Count ? _current.Analysis.Staves[staff.Index] : staff;
+        return PVOMR.Core.Analysis.MeasureSplitter.BarlineAt(st, x);
     }
 
     private void ApplyStaff(bool clear)
@@ -389,6 +437,8 @@ public partial class MainWindow : Window
         if (e.Source is TextBox || _busy) return;
         switch (e.Key)
         {
+            case Key.Delete when _selBar != null:
+                DeleteBarline(); e.Handled = true; break;
             case Key.Delete when _selSym != null:
             {
                 var s = _selSym; _selSym = null; View.Select(null, _selStaff);
@@ -427,6 +477,17 @@ public partial class MainWindow : Window
             {
                 StaffInfo.Text = "Click a staff or a symbol.";
                 StaffClefBox.SelectedItem = Auto; StaffKeyBox.SelectedItem = Auto; StaffTimeBox.Text = "";
+            }
+
+            if (_selBar != null)
+            {
+                BarlineInfo.Text = $"{_selBar.Kind} bar line at x={_selBar.X:0} on staff {(staff?.Index ?? -1) + 1}" + (_selBar.Spanning ? $" (spans staves {_selBar.StaffFrom + 1}-{_selBar.StaffTo + 1})" : "");
+                BarKindBox.SelectedItem = BarKinds.Contains(_selBar.Kind.ToString()) ? _selBar.Kind.ToString() : null;
+            }
+            else
+            {
+                BarlineInfo.Text = "Click a bar line to select it; 'Add bar line' adds one where you click.";
+                BarKindBox.SelectedItem = null;
             }
 
             var s = _selSym;
@@ -510,6 +571,7 @@ public partial class MainWindow : Window
         bool hasStaff = (_selStaff ?? _selSym?.Staff) != null;
         ApplyStaffButton.IsEnabled = hasStaff; ClearStaffButton.IsEnabled = hasStaff;
         ApplySymbolButton.IsEnabled = _selSym != null; DeleteSymbolButton.IsEnabled = _selSym != null;
+        ApplyBarButton.IsEnabled = _selBar != null; DeleteBarButton.IsEnabled = _selBar != null;
     }
 
     private void SetBusy(bool busy) { _busy = busy; UpdateButtons(); }

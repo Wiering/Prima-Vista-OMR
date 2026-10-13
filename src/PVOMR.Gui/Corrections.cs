@@ -33,7 +33,7 @@ public sealed class StaffOverride
 /// </summary>
 public sealed class SymbolEdit
 {
-    /// <summary>delete | set | head | removeHead | add | move</summary>
+    /// <summary>delete | set | head | removeHead | add | move; bar lines: addBar | deleteBar | setBar (X0..X1 = the line, Kind = its kind)</summary>
     public string Op { get; set; } = "";
     /// <summary>Staff index on the page, -1 for symbols outside the staves.</summary>
     public int Staff { get; set; } = -1;
@@ -179,6 +179,19 @@ public sealed class CorrectionStore
     public static bool Apply(PageResult page, SymbolEdit e)
     {
         var a = page.Analysis;
+        if (e.Op is "addBar" or "deleteBar" or "setBar")
+        {
+            if (e.Staff < 0 || e.Staff >= a.Staves.Count) return false;
+            var staff = a.Staves[e.Staff];
+            double x = (e.X0 + e.X1) / 2.0;
+            var kind = e.Kind != null && Enum.TryParse<BarlineKind>(e.Kind, out var bk) ? bk : BarlineKind.Single;
+            return e.Op switch
+            {
+                "addBar" => PVOMR.Core.Analysis.MeasureSplitter.AddBarline(a, staff, x, e.X0, e.X1, kind),
+                "deleteBar" => PVOMR.Core.Analysis.MeasureSplitter.RemoveBarline(a, staff, x),
+                _ => PVOMR.Core.Analysis.MeasureSplitter.SetBarlineKind(a, staff, x, kind),
+            };
+        }
         if (e.Op == "add")
         {
             if (e.Staff < 0 || e.Staff >= a.Staves.Count) return false;
@@ -213,7 +226,16 @@ public sealed class CorrectionStore
                     }
                 return a.PageSymbols.Remove(s);
             case "set":
-                if (e.Kind != null && Enum.TryParse<SymbolKind>(e.Kind, out var k)) s.Kind = k;
+                if (e.Kind != null && Enum.TryParse<SymbolKind>(e.Kind, out var k))
+                {
+                    // a missed bar line: the measure is split there (the symbol becomes the bar line and leaves the measure)
+                    if (k == SymbolKind.Barline && s.Kind != SymbolKind.Barline && s.Staff != null)
+                    {
+                        s.Kind = k; s.Name = "barline";
+                        return PVOMR.Core.Analysis.MeasureSplitter.SplitAt(a, s.Staff, s);
+                    }
+                    s.Kind = k;
+                }
                 if (e.Duration != null) { s.Duration = e.Duration; if (s.Kind == SymbolKind.Rest) s.Name = "rest" + RestSuffix(e.Duration); }
                 if (e.Dots != null) { s.Dots = e.Dots.Value; foreach (var n in s.Notes) n.Dots = e.Dots.Value; }
                 if (e.Stem != null) s.StemUp = e.Stem switch { "up" => true, "down" => false, _ => null };

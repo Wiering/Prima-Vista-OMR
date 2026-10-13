@@ -329,6 +329,11 @@ opens an Avalonia desktop application for checking and correcting the recognitio
 * the toolbar modes "Add note" and "Add rest" insert a quarter note (at the clicked staff step) or a quarter rest
   into the measure under the pointer; "Move" drags the selected symbol, its note steps follow and it changes
   measure when it crosses a bar line; "Select" is the normal mode;
+* bar lines can be edited: a click on a bar line selects it ("Bar line" panel), its type can be changed (single,
+  double, final, repeat start/end/both, thick) or it can be deleted (Delete key), which joins the two measures beside
+  it; "Add bar line" splits the measure under the pointer. These edits act on every staff of the system
+  (`MeasureSplitter`) and are stored as `addBar` / `deleteBar` / `setBar` entries; setting a symbol's kind to Barline
+  (a missed bar line taken for a symbol) also splits its measure;
 * every edit re-runs the musical interpretation of the page (pitch names, keys, times), so the labels update at
   once; "Export MusicXML…" assembles all pages recognised in this session (pages are analysed when first shown
   and cached); the export dialog lets you leave out dynamics and hairpins, articulations, slurs, ties, text,
@@ -348,6 +353,28 @@ opens an Avalonia desktop application for checking and correcting the recognitio
   again, including in a later session; a symbol is identified by its staff and the bounds it had at recognition
   (nearest box with IoU ≥ 0.6 when the recognition shifted slightly). "Discard this page's corrections" removes
   the page's log entries and recognises the page afresh.
+
+## Short measures: faint dots, stacked chords, staves and bar lines
+
+A scan of 2657 measures that came out too short on 160 corpus pages (27% a quarter short, 24% an eighth or less, 11%
+bar line errors, 28% with an unrecognised note-sized blob) led to these fixes:
+
+* Faint augmentation dots: a dot touching a staff line loses most of its ink to the staff removal and is left as a
+  small unknown or text fragment. Such a fragment in the dot position of an undotted note makes it a dot candidate
+  (`ScoreEvent.DotCandidate`), taken only when the measure then adds up (all candidates, one, or two). A fifth of the
+  corpus: +222 fitting measures, 90 pages better, 1 worse.
+* Chords of heads a third apart (triads) merge into a blob taller than the minimum stem length, so every column of it
+  looked like a stem and the "stem" was dropped as too wide; the stem is now the thin group of columns whose run
+  clearly exceeds the blob's typical column. Brahms 4 p1-5 gain 9-15 measures each; a fifth of the corpus +153.
+* Staff detection: a candidate with the same five lines as a longer staff (the line lost under a beam lying on the
+  staff) extends that staff instead of being dropped (Bach Brandenburg 6 viola part p3: the end of a line was not
+  part of any staff); a candidate shifted by one line onto another staff is removed (a duplicated staff split the
+  symbols of a line between two copies).
+* A brace matched in the middle of a one-staff system is a missed bar line: the measure is split there.
+* Repeat dots must be two small compact blobs, one above the other, clear of the window's far side and not through a
+  whole space: note heads, stems and beams beside a bar line made ordinary bar lines repeat signs, and the heavy bar
+  of an old-style C clef a "repeat start" (now the system start). Real repeats are still found (Bach Suite 1, Mozart
+  KV 304); some four-dot repeats of the Dover cello suites now read as double bars.
 
 ## Tuplets
 

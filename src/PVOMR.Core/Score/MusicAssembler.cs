@@ -454,6 +454,23 @@ public static class MusicAssembler
                     sm.Warnings.Add($"staff {staffNo} voice {voice.Key}: {fix.Count} dotted beamed pair(s) read as dotted 8th + 16th to fit {time}");
                 }
             }
+            if (sum < expected)
+            {
+                // eroded augmentation dots: all candidates, or one, or two of them, when they make up exactly the deficit
+                var dc = evs.Where(e => e.DotCandidate && e.Dots == 0 && e.TupletActual == 0 && !e.Grace).ToList();
+                int Gain(ScoreEvent e) => DurationOf(e.Type, 1) - e.Duration;
+                List<ScoreEvent>? take = dc.Count == 0 ? null
+                    : sum + dc.Sum(Gain) == expected ? dc
+                    : dc.FirstOrDefault(e => sum + Gain(e) == expected) is { } d1 ? new() { d1 }
+                    : dc.SelectMany((a, i) => dc.Skip(i + 1).Select(b => new List<ScoreEvent> { a, b })).FirstOrDefault(p => sum + p.Sum(Gain) == expected);
+                if (take != null)
+                {
+                    foreach (var e in take) { e.Dots = 1; e.Duration = DurationOf(e.Type, 1); }
+                    sum = evs.Sum(e => e.Duration);
+                    sm.Fit.Sums[^1] = (staffNo, voice.Key, sum);
+                    sm.Warnings.Add($"staff {staffNo} voice {voice.Key}: {take.Count} faint augmentation dot(s) taken to fit {time}");
+                }
+            }
             if (sum == expected) continue;
             if (sum > expected)
             {
@@ -538,6 +555,7 @@ public static class MusicAssembler
         bool asserted = s.Attributes.ContainsKey("corrected") || s.Attributes.ContainsKey("added");
         if (!asserted && (s.StemUp == null || s.Notes.Any(n => n.Step > 18 || n.Step < -10))) ev.Uncertain = true;
         if (s.Attributes.TryGetValue("articulation", out var art) && art == "staccato") ev.Articulations.Add("staccato");
+        if (s.Attributes.ContainsKey("dotcand") && ev.Dots == 0 && !ev.IsRest) ev.DotCandidate = true;
         // small notes: grace-note candidates, settled by the measure length in Validate
         if (s.Attributes.TryGetValue("grace", out var gr))
         {
