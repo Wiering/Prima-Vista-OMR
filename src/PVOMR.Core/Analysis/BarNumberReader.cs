@@ -56,7 +56,7 @@ public static class BarNumberReader
         foreach (var sys in page.Systems)
         {
             var st = sys.Staves[0];
-            if (st.BarNumber != null) continue;
+            if (st.BarNumber != null) { Replace(page, st); continue; }
             var r = Region(st);
             var digits = st.Measures.SelectMany(m => m.Symbols).Concat(page.PageSymbols)
                            .Where(s => DigitName.IsMatch(s.Name ?? "") && s.Bounds.CenterX >= r.X0 && s.Bounds.CenterX <= r.X1 && s.Bounds.CenterY >= r.Y0 && s.Bounds.CenterY <= r.Y1)
@@ -68,6 +68,26 @@ public static class BarNumberReader
             if (n < 1) continue;
             st.BarNumber = n;
             page.Notes.Add($"staff {st.Index + 1}: bar number {n} (from digit glyphs)");
+            Replace(page, st);
         }
+    }
+
+    /// <summary>The digits (and the box) of a bar number were classified as tuplet or time-signature digits, breath
+    /// marks, text or unknown symbols: they become one symbol, "bar n".</summary>
+    private static void Replace(PageAnalysis page, Staff st)
+    {
+        var r = Region(st);
+        bool Part(MusicSymbol s) => s.Kind is SymbolKind.Tuplet or SymbolKind.TimeSignature or SymbolKind.Breath or SymbolKind.Text or SymbolKind.Unknown
+                                              or SymbolKind.Number or SymbolKind.Articulation or SymbolKind.Dot
+                                    && s.Bounds.X0 >= r.X0 - st.Space && s.Bounds.X1 <= r.X1 && s.Bounds.Y0 >= r.Y0 - st.Space && s.Bounds.Y1 <= r.Y1 + 0.3 * st.Space;
+        var parts = new List<(List<MusicSymbol> list, MusicSymbol s)>();
+        foreach (var m in st.Measures) foreach (var s in m.Symbols.Where(Part)) parts.Add((m.Symbols, s));
+        foreach (var s in page.PageSymbols.Where(Part)) parts.Add((page.PageSymbols, s));
+        if (parts.Count == 0) return;
+        foreach (var (list, s) in parts) list.Remove(s);
+        var bounds = parts.Skip(1).Aggregate(parts[0].s.Bounds, (a, p) => a.Union(p.s.Bounds));
+        var number = new MusicSymbol { Kind = SymbolKind.Number, Name = "barNumber", Staff = st, Bounds = bounds, Confidence = 0.9, Duration = $"bar {st.BarNumber}" };
+        number.Attributes["bar"] = st.BarNumber!.Value.ToString();
+        (st.Measures.Count > 0 ? st.Measures[0].Symbols : page.PageSymbols).Add(number);
     }
 }

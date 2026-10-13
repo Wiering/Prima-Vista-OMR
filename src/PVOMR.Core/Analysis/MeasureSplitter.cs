@@ -131,9 +131,13 @@ public static class MeasureSplitter
             // only C clefs (their heavy and thin bars), and only a line within the clef's own ink: a clef change right
             // after a real bar line in a full score keeps its bar line; the line goes on this staff only
             var clefs = st.Measures.SelectMany(m => m.Symbols).Where(s => s.Kind == SymbolKind.Clef && s.Name == "cClef" && s.Bounds.Width >= 1.2 * ss).ToList();
+            MergeSplitClefs(st);
+            clefs = st.Measures.SelectMany(m => m.Symbols).Where(s => s.Kind == SymbolKind.Clef && s.Name == "cClef" && s.Bounds.Width >= 1.2 * ss).ToList();
             foreach (var c in clefs)
             {
-                var bar = st.Barlines.FirstOrDefault(b => b.X0 >= c.Bounds.X0 - 2 && b.X <= c.Bounds.X0 + 0.45 * c.Bounds.Width);
+                // at the start of the staff the clef's bars may also stand just left of the part read as the clef
+                bool atStart = c.Bounds.X0 <= st.Left + 4 * ss;
+                var bar = st.Barlines.FirstOrDefault(b => b.X0 >= c.Bounds.X0 - (atStart ? 1.0 * ss : 0) - 2 && b.X <= c.Bounds.X0 + 0.45 * c.Bounds.Width);
                 if (bar == null) continue;
                 if (RemoveBarline(page, st, bar.X, systemWide: false))
                 {
@@ -143,6 +147,26 @@ public static class MeasureSplitter
             }
         }
         return removed;
+    }
+
+    /// <summary>Two clef symbols side by side (touching or overlapping) are one clef read in two pieces.</summary>
+    private static void MergeSplitClefs(Staff st)
+    {
+        double ss = st.Space;
+        foreach (var m in st.Measures)
+        {
+            var clefs = m.Symbols.Where(s => s.Kind == SymbolKind.Clef).OrderBy(s => s.Bounds.X0).ToList();
+            for (int i = 0; i + 1 < clefs.Count; i++)
+            {
+                var a = clefs[i]; var b = clefs[i + 1];
+                if (b.Bounds.X0 > a.Bounds.X1 + 0.3 * ss || Math.Abs(a.Bounds.CenterY - b.Bounds.CenterY) > 1.0 * ss) continue;
+                var keep = a.Confidence >= b.Confidence ? a : b;
+                keep.Bounds = a.Bounds.Union(b.Bounds);
+                m.Symbols.Remove(keep == a ? b : a);
+                clefs.Remove(keep == a ? b : a);
+                i--;
+            }
+        }
     }
 
     /// <summary>

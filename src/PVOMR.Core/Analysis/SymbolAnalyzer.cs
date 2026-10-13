@@ -223,6 +223,9 @@ public sealed class SymbolAnalyzer
             RemoveDuplicateHeads(syms, staff);
             AttachDetachedFlags(syms, staff);
             ContinueBeams(syms, staff);
+            LinkNotesUnderBeamEnds(syms, staff);
+            LinkFragmentsUnderBeams(syms, staff);
+            DropSymbolsOnHeads(syms, staff);
             AttachDotsAndAccidentals(syms, staff);
             DetectHairpinsAndSlurs(syms, staff);
             MarkGraceNotes(syms, staff);
@@ -1015,6 +1018,177 @@ public sealed class SymbolAnalyzer
     }
 
     /// <summary>
+    /// Notes under a beam whose stems stop a little short of it (a few pixels missing) are pieces of their own (head
+    /// plus stem stub, too short for a stem) and come out as text. A piece hanging just under (stem up) or over the
+    /// beam of a beamed note or group, with a note head in it, becomes a note of that group with the beam count of
+    /// its nearest neighbour; a single beamed note becomes a group.
+    /// </summary>
+    private void LinkFragmentsUnderBeams(List<MusicSymbol> syms, Staff staff)
+    {
+        if (_heads == null) return;
+        double ss = staff.Space;
+        static (int x0, int x1, int end)? StemOf(MusicSymbol s)
+        {
+            if (!s.Attributes.TryGetValue("stemx", out var v)) return null;
+            var p = v.Split(',');
+            return (int.Parse(p[0]), int.Parse(p[1]), int.Parse(p[2]));
+        }
+        var beamed = syms.Where(s => s.StemUp != null && (s.Kind is SymbolKind.Note or SymbolKind.Chord && s.Flags > 0 && StemOf(s) != null
+                                     || s.Kind == SymbolKind.NoteGroup && s.Children.Count > 0 && s.Children.All(c => StemOf(c) != null))).ToList();
+        foreach (var b in beamed)
+        {
+            bool up = b.StemUp == true;
+            var members = b.Kind == SymbolKind.NoteGroup ? b.Children.ToList() : new List<MusicSymbol> { b };
+            var ends = members.Select(m => (x: (StemOf(m)!.Value.x0 + StemOf(m)!.Value.x1) / 2.0, y: (double)StemOf(m)!.Value.end)).OrderBy(e => e.x).ToList();
+            double slope = ends.Count >= 2 && ends[^1].x > ends[0].x ? (ends[^1].y - ends[0].y) / (ends[^1].x - ends[0].x) : 0;
+            double BeamAt(double x) => ends[0].y + slope * (x - ends[0].x);
+            var pieces = syms.Where(s => s.Kind is SymbolKind.Text or SymbolKind.Unknown && s != b
+                                         && s.Bounds.CenterX > b.Bounds.X0 && s.Bounds.CenterX < b.Bounds.X1
+                                         && !members.Any(m => Math.Abs((StemOf(m)!.Value.x0 + StemOf(m)!.Value.x1) / 2.0 - s.Bounds.CenterX) < 0.8 * ss)
+                                         && s.Bounds.Height >= 1.0 * ss && s.Bounds.Height <= 3.5 * ss && s.Bounds.Width <= 2.0 * ss
+                                         && (up ? s.Bounds.Y0 - BeamAt(s.Bounds.CenterX) : BeamAt(s.Bounds.CenterX) - s.Bounds.Y1) is double gap
+                                         && gap >= 0 && gap <= 1.0 * ss + 0.6 * ss * Math.Max(1, b.Flags)).ToList();
+            // separate notes read as quarters standing under the beam, their stems pointing at it and ending short of it
+            var quarters = syms.Where(s => s != b && s.Kind is SymbolKind.Note or SymbolKind.Chord && s.Flags == 0 && s.StemUp == b.StemUp && StemOf(s) is not null
+                                           && s.Notes.All(n => n.HeadType == "black")
+                                           && (StemOf(s)!.Value.x0 + StemOf(s)!.Value.x1) / 2.0 is double qx && qx > b.Bounds.X0 + 0.3 * ss && qx < b.Bounds.X1 - 0.3 * ss
+                                           && !members.Any(m => Math.Abs((StemOf(m)!.Value.x0 + StemOf(m)!.Value.x1) / 2.0 - qx) < 0.8 * ss)
+                                           && (up ? StemOf(s)!.Value.end - BeamAt(qx) : BeamAt(qx) - StemOf(s)!.Value.end) is double qg && qg >= -0.3 * ss && qg <= 2.5 * ss).ToList();
+            if (pieces.Count == 0 && quarters.Count == 0) continue;
+            var added = new List<MusicSymbol>();
+            foreach (var q in quarters)
+            {
+                var nearest = members.OrderBy(m => Math.Abs(m.Bounds.CenterX - q.Bounds.CenterX)).First();
+                q.Flags = nearest.Flags;
+                q.Duration = q.Flags switch { 1 => "8th", 2 => "16th", 3 => "32nd", _ => "64th" };
+                q.Attributes["beam"] = "stem short of the beam";
+                added.Add(q);
+                syms.Remove(q);
+            }
+            foreach (var piece in pieces)
+            {
+                // the piece's own component, and the best head in it
+                Component? comp = null;
+                for (int y = piece.Bounds.Y0; y <= piece.Bounds.Y1 && comp == null; y++)
+                    for (int x = piece.Bounds.X0; x <= piece.Bounds.X1 && comp == null; x++)
+                    {
+                        int label = _cm.Labels[y * _cm.Width + x];
+                        if (label > 0 && label - 1 < _cm.Components.Count && _cm.Components[label - 1].Height >= 0.8 * piece.Bounds.Height) comp = _cm.Components[label - 1];
+                    }
+                if (comp == null) continue;
+                var found = FindHeadInGap(comp, staff, piece.Bounds.X0, piece.Bounds.X1, up, BeamAt);
+                if (found == null) continue;
+                var (hx, hy, score, hollow) = found.Value;
+                if (hollow) continue;
+                var nearest = members.Concat(added).OrderBy(m => Math.Abs(m.Bounds.CenterX - hx)).First();
+                var head = new Note { Head = new Rect((int)Math.Round(hx - 0.59 * ss), (int)Math.Round(hy - 0.5 * ss), (int)Math.Round(hx + 0.59 * ss), (int)Math.Round(hy + 0.5 * ss)), HeadType = "black", Confidence = score };
+                head.Step = (int)Math.Round(staff.StepAt(hx, hy));
+                int sx = (int)Math.Round(up ? hx + 0.5 * ss : hx - 0.5 * ss);
+                var note = new MusicSymbol { Kind = SymbolKind.Note, Name = "note", Staff = staff, Bounds = piece.Bounds, Confidence = 0.6, StemUp = up, Flags = nearest.Flags };
+                note.Duration = note.Flags switch { 1 => "8th", 2 => "16th", 3 => "32nd", _ => "64th" };
+                note.Notes.Add(head);
+                note.Attributes["stemx"] = $"{sx},{sx},{(int)Math.Round(BeamAt(sx))}";
+                note.Attributes["beam"] = "stem short of the beam";
+                added.Add(note);
+                syms.Remove(piece);
+            }
+            if (added.Count == 0) continue;
+            if (b.Kind == SymbolKind.NoteGroup)
+            {
+                b.Children.AddRange(added);
+                b.Children.Sort((p, q) => p.Bounds.CenterX.CompareTo(q.Bounds.CenterX));
+                foreach (var a in added) { b.Notes.AddRange(a.Notes); b.Bounds = b.Bounds.Union(a.Bounds); }
+            }
+            else
+            {
+                // a single beamed note becomes a group with the notes found under its beam
+                var single = new MusicSymbol { Kind = b.Kind, Name = b.Name, Staff = b.Staff, Bounds = b.Bounds, Confidence = b.Confidence, StemUp = b.StemUp, Flags = b.Flags, Duration = b.Duration, Dots = b.Dots };
+                single.Notes.AddRange(b.Notes);
+                foreach (var kv in b.Attributes) single.Attributes[kv.Key] = kv.Value;
+                b.Kind = SymbolKind.NoteGroup; b.Name = "beamed group";
+                b.Children.Clear(); b.Children.Add(single); b.Children.AddRange(added);
+                b.Children.Sort((p, q) => p.Bounds.CenterX.CompareTo(q.Bounds.CenterX));
+                foreach (var a in added) { b.Notes.AddRange(a.Notes); b.Bounds = b.Bounds.Union(a.Bounds); }
+            }
+        }
+    }
+
+    /// <summary>
+    /// One piece of ink is one symbol: a head found by a note (often through a gap in its stem) is not also a rest,
+    /// text or unknown symbol of its own. Such a symbol centred on a used head is dropped.
+    /// </summary>
+    private static void DropSymbolsOnHeads(List<MusicSymbol> syms, Staff staff)
+    {
+        double ss = staff.Space;
+        var heads = syms.Where(s => s.Kind is SymbolKind.Note or SymbolKind.Chord or SymbolKind.NoteGroup)
+                        .SelectMany(s => s.Notes.Concat(s.Children.SelectMany(c => c.Notes))).ToList();
+        if (heads.Count == 0) return;
+        syms.RemoveAll(s => s.Kind is SymbolKind.Rest or SymbolKind.Text or SymbolKind.Unknown && s.Bounds.Height <= 2.5 * ss && s.Bounds.Width <= 2.0 * ss
+                            && !s.Attributes.ContainsKey("corrected") && !s.Attributes.ContainsKey("added")
+                            && heads.Any(h => Math.Abs(h.HeadX - s.Bounds.CenterX) <= 0.5 * ss && Math.Abs(h.HeadY - s.Bounds.CenterY) <= 0.6 * ss
+                                              && h.Head.X0 <= s.Bounds.X1 && h.Head.X1 >= s.Bounds.X0));
+    }
+
+    /// <summary>
+    /// Every end of a beam stands on a stem. When the beam runs on past the outermost stem of its group and a separate
+    /// note (read as a quarter, its stem broken a little short of the beam) stands right under that end with its stem
+    /// pointing at the beam, the note belongs to the group: it joins it with the beam count of its neighbour.
+    /// </summary>
+    private void LinkNotesUnderBeamEnds(List<MusicSymbol> syms, Staff staff)
+    {
+        double ss = staff.Space;
+        static (int x0, int x1, int end)? StemOf(MusicSymbol s)
+        {
+            if (!s.Attributes.TryGetValue("stemx", out var v)) return null;
+            var p = v.Split(',');
+            return (int.Parse(p[0]), int.Parse(p[1]), int.Parse(p[2]));
+        }
+        var groups = syms.Where(s => s.Kind == SymbolKind.NoteGroup && s.Children.Count >= 2 && s.Children.All(c => c.Attributes.ContainsKey("stemx"))).ToList();
+        foreach (var g in groups)
+        {
+            var kids = g.Children.OrderBy(c => StemOf(c)!.Value.x0).ToList();
+            foreach (bool left in new[] { true, false })
+            {
+                var edge = left ? kids[0] : kids[^1];
+                if (edge.Flags < 1 || edge.StemUp == null) continue;
+                var (ex0, ex1, eEnd) = StemOf(edge)!.Value;
+                // follow the beam's ink outward from the edge stem, along the line through the two outer stem ends
+                var next = left ? kids[1] : kids[^2];
+                var (nx0, _, nEnd) = StemOf(next)!.Value;
+                double slope = nx0 != ex0 ? (double)(nEnd - eEnd) / (nx0 - ex0) : 0;
+                int band = Math.Max(2, (int)Math.Round(0.3 * ss)), dir = left ? -1 : 1, x = left ? ex0 - 1 : ex1 + 1, last = left ? ex0 : ex1, misses = 0;
+                while (Math.Abs(x - (left ? ex0 : ex1)) < 3 * ss && x > 0 && x < _ns.Width - 1)
+                {
+                    int yb = (int)Math.Round(eEnd + slope * (x - ex0));
+                    bool ink = false;
+                    for (int dy = -band; dy <= band && !ink; dy++) { int y = yb + (edge.StemUp == true ? dy : -dy); if (y >= 0 && y < _ns.Height && _ns[x, y]) ink = true; }
+                    if (ink) { last = x; misses = 0; } else if (++misses > 2) break;
+                    x += dir;
+                }
+                double overhang = Math.Abs(last - (left ? ex0 : ex1));
+                if (overhang < 0.8 * ss) continue;
+                double beamY = eEnd + slope * (last - ex0);
+                // a separate note whose stem stands under the beam's end, pointing at it, ending a little short of it
+                var cand = syms.Where(s => s != g && s.Kind is SymbolKind.Note or SymbolKind.Chord && s.StemUp == edge.StemUp && StemOf(s) is not null)
+                               .Select(s => (s, st: StemOf(s)!.Value))
+                               .Where(t => Math.Abs((t.st.x0 + t.st.x1) / 2.0 - last) <= 0.6 * ss
+                                           && (edge.StemUp == true ? t.st.end - beamY : beamY - t.st.end) is double gap && gap >= -0.3 * ss && gap <= 2.5 * ss)
+                               .OrderBy(t => Math.Abs((t.st.x0 + t.st.x1) / 2.0 - last)).FirstOrDefault();
+                if (cand.s == null) continue;
+                var q = cand.s;
+                q.Flags = edge.Flags;
+                q.Duration = q.Flags switch { 1 => "8th", 2 => "16th", 3 => "32nd", _ => "64th" };
+                q.Attributes["beam"] = "joined at the beam end";
+                syms.Remove(q);
+                if (left) g.Children.Insert(0, q); else g.Children.Add(q);
+                g.Notes.AddRange(q.Notes);
+                g.Bounds = g.Bounds.Union(q.Bounds);
+                kids = g.Children.OrderBy(c => StemOf(c)!.Value.x0).ToList();
+            }
+        }
+    }
+
+    /// <summary>
     /// A note read as a quarter (no flags) whose stem end lies on the beam of a neighbouring beamed note, with the
     /// beam's ink actually reaching its stem, is a member of that beam: its stem ink broke off the beam.
     /// </summary>
@@ -1655,8 +1829,10 @@ public sealed class SymbolAnalyzer
         if (withHeads.Count >= 2)
         {
             int blackStems = withHeads.Count(s => s.Heads.Any(h => h.HeadType == "black"));
+            // a hollow "head" at the beam itself (the white gap between two beams at the beam's end) is beam, not a note
+            bool AtBeam(Stem s) => s.Heads.All(h => withHeads.Any(o => o != s && o.Heads.Any(k => k.HeadType == "black") && Math.Abs(h.HeadY - (o.Up ? o.Top : o.Bottom)) <= 1.2 * staff.Space));
             if (blackStems >= 1)
-                foreach (var st in withHeads.Where(s => s.Heads.All(h => h.HeadType == "half") && (blackStems >= 2 || s.Heads.Max(h => h.Confidence) < 0.9)).ToList())
+                foreach (var st in withHeads.Where(s => s.Heads.All(h => h.HeadType == "half") && (blackStems >= 2 || s.Heads.Max(h => h.Confidence) < 0.9 || AtBeam(s))).ToList())
                 {
                     if (_opt.Verbose) st.Trace += "[hollow in black group: dropped]";
                     st.Heads.Clear(); withHeads.Remove(st);
@@ -1800,6 +1976,17 @@ public sealed class SymbolAnalyzer
                 double end = st.Up ? st.Top : st.Bottom;
                 var atBeam = st.Heads.Where(h => Math.Abs(h.HeadY - end) <= 1.0 * ss).ToList();
                 var normal = st.Heads.Where(h => Math.Abs(h.HeadY - end) >= 2.0 * ss).ToList();
+                // the direction was guessed from the wrong end: the "beam end" carries a real black head, the other end a
+                // hollow blob, and the group's other black stems point the other way, so the beam is at the blob's end
+                if (atBeam.Count > 0 && normal.Count > 0 && atBeam.All(h => h.HeadType == "black") && normal.All(h => h.HeadType == "half")
+                    && withHeads.Any(o => o != st && o.Up != st.Up && o.Heads.Any(k => k.HeadType == "black")))
+                {
+                    foreach (var h in normal) st.Heads.Remove(h);
+                    st.Up = !st.Up;
+                    if (st.Flags < majority) st.Flags = majority;
+                    if (_opt.Verbose) st.Trace += "[stem turned: hollow blob at the beam dropped]";
+                    continue;
+                }
                 if (atBeam.Count > 0 && normal.Count > 0)
                 {
                     foreach (var h in atBeam) st.Heads.Remove(h);

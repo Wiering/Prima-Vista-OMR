@@ -395,6 +395,29 @@ bar line errors, 28% with an unrecognised note-sized blob) led to these fixes:
 * GUI: the page is shown at once and recognised after; a page box jumps to any page; zoomed in the image is drawn
   pixel by pixel; the export dialog takes a page range (pages not yet recognised are recognised first).
 
+## Consistency checks after recognition
+
+What music must look like is checked once the symbols are found, mostly where a few missing pixels broke a stem:
+
+* every end of a beam stands on a stem: a separate note (read as a quarter) under the far end of a beam, its stem
+  pointing at the beam and ending a little short of it, joins the beamed group with its neighbour's beam count
+  (`LinkNotesUnderBeamEnds`); the same for such notes under the middle of a beam, and for pieces read as text that
+  hold a note head and hang just under (or over) the beam (`LinkFragmentsUnderBeams`; a single beamed note becomes a
+  group);
+* one piece of ink is one symbol: a rest, text or unknown symbol centred on a head that a note already uses is
+  dropped (a head found through a gap in its stem was also read as a 16th rest);
+* a beamed group holds no half notes: a hollow "head" at the beam itself (the white gap between two beams at the
+  beam's end) is beam; when the stem direction was guessed from the wrong end (real black head at the "beam end",
+  hollow blob at the other), the stem is turned;
+* two clef symbols side by side are one clef; at the start of a staff a bar line just before a C clef is the
+  clef's own heavy and thin bars;
+* bar numbers and multi-measure rests are shown as one symbol each ("bar 34", "rest 4 bars"), and the rest signs of
+  a multi-measure rest must stand after the clef, key and time signature (a piece of the clef taken for a rest
+  block hid the time signature).
+
+Fifth of the corpus: +23 for the beam ends, -13 for the rest (all pages within 3 measures); Brandenburg 6 viola
+parts 433 -> 435.
+
 ## Tuplets
 
 Triplets (and other tuplets) are supported end to end: the generator (`--style tuplets`, also part of `hard`)

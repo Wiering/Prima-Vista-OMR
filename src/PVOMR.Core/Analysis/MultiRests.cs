@@ -24,7 +24,11 @@ public static class MultiRests
             {
                 if (m.Symbols.Any(s => s.Kind is SymbolKind.Note or SymbolKind.Chord or SymbolKind.NoteGroup)) continue;
                 double cx(MusicSymbol s) => s.Bounds.CenterX;
-                bool Inside(MusicSymbol s) => s.Bounds.Y0 >= st.TopY(cx(s)) - 0.3 * ss && s.Bounds.Y1 <= st.BottomY(cx(s)) + 0.3 * ss;
+                // rest signs stand after the clef, key and time signature of the measure
+                double signsEnd = m.Symbols.Where(s => s.Kind is SymbolKind.Clef or SymbolKind.KeySignature or SymbolKind.TimeSignature
+                                                       && s.Bounds.CenterY > st.TopY(s.Bounds.CenterX) && s.Bounds.CenterY < st.BottomY(s.Bounds.CenterX))
+                                           .Select(s => (double)s.Bounds.X1).DefaultIfEmpty(double.MinValue).Max();
+                bool Inside(MusicSymbol s) => s.Bounds.X0 > signsEnd && s.Bounds.Y0 >= st.TopY(cx(s)) - 0.3 * ss && s.Bounds.Y1 <= st.BottomY(cx(s)) + 0.3 * ss;
                 // blocks: solid bars between two lines (one space: 2 measures, two spaces: 4)
                 var blocks = m.Symbols.Where(s => s.Kind is not (SymbolKind.Clef or SymbolKind.KeySignature or SymbolKind.TimeSignature or SymbolKind.Barline)
                                                   && Inside(s) && s.Bounds.Width >= 0.3 * ss && s.Bounds.Width <= 1.1 * ss
@@ -46,7 +50,14 @@ public static class MultiRests
                 if (n < 2) n = hbar.Count > 0 ? 0 : fromSigns;
                 if (n < 2) continue;
                 m.MultiRest = n;
-                foreach (var s in blocks.Concat(wholes).Concat(hbar).Concat(digits)) m.Symbols.Remove(s);
+                var parts = blocks.Concat(wholes).Concat(hbar).Concat(digits).ToList();
+                foreach (var s in parts) m.Symbols.Remove(s);
+                // one symbol stands for the whole rest, so that it shows (and can be inspected) in the GUI
+                var all = parts.Where(s => !digits.Contains(s)).Select(s => s.Bounds).ToList();
+                var marker = new MusicSymbol { Kind = SymbolKind.Rest, Name = "multiRest", Staff = st, Confidence = 0.9, Duration = $"{n} bars",
+                                               Bounds = all.Skip(1).Aggregate(all[0], (a, r) => a.Union(r)) };
+                marker.Attributes["measures"] = n.ToString();
+                m.Symbols.Add(marker);
                 page.Notes.Add($"staff {st.Index + 1} measure {m.Index + 1}: rest of {n} measures");
                 found++;
             }

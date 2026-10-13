@@ -158,7 +158,7 @@ public static class MusicInterpreter
                     if (!seenNote) { leadingAccidentals.Clear(); }
                     continue;
                 }
-                if (s.Kind is SymbolKind.Note or SymbolKind.Chord or SymbolKind.NoteGroup or SymbolKind.Rest) seenNote = true;
+                if (s.Kind is SymbolKind.Note or SymbolKind.Chord or SymbolKind.NoteGroup or SymbolKind.Rest && s.Name != "multiRest") seenNote = true;
                 if (s.Kind is SymbolKind.Accidental or SymbolKind.KeySignature && !seenNote && (mi == 0 || ordered.Any(c => c.Kind == SymbolKind.Clef && c.Bounds.X0 < s.Bounds.X0) || leadingAccidentals.Count > 0)) leadingAccidentals.Add(s);
                 if (s.Kind == SymbolKind.TimeSignature && !seenNote)
                 {

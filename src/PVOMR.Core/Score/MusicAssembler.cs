@@ -394,7 +394,7 @@ public static class MusicAssembler
                 }
                     break;
                 case SymbolKind.Rest:
-                    events.Add(MakeRest(s, staffNo));
+                    if (s.Name != "multiRest") events.Add(MakeRest(s, staffNo));   // a multi-measure rest is written by the caller
                     break;
             }
         }
