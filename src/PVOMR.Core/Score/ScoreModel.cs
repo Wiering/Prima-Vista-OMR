@@ -90,6 +90,8 @@ public sealed class ScoreMeasure
     /// <summary>The time signature stated on each staff of the part in this measure (differs between the staves
     /// only for a per-staff metre such as 9/8 over 3/4).</summary>
     public TimeSpec?[] StaffTimes { get; } = new TimeSpec?[2];
+    /// <summary>The time signature was read from a C or cut-C glyph in the signature zone at the start of a staff.</summary>
+    public bool TimeFromStartGlyph { get; set; }
     public BarStyle LeftBar { get; set; } = BarStyle.None;
     public BarStyle RightBar { get; set; } = BarStyle.Regular;
     public bool RepeatForward { get; set; }

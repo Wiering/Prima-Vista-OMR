@@ -161,13 +161,17 @@ staff-less binary image.
    The assembler then checks every time signature against the music under it: when fewer than a fifth of the
    measures of a page fit it while at least 30% agree on another plausible length (twice as many as fit the
    reading), the signature was misread and is replaced by the agreed length, with a warning; a page without any
-   signature gets the length 40% of its measures agree on. A C or cut-C glyph read on the same page is trusted and
-   never replaced, but a value carried from an earlier page is open to replacement (the Shostakovich violin part
-   turns from the 4/4 Nocturne to the 3/8 Scherzo without a new signature being read). This repaired the pages that
-   failed on every measure in the corpus run (a "5/4" over 3/8 music, a "1/4" carried along a whole cello part, an
-   "8/4"; the Mozart Divertimento cello part went from 1% to 93%, the Shostakovich Scherzo pages from 2% to 50%).
-   At the interpreter level a numerator of 1 is rejected outright: no metre has a single beat, so a "1" above the
-   line is a misread digit.
+   signature gets the length 40% of its measures agree on. A C or cut-C glyph read in the signature zone at the start
+   of a staff on the same page is trusted and never replaced; a C read further along the staff (a smudge at a repeat
+   sign in a cello part's Menuetto) and a value carried from an earlier page are open to replacement (the
+   Shostakovich violin part turns from the 4/4 Nocturne to the 3/8 Scherzo without a new signature being read). A
+   replacement also holds on the following pages up to the next printed signature, as long as it fits their measures
+   better than the misread value carried there, and those pages are then checked again in their own right (a new
+   movement whose signature was not read). This repaired the pages that failed on every measure in the corpus run (a
+   "5/4" over 3/8 music, a "1/4" carried along a whole cello part, an "8/4"; the Mozart Divertimento cello part went
+   from 1% to 93%, the Shostakovich Scherzo pages from 2% to 50%). At the interpreter level a numerator of 1 is a
+   misread digit (no metre has a single beat): the inherited signature stays in force; with nothing inherited the
+   reading is kept for the check above to replace from the music (Mahler 3 opens with its 4s read as "1/4").
 
 ## Trained classifiers (models/)
 

@@ -221,7 +221,10 @@ public static class MusicInterpreter
                 if (time != null && time.Contains('/') && !time.StartsWith("C") && !time.StartsWith("cut"))
                 {
                     var parts = time.Split('/');
-                    if (!int.TryParse(parts[1], out int den) || den is not (1 or 2 or 4 or 8 or 16 or 32) || !int.TryParse(parts[0], out int num) || num < 2 || num > 24) time = null;   // no metre has a single beat: a "1" above the line is a misread digit
+                    if (!int.TryParse(parts[1], out int den) || den is not (1 or 2 or 4 or 8 or 16 or 32) || !int.TryParse(parts[0], out int num) || num < 1 || num > 24) time = null;
+                    // no metre has a single beat: a "1" above the line is a misread digit, and the inherited signature stays;
+                    // with nothing inherited the reading is kept for the sanity check to replace from the music ("1/4" for 4/4)
+                    else if (num == 1 && inherited != null) time = null;
                 }
                 if (staff.ForcedTime != null) time = staff.ForcedTime;
                 // digits that give no valid signature (fingerings, fragments) do not cancel an inherited one

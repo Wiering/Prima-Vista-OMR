@@ -320,6 +320,7 @@ public static class MusicAssembler
         if (syms.Any(s => s.Kind == SymbolKind.TimeSignature) && time != null && (ctx.Time == null || !ctx.Time.Equals(time)))
         {
             if (staffNo == 1) sm.Time = time;
+            if (staffNo == 1) sm.TimeFromStartGlyph = syms.Any(s => s.Kind == SymbolKind.TimeSignature && s.Name is "timeSigCommon" or "timeSigCutCommon" && s.Attributes.ContainsKey("timezone"));
             sm.StaffTimes[staffNo - 1] = time;
             ctx.Time = time;
         }
@@ -868,20 +869,45 @@ public static class MusicAssembler
                 if (runs.Count > 0 && runs[^1][0].Fit.Expected == m.Fit.Expected && runs[^1][0].Page == m.Page && (m.Time == null || m.Time.Length == m.Fit.Expected)) runs[^1].Add(m);
                 else runs.Add(new List<ScoreMeasure> { m });
             }
+            // a replaced signature stays replaced on the following pages, up to the next printed one (their measures were
+            // checked against the misread value carried over)
+            (int from, TimeSpec to)? carriedFix = null;
+            // one sample per staff (the fullest voice): the two staves of a piano measure are judged separately
+            List<int> Samples(List<ScoreMeasure> run) => run
+                .Where(m => !(m.Events.Count == 1 && m.Events[0].IsRest && m.Events[0].Type == "whole") && m.Events.Count > 0)
+                .SelectMany(m => m.Events.GroupBy(e => e.Staff).Select(g => g.GroupBy(e => e.Voice).Select(v => v.Sum(e => e.Duration)).Max()))
+                .Where(x => x > 0).ToList();
+            void Revalidate(List<ScoreMeasure> run, TimeSpec t)
+            {
+                foreach (var m in run)
+                {
+                    m.Warnings.RemoveAll(w => w.Contains("duration") || w.Contains("dropped uncertain"));
+                    m.Fit.Sums.Clear(); m.Fit.DroppedPerStaff[0] = m.Fit.DroppedPerStaff[1] = 0;
+                    for (int st = 1; st <= part.StaffCount; st++) Validate(m, t, st);
+                }
+            }
             foreach (var run in runs)
             {
+                int? assembled = run[0].Fit.Expected;   // the value carried into this run when the score was assembled
+                if (run.Any(m => m.Time != null)) carriedFix = null;
+                else if (carriedFix is { } cf && run[0].Fit.Expected == cf.from && Samples(run).Count(x => x == cf.to.Length) > Samples(run).Count(x => x == cf.from))
+                {
+                    // ... and the page is still checked against it (a new movement whose signature was not read)
+                    Revalidate(run, cf.to);
+                }
+                else carriedFix = null;
                 if (run.Count < 4) continue;
                 // staves with their own metres (9/8 over 3/4) were each checked against their own signature
                 if (run.Any(m => m.StaffTimes[0] is TimeSpec a && m.StaffTimes[1] is TimeSpec b && (a.TripletsAgainst(b) || b.TripletsAgainst(a)))) continue;
                 int? expected = run[0].Fit.Expected;
-                // a signature read from the C or cut-C glyph is reliable; only digit readings and carried values are questioned
+                // a signature read from the C or cut-C glyph in the signature zone at the start of a staff is reliable; digit
+                // readings, carried values and a C read further along (a smudge at a repeat sign) are questioned
                 var inForceMeasure = part.Measures.LastOrDefault(m => m.Number <= run[0].Number && m.Time != null);
-                if (expected != null && inForceMeasure?.Time?.Symbol != null && inForceMeasure.Time.Length == expected && inForceMeasure.Page == run[0].Page) continue;
+                if (expected != null && inForceMeasure?.Time?.Symbol != null && inForceMeasure.Time.Length == expected && inForceMeasure.Page == run[0].Page
+                    && inForceMeasure.TimeFromStartGlyph) continue;
                 var informative = run.Where(m => !(m.Events.Count == 1 && m.Events[0].IsRest && m.Events[0].Type == "whole") && m.Events.Count > 0).ToList();
                 if (informative.Count < 4) continue;
-                // one sample per staff (the fullest voice): the two staves of a piano measure are judged separately
-                var sums = informative.SelectMany(m => m.Events.GroupBy(e => e.Staff).Select(g => g.GroupBy(e => e.Voice).Select(v => v.Sum(e => e.Duration)).Max()))
-                                      .Where(x => x > 0).ToList();
+                var sums = Samples(informative);
                 int fitting = expected == null ? 0 : sums.Count(x => x == expected);
                 if (expected != null && fitting * 5 >= sums.Count) continue;   // at least a fifth fits: the signature stands
                 if (sums.Count < 4) continue;
@@ -898,13 +924,9 @@ public static class MusicAssembler
                     ? $"{part.Id} m{first.Number} (page {first.Page}): no time signature; {t} inferred from {share} of {sums.Count} measures"
                     : $"{part.Id} m{first.Number} (page {first.Page}): time signature {Fraction(expected.Value)} fits {fitting} of {informative.Count} measures; replaced by {t}, which {share} agree on");
                 first.Time = t;
-                foreach (var m in run)
-                {
-                    if (m != first && m.Time != null) m.Time = null;
-                    m.Warnings.RemoveAll(w => w.Contains("duration") || w.Contains("dropped uncertain"));
-                    m.Fit.Sums.Clear(); m.Fit.DroppedPerStaff[0] = m.Fit.DroppedPerStaff[1] = 0;
-                    for (int st = 1; st <= part.StaffCount; st++) Validate(m, t, st);
-                }
+                foreach (var m in run) if (m != first && m.Time != null) m.Time = null;
+                Revalidate(run, t);
+                if (assembled != null) carriedFix = (assembled.Value, t);
             }
         }
         // pickup measure
