@@ -64,6 +64,8 @@ public sealed class Staff
     public string? InstrumentName { get; set; }
     /// <summary>A curly brace joins this staff and the next one of the system: the two are one keyboard (or harp) part.</summary>
     public bool BraceToNext { get; set; }
+    /// <summary>The bar number printed above the start of the staff (OCR; null when none was read).</summary>
+    public int? BarNumber { get; set; }
     public ClefKind? ForcedClef { get; set; }
     public int? ForcedKey { get; set; }
     public string? ForcedTime { get; set; }
@@ -103,6 +105,8 @@ public sealed class Measure
     public Barline? LeftBarline { get; set; }
     public Barline? RightBarline { get; set; }
     public List<MusicSymbol> Symbols { get; } = new();
+    /// <summary>A multi-measure rest: the number of measures this one stands for (0 = an ordinary measure).</summary>
+    public int MultiRest { get; set; }
 }
 
 public sealed class StaffSystem

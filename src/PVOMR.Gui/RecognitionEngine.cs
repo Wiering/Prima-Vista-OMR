@@ -33,18 +33,21 @@ public sealed class RecognitionEngine
 
     public static int PageCount(string file) => PageSource.IsPdf(file) ? PageSource.GetPdfPageCount(file) : 1;
 
-    public PageResult Analyze(string file, int pageNumber, double dpi, PageResult? previous = null)
+    /// <summary>The page image as recognition will see it (before deskewing): shown at once while the page is recognised.</summary>
+    public static GrayImage Render(string file, int pageNumber, double dpi, out double effectiveDpi)
     {
-        GrayImage image;
-        Func<double, GrayImage>? rerender = null;
-        double effectiveDpi = dpi;
-        if (PageSource.IsPdf(file))
-        {
-            effectiveDpi = PageSource.EffectiveDpi(file, pageNumber, dpi);
-            image = PageSource.RenderPdfPage(file, pageNumber, effectiveDpi);
-            rerender = d => PageSource.RenderPdfPage(file, pageNumber, d);
-        }
-        else image = ImageIO.Load(file);
+        effectiveDpi = dpi;
+        if (!PageSource.IsPdf(file)) return ImageIO.Load(file);
+        effectiveDpi = PageSource.EffectiveDpi(file, pageNumber, dpi);
+        return PageSource.RenderPdfPage(file, pageNumber, effectiveDpi);
+    }
+
+    public PageResult Analyze(string file, int pageNumber, double dpi, PageResult? previous = null, GrayImage? rendered = null)
+    {
+        double effectiveDpi;
+        var image = rendered != null && PageSource.IsPdf(file) ? rendered : Render(file, pageNumber, dpi, out effectiveDpi);
+        effectiveDpi = PageSource.IsPdf(file) ? PageSource.EffectiveDpi(file, pageNumber, dpi) : dpi;
+        Func<double, GrayImage>? rerender = PageSource.IsPdf(file) ? d => PageSource.RenderPdfPage(file, pageNumber, d) : null;
         var analysis = _analyzer.Analyze(image, file, pageNumber, effectiveDpi, rerender, out var ctx, previous?.Analysis);
         var result = new PageResult { PageNumber = pageNumber, Analysis = analysis, Context = ctx };
         CorrectionStore.RecordOrigins(result);

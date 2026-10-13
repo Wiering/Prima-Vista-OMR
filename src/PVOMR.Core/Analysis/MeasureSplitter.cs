@@ -61,19 +61,21 @@ public static class MeasureSplitter
         foreach (var st in SystemStaves(page, staff, out var sys))
         {
             var b = BarlineAt(st, x);
-            if (b == null) continue;
-            int i = st.Measures.FindIndex(m => m.RightBarline == b);
-            if (i < 0 || i + 1 >= st.Measures.Count || st.Measures[i + 1].LeftBarline != b) continue;
+            double bx = b?.X ?? x;
+            // the two measures that meet at the line (found by position: a measure may hold another staff's line object)
+            int i = st.Measures.FindIndex(m => m.RightBarline != null && m.RightBarline == b);
+            if (i < 0) i = st.Measures.FindIndex(m => Math.Abs(m.X1 - bx) <= Math.Max(st.Space, b == null ? 0 : (b.X1 - b.X0) / 2.0 + 0.5 * st.Space));
+            if (i < 0 || i + 1 >= st.Measures.Count) continue;
             var left = st.Measures[i]; var right = st.Measures[i + 1];
             left.X1 = right.X1; left.RightBarline = right.RightBarline;
             left.Symbols.AddRange(right.Symbols);
             st.Measures.RemoveAt(i + 1);
             Renumber(st);
-            st.Barlines.Remove(b);
+            if (b != null) st.Barlines.Remove(b);
             any = true;
         }
         var system = page.Systems.FirstOrDefault(s => s.Staves.Contains(staff));
-        if (any && system != null) system.MeasureBoundaries.RemoveAll(bx => Math.Abs(bx - x) < staff.Space);
+        if (any && system != null) system.MeasureBoundaries.RemoveAll(mb => Math.Abs(mb - x) < staff.Space);
         return any;
     }
 
@@ -97,6 +99,31 @@ public static class MeasureSplitter
     }
 
     /// <summary>
+    /// The heavy and thin bars of an old-style C clef look like a (double) bar line: a bar line that runs through a clef
+    /// symbol is removed and the measures beside it are joined. Returns the number removed.
+    /// </summary>
+    public static int RemoveBarlinesInClefs(PageAnalysis page)
+    {
+        int removed = 0;
+        foreach (var st in page.Staves)
+        {
+            double ss = st.Space;
+            var clefs = st.Measures.SelectMany(m => m.Symbols).Where(s => s.Kind == SymbolKind.Clef && s.Bounds.Width >= 1.2 * ss).ToList();
+            foreach (var c in clefs)
+            {
+                var bar = st.Barlines.FirstOrDefault(b => b.X >= c.Bounds.X0 - 0.3 * ss && b.X <= c.Bounds.X0 + 0.45 * c.Bounds.Width);
+                if (bar == null || st.Measures.Count < 2) continue;
+                if (RemoveBarline(page, st, bar.X))
+                {
+                    page.Notes.Add($"staff {st.Index + 1}: bar line at x={bar.X:0} is part of a clef; removed");
+                    removed++;
+                }
+            }
+        }
+        return removed;
+    }
+
+    /// <summary>
     /// A brace matched in the middle of a staff of a one-staff system is a bar line the detector missed (a thin stroke
     /// over the full staff height; braces only stand left of the system). Returns the number of bar lines added.
     /// </summary>
@@ -107,16 +134,25 @@ public static class MeasureSplitter
         {
             var st = sys.Staves[0];
             double ss = st.Space;
-            var braces = st.Measures.SelectMany(m => m.Symbols).Where(s => s.Kind == SymbolKind.Brace).ToList();
-            foreach (var b in braces)
+            // braces, and thin strokes that run exactly from the top line to the bottom line taken for something else
+            // (a "clef" or an unknown symbol a fraction of a space wide)
+            bool Candidate(MusicSymbol s)
+            {
+                double cx = s.Bounds.CenterX;
+                if (s.Kind == SymbolKind.Brace)
+                    return s.Bounds.Height >= 3.4 * ss && s.Bounds.Height <= 5.0 * ss && s.Bounds.Width <= 0.6 * ss
+                           && s.Bounds.Y0 <= st.TopY(cx) + 0.5 * ss && s.Bounds.Y1 >= st.BottomY(cx) - 0.5 * ss;
+                return s.Kind is SymbolKind.Unknown or SymbolKind.Clef or SymbolKind.Text && s.Notes.Count == 0 && s.Bounds.Width <= 0.5 * ss
+                       && Math.Abs(s.Bounds.Y0 - st.TopY(cx)) <= 0.4 * ss && Math.Abs(s.Bounds.Y1 - st.BottomY(cx)) <= 0.4 * ss;
+            }
+            var strokes = st.Measures.SelectMany(m => m.Symbols).Where(Candidate).ToList();
+            foreach (var b in strokes)
             {
                 double cx = b.Bounds.CenterX;
-                bool fullHeight = b.Bounds.Height >= 3.4 * ss && b.Bounds.Height <= 5.0 * ss && b.Bounds.Width <= 0.6 * ss
-                                  && b.Bounds.Y0 <= st.TopY(cx) + 0.5 * ss && b.Bounds.Y1 >= st.BottomY(cx) - 0.5 * ss;
-                if (!fullHeight || cx < st.Left + 4 * ss || cx > st.Right - 1.0 * ss) continue;
+                if (cx < st.Left + 4 * ss || cx > st.Right - 1.0 * ss) continue;
                 if (SplitAt(page, st, b))
                 {
-                    page.Notes.Add($"staff {st.Index + 1}: a brace at x={cx:0} inside the staff taken as a missed bar line");
+                    page.Notes.Add($"staff {st.Index + 1}: a {b.Kind.ToString().ToLowerInvariant()} at x={cx:0} inside the staff taken as a missed bar line");
                     added++;
                 }
             }

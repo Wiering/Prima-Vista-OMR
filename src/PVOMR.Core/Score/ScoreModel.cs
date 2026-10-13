@@ -1,6 +1,17 @@
 namespace PVOMR.Core.Score;
 
 /// <summary>Semantic score model (what MusicXML needs), independent of pixels.</summary>
+/// <summary>A printed bar number at the start of a system and the number the assembler counted there; Agrees is
+/// false when the measures counted since the previous printed number differ from the printed difference.</summary>
+public sealed record BarNumberCheck(int Page, int Staff, int Printed, int Counted)
+{
+    public bool? Agrees { get; set; }
+    /// <summary>The previous trusted printed number, and the measures printed / counted since it.</summary>
+    public int Since { get; set; }
+    public int PrintedSpan { get; set; }
+    public int CountedSpan { get; set; }
+}
+
 public sealed class Score
 {
     public const int Divisions = 96;   // divisions per quarter note: supports 64th notes, dots and triplets
@@ -8,6 +19,8 @@ public sealed class Score
     public string? Source { get; set; }
     public List<Part> Parts { get; } = new();
     public List<string> Warnings { get; } = new();
+    /// <summary>Bar numbers printed at system starts against the measures counted up to there (first part).</summary>
+    public List<BarNumberCheck> BarNumbers { get; } = new();
 }
 
 public sealed class Part
@@ -90,6 +103,8 @@ public sealed class ScoreMeasure
     /// <summary>The time signature stated on each staff of the part in this measure (differs between the staves
     /// only for a per-staff metre such as 9/8 over 3/4).</summary>
     public TimeSpec?[] StaffTimes { get; } = new TimeSpec?[2];
+    /// <summary>First measure of a multi-measure rest of this many measures (the others follow as whole-measure rests).</summary>
+    public int MultiRest { get; set; }
     /// <summary>The time signature was read from a C or cut-C glyph in the signature zone at the start of a staff.</summary>
     public bool TimeFromStartGlyph { get; set; }
     public BarStyle LeftBar { get; set; } = BarStyle.None;

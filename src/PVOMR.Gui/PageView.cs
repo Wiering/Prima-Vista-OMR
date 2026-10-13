@@ -82,6 +82,16 @@ public sealed class PageView : Control
         InvalidateVisual();
     }
 
+    /// <summary>Shows a page image without recognition results (while the page is being recognised).</summary>
+    public void SetPreview(GrayImage image)
+    {
+        _page = null; _analysis = null;
+        _bitmap = ToBitmap(image);
+        _selected = null; _selectedStaff = null; _selectedBarline = null;
+        FitPage();
+        InvalidateVisual();
+    }
+
     public void SetAnalysis(PageAnalysis? analysis)
     {
         _analysis = analysis;
@@ -266,7 +276,11 @@ public sealed class PageView : Control
         using (context.PushTransform(matrix))
         {
             var full = new Avalonia.Rect(0, 0, _bitmap.PixelSize.Width, _bitmap.PixelSize.Height);
-            context.DrawImage(_bitmap, full, full);
+            // zoomed in: pixels as they are (nearest neighbour), so that the ink the recogniser saw can be judged;
+            // zoomed out: smooth scaling
+            var mode = _zoom >= 1 ? Avalonia.Media.Imaging.BitmapInterpolationMode.None : Avalonia.Media.Imaging.BitmapInterpolationMode.HighQuality;
+            using (context.PushRenderOptions(new RenderOptions { BitmapInterpolationMode = mode }))
+                context.DrawImage(_bitmap, full, full);
             if (_analysis != null) DrawOverlay(context);
         }
     }

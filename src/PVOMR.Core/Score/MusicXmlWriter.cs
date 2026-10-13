@@ -138,7 +138,7 @@ public static class MusicXmlWriter
                 w.WriteEndElement();
             }
 
-            bool anyAttr = first || m.KeyFifths.HasValue || m.Time != null || m.Clefs.Any(c => c != null);
+            bool anyAttr = first || m.KeyFifths.HasValue || m.Time != null || m.Clefs.Any(c => c != null) || m.MultiRest >= 2;
             if (anyAttr)
             {
                 w.WriteStartElement("attributes");
@@ -164,6 +164,10 @@ public static class MusicXmlWriter
                     w.WriteElementString("line", c.Line.ToString());
                     if (c.OctaveChange != 0) w.WriteElementString("clef-octave-change", c.OctaveChange.ToString());
                     w.WriteEndElement();
+                }
+                if (m.MultiRest >= 2)
+                {
+                    w.WriteStartElement("measure-style"); w.WriteElementString("multiple-rest", m.MultiRest.ToString()); w.WriteEndElement();
                 }
                 if (first && part.Transpose is { } tr)
                 {

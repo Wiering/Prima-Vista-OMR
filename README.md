@@ -376,6 +376,25 @@ bar line errors, 28% with an unrecognised note-sized blob) led to these fixes:
   of an old-style C clef a "repeat start" (now the system start). Real repeats are still found (Bach Suite 1, Mozart
   KV 304); some four-dot repeats of the Dover cello suites now read as double bars.
 
+## Bar numbers and multi-measure rests
+
+* Bar numbers printed over the start of a system (plain or boxed, as in many orchestral parts) are read by OCR
+  (`BarNumberReader`; a lone digit the OCR misses is taken from the digit glyphs found there). The first one sets the
+  numbering of the assembled score (an export that starts in the middle of a piece), the others are checked: the
+  measures counted between two printed numbers must equal their difference. A number out of line with both
+  neighbours is taken as misread, a drop starts a new movement. Disagreements are export warnings, a `bar numbers:`
+  line in `--fit`, and a list under "Measures to check" in the GUI: they point at missed bar lines and rests.
+* Multi-measure rests (`MultiRests`): a measure holding only rests with the number of measures printed above it, the
+  old church-rest blocks (a block filling one space = 2 measures, two spaces = 4, plus whole rests) or a modern thick
+  bar. The assembler writes that many whole-measure rests, the first with `<multiple-rest>`.
+* Also in this round: dots after rests (dotted quarter and 8th rests), a "head" read from a rehearsal box over the
+  clef is dropped, thin strokes over the full staff height taken for a clef or an unknown symbol are missed bar lines,
+  bar lines found inside a C clef are removed, and a head whose stem broke off at the end of a beam (merged with a
+  tie) is found under the beam end. Synthetic sets: exact measures clean 89 -> 96 %, hard 71 -> 83 %, degraded
+  81 -> 89 %; rests now 96-100 %.
+* GUI: the page is shown at once and recognised after; a page box jumps to any page; zoomed in the image is drawn
+  pixel by pixel; the export dialog takes a page range (pages not yet recognised are recognised first).
+
 ## Tuplets
 
 Triplets (and other tuplets) are supported end to end: the generator (`--style tuplets`, also part of `hard`)

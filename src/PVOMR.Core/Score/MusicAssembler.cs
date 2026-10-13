@@ -84,8 +84,16 @@ public static class MusicAssembler
             }
             // a sliver at the system start holding only clef, key and time (a thick or repeat bar line right after the
             // time signature) is no measure of its own: its signs go into the next measure
-            bool sliver = measureCount > 1 && sys.Staves.All(st => st.Measures.Count > 1 && !st.Measures[0].Symbols.Any(IsMusic));
+            bool sliver = measureCount > 1 && sys.Staves.All(st => st.Measures.Count > 1 && !st.Measures[0].Symbols.Any(IsMusic) && st.Measures[0].MultiRest == 0);
             int firstMi = sliver ? 1 : 0;
+            // the bar number printed over the system: the first one sets the numbering (an export that starts in the
+            // middle of a piece), the others are checked against the count
+            if (sys.Staves[0].BarNumber is int printed)
+            {
+                if (partMeasureCount.All(c => c == 0) && score.BarNumbers.Count == 0)
+                    for (int i = 0; i < partCount; i++) partMeasureCount[i] = printed - 1;
+                score.BarNumbers.Add(new BarNumberCheck(pg.PageNumber, sys.Staves[0].Index, printed, partMeasureCount[0] + 1));
+            }
             for (int mi = firstMi; mi < measureCount; mi++)
             {
                 for (int pi = 0; pi < partCount; pi++)
@@ -122,8 +130,43 @@ public static class MusicAssembler
                     partMeasureCount[pi]++;
                     sm.Number = partMeasureCount[pi];
                     part.Measures.Add(sm);
+                    // a multi-measure rest: that many whole-measure rests, the first one marked
+                    int s0 = staffAt[pi, 0];
+                    if (part.StaffCount == 1 && s0 >= 0 && mi < sys.Staves[s0].Measures.Count && sys.Staves[s0].Measures[mi].MultiRest is int mr and >= 2)
+                    {
+                        var ctx = contexts[pi * 2];
+                        ScoreEvent Rest() => new() { IsRest = true, MeasureRest = true, Type = "whole", Duration = ctx.Time?.Length ?? 4 * Score.Divisions, Voice = 1, Staff = 1 };
+                        sm.Events.Clear(); sm.Events.Add(Rest()); sm.MultiRest = mr;
+                        sm.Fit.Sums.Clear(); sm.Warnings.RemoveAll(w => w.Contains("duration"));
+                        if (ctx.Time != null) Validate(sm, ctx.Time, 1);
+                        for (int k = 1; k < mr; k++)
+                        {
+                            var extra = new ScoreMeasure { Page = pg.PageNumber };
+                            extra.Events.Add(Rest());
+                            if (ctx.Time != null) Validate(extra, ctx.Time, 1);
+                            partMeasureCount[pi]++;
+                            extra.Number = partMeasureCount[pi];
+                            part.Measures.Add(extra);
+                        }
+                    }
                 }
             }
+        }
+        // printed bar numbers against the count: the measures between two printed numbers must match their difference
+        // (a single misread number then marks the two neighbouring checks, a missed or extra bar line the rest)
+        // a number out of line with both neighbours is a misreading and is left out; a number below the previous
+        // one starts a new movement (numbering restarts), which is no disagreement
+        var nums = score.BarNumbers;
+        var trusted = nums.Where((b, i) => !(i > 0 && i + 1 < nums.Count && nums[i - 1].Printed < nums[i + 1].Printed
+                                              && !(nums[i - 1].Printed < b.Printed && b.Printed < nums[i + 1].Printed))).ToList();
+        for (int i = 1; i < trusted.Count; i++)
+        {
+            var a = trusted[i - 1]; var b = trusted[i];
+            if (b.Printed <= a.Printed) continue;
+            b.Agrees = b.Printed - a.Printed == b.Counted - a.Counted;
+            b.Since = a.Printed; b.PrintedSpan = b.Printed - a.Printed; b.CountedSpan = b.Counted - a.Counted;
+            if (b.Agrees == false)
+                score.Warnings.Add($"bar numbers: {b.Printed - a.Printed} measures printed between bar {a.Printed} (page {a.Page}, staff {a.Staff + 1}) and bar {b.Printed} (page {b.Page}, staff {b.Staff + 1}), {b.Counted - a.Counted} counted");
         }
         NameParts(score, namesOf, pages);
         foreach (var part in score.Parts) FinishPart(part, score);

@@ -48,6 +48,8 @@ public partial class MainWindow : Window
         NextButton.Click += async (_, _) => await GoToPageAsync(_page + 1);
         RecognizeButton.Click += async (_, _) => await AnalyzeAsync(_page, force: true);
         RecognizeAllButton.Click += async (_, _) => await RecognizeAllAsync();
+        // jump straight to a page (it is recognised on its own; the previous page, when recognised, seeds clef, key and time)
+        PageBox.ValueChanged += async (_, _) => { if (!_updating && PageBox.Value is decimal v && (int)v != _page) await GoToPageAsync((int)v); };
         UndoButton.Click += async (_, _) => await UndoAsync();
         FitsCheck.IsCheckedChanged += (_, _) => { View.ShowFits = FitsCheck.IsChecked == true; View.InvalidateVisual(); };
         FitList.SelectionChanged += (_, _) =>
@@ -141,9 +143,14 @@ public partial class MainWindow : Window
 
     private async Task GoToPageAsync(int page)
     {
-        if (_file == null || page < 1 || page > _pageCount || _busy) return;
+        if (_file == null || page < 1 || page > _pageCount || _busy)
+        {
+            _updating = true; PageBox.Value = Math.Max(1, _page); _updating = false;
+            return;
+        }
         _page = page;
-        PageLabel.Text = $"page {_page} / {_pageCount}";
+        PageLabel.Text = $"of {_pageCount}";
+        _updating = true; PageBox.Maximum = Math.Max(1, _pageCount); PageBox.Value = page; _updating = false;
         await AnalyzeAsync(page, force: false);
     }
 
@@ -156,17 +163,20 @@ public partial class MainWindow : Window
         {
             string file = _file;
             double dpi = (double)(DpiBox.Value ?? 300);
-            Status(_engine == null ? "loading models and fonts…" : $"recognising page {page}…");
+            Status($"rendering page {page}…");
+            var image = await Task.Run(() => RecognitionEngine.Render(file, page, dpi, out _));
+            if (page == _page) View.SetPreview(image);
+            Status(_engine == null ? $"page {page}: loading models and fonts…" : $"recognising page {page}…");
             _pages.TryGetValue(page - 1, out var previous);
             var result = await Task.Run(() =>
             {
                 _engine ??= new RecognitionEngine();
-                return _engine.Analyze(file, page, dpi, previous);
+                return _engine.Analyze(file, page, dpi, previous, image);
             });
             int applied = _store?.ApplyAll(result) ?? 0;
             if (applied > 0) RecognitionEngine.Reinterpret(result, previous);
             _pages[page] = result;
-            ShowPage(result, fit: true);
+            if (page == _page) ShowPage(result, fit: true);
             var a = result.Analysis;
             Status($"page {page}: {a.Staves.Count} staves, {a.Systems.Count} systems, {a.Staves.Sum(s => s.Measures.Count)} measures, staff space {a.StaffSpace:0.0} px, {a.Elapsed.TotalSeconds:0.0} s"
                    + (applied > 0 ? $"; {applied} stored correction(s) applied" : ""));
@@ -191,9 +201,23 @@ public partial class MainWindow : Window
 
     private async Task ExportAsync()
     {
-        if (_pages.Count == 0 || _file == null) return;
-        var options = await ExportDialog.ShowAsync(this, _pages.Count, _pageCount);
-        if (options == null) return;
+        if (_file == null || _busy) return;
+        var choice = await ExportDialog.ShowAsync(this, _pages.Keys.ToList(), _pageCount);
+        if (choice == null) return;
+        var (options, wanted) = choice.Value;
+        // pages of the range that are not recognised yet are recognised first, in order (each seeds the next)
+        var missing = wanted.Where(p => !_pages.ContainsKey(p)).ToList();
+        if (missing.Count > 0)
+        {
+            int keep = _page;
+            foreach (var p in missing)
+            {
+                _page = p; _updating = true; PageBox.Value = p; _updating = false;
+                await AnalyzeAsync(p, force: false);
+                if (!_pages.ContainsKey(p)) { Status($"page {p} could not be recognised; export cancelled"); return; }
+            }
+            if (keep != _page) await GoToPageAsync(keep);
+        }
         var file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
         {
             Title = "Export MusicXML",
@@ -205,7 +229,7 @@ public partial class MainWindow : Window
         if (path == null) return;
         try
         {
-            var pages = _pages.OrderBy(p => p.Key).Select(p => p.Value.Analysis).ToList();
+            var pages = _pages.Where(p => wanted.Contains(p.Key)).OrderBy(p => p.Key).Select(p => p.Value.Analysis).ToList();
             var score = MusicAssembler.Build(pages, new MusicAssembler.Options { Title = Path.GetFileNameWithoutExtension(_file) });
             MusicXmlWriter.Write(score, path, options);
             _exportWarnings = score.Warnings.Count == 0 ? "" : "Export warnings:\n" + string.Join("\n", score.Warnings.Take(200));
@@ -373,7 +397,8 @@ public partial class MainWindow : Window
         try
         {
             var pages = _pages.OrderBy(p => p.Key).Select(p => p.Value.Analysis).ToList();
-            MusicAssembler.Build(pages, new MusicAssembler.Options { Title = Path.GetFileNameWithoutExtension(_file), MeasureMap = _measureMap, MeasureStaff = _measureStaff });
+            var score = MusicAssembler.Build(pages, new MusicAssembler.Options { Title = Path.GetFileNameWithoutExtension(_file), MeasureMap = _measureMap, MeasureStaff = _measureStaff });
+            _barChecks = score.BarNumbers.Where(b => b.Page == _page).ToList();
         }
         catch (Exception ex) { Status($"duration check failed: {ex.Message}"); }
         View.Fits = _measureMap.ToDictionary(kv => kv.Key, kv => FitOf(kv.Key));
@@ -381,6 +406,18 @@ public partial class MainWindow : Window
     }
 
     private Dictionary<Measure, int> _measureStaff = new();
+    private List<BarNumberCheck> _barChecks = new();
+
+    /// <summary>The printed bar numbers of this page against the measure count: where they disagree a bar line or a
+    /// multi-measure rest was missed (or the number was misread).</summary>
+    private string BarNumberText()
+    {
+        if (_barChecks.Count == 0) return "";
+        var checkd = _barChecks.Where(b => b.Agrees != null).ToList();
+        var bad = checkd.Where(b => b.Agrees == false).ToList();
+        return $"{Environment.NewLine}Bar numbers: {_barChecks.Count} read on this page, {checkd.Count - bad.Count} of {checkd.Count} agree with the count."
+               + string.Concat(bad.Select(b => $"{Environment.NewLine}  bars {b.Since}-{b.Printed} (up to staff {b.Staff + 1}): {b.PrintedSpan} printed, {b.CountedSpan} counted"));
+    }
     private MeasureFit FitOf(Measure m) => _measureMap[m].Fit.ForStaff(_measureStaff.GetValueOrDefault(m, 1));
 
     private static string Quarters(int divisions) => (divisions / (double)Score.Divisions).ToString("0.##");
@@ -407,7 +444,8 @@ public partial class MainWindow : Window
                         if (_measureMap.ContainsKey(m)) { var f = FitOf(m); if (!f.Fits || f.Dropped > 0) _fitItems.Add((st, m, f)); }
             FitList.ItemsSource = _fitItems.Select(f => $"{f.staff.Index + 1}.{f.measure.Index + 1}: {FitText(f.fit)}").ToList();
             int total = _current?.Analysis.Staves.Sum(s => s.Measures.Count) ?? 0;
-            FitSummary.Text = total == 0 ? "" : _fitItems.Count == 0 ? $"All {total} measures fit their time signature." : $"{_fitItems.Count} of {total} measures do not add up (red: too long, orange: too short, purple: notes dropped). Click to jump.";
+            FitSummary.Text = (total == 0 ? "" : _fitItems.Count == 0 ? $"All {total} measures fit their time signature." : $"{_fitItems.Count} of {total} measures do not add up (red: too long, orange: too short, purple: notes dropped). Click to jump.")
+                              + BarNumberText();
         }
         finally { _updating = false; }
     }
@@ -426,7 +464,7 @@ public partial class MainWindow : Window
         for (int p = 1; p <= _pageCount; p++)
         {
             if (_pages.ContainsKey(p)) continue;
-            _page = p; PageLabel.Text = $"page {_page} / {_pageCount}";
+            _page = p; PageLabel.Text = $"of {_pageCount}"; _updating = true; PageBox.Value = p; _updating = false;
             await AnalyzeAsync(p, force: false);
         }
         Status($"all {_pageCount} pages recognised; export covers the whole file");
@@ -565,7 +603,7 @@ public partial class MainWindow : Window
         RecognizeButton.IsEnabled = hasFile;
         RecognizeAllButton.IsEnabled = hasFile && _pages.Count < _pageCount;
         UndoButton.IsEnabled = hasFile && _store != null && _store.HasPage(_page);
-        ExportButton.IsEnabled = _pages.Count > 0 && !_busy;
+        ExportButton.IsEnabled = _file != null && !_busy;
         OpenButton.IsEnabled = !_busy;
         DiscardPageButton.IsEnabled = hasFile && _store != null && _store.HasPage(_page);
         bool hasStaff = (_selStaff ?? _selSym?.Staff) != null;

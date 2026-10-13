@@ -226,6 +226,7 @@ public sealed class SymbolAnalyzer
             AttachDotsAndAccidentals(syms, staff);
             DetectHairpinsAndSlurs(syms, staff);
             MarkGraceNotes(syms, staff);
+            DropNotesBeforeClef(syms, staff);
             foreach (var s in syms.OrderBy(s => s.Bounds.X0))
             {
                 var m = FindMeasure(staff, s);
@@ -1672,6 +1673,7 @@ public sealed class SymbolAnalyzer
             st.Flags = CountFlagsOrBeams(st, c, staff, withHeads.Count == 1);
         }
         if (withHeads.Count >= 2) RepairGroup(stems, withHeads, c, staff);
+        else if (withHeads.Count == 1 && withHeads[0].Flags > 0) RepairBeamEnd(stems, withHeads, c, staff);
         if (withHeads.Count == 0) return null;
 
         var sym = new MusicSymbol { Bounds = ToRect(c), Staff = staff, Confidence = 0.7 };
@@ -1879,11 +1881,56 @@ public sealed class SymbolAnalyzer
                 }
             }
         }
+        RepairBeamEnd(stems, withHeads, c, staff);
         withHeads.Sort((p, q) => (double.IsNaN(p.SortX) ? p.X : p.SortX).CompareTo(double.IsNaN(q.SortX) ? q.X : q.SortX));
     }
 
+    /// <summary>Step 5 of the group repair, also for a single beamed stem: a head under the far end of the beam.</summary>
+    private void RepairBeamEnd(List<Stem> stems, List<Stem> withHeads, Component c, Staff staff)
+    {
+        double ss = staff.Space;
+        var flagged = withHeads.Where(s => s.Flags > 0).Select(s => s.Flags).ToList();
+        if (flagged.Count == 0) return;
+        int majority = flagged.GroupBy(f => f).OrderByDescending(g => g.Count()).ThenByDescending(g => g.Key).First().Key;
+        bool up = withHeads.Count(s => s.Up) > withHeads.Count / 2;
+        var fitPts = withHeads.Where(s => s.Flags == majority && s.Up == up).Select(s => ((double)s.X, (double)(s.Up ? s.Top : s.Bottom))).ToList();
+        if (fitPts.Count == 0) return;
+        double mx = fitPts.Average(p => p.Item1), my = fitPts.Average(p => p.Item2);
+        double sxx = fitPts.Sum(p => (p.Item1 - mx) * (p.Item1 - mx)), sxy = fitPts.Sum(p => (p.Item1 - mx) * (p.Item2 - my));
+        double slope = fitPts.Count >= 2 && sxx > 0 ? sxy / sxx : 0, intercept = my - slope * mx;
+        double BeamAt(double x) => intercept + slope * x;
+        // 5. the beam runs on past the outermost stem: the note there lost its stem (its head merged with a tie or slur
+        // into another component). Left of the first stem always (flags point right), right of the last one only in a
+        // group, where the overhang is beam and not a flag
+        if (_heads == null || withHeads.Count == 0) return;
+        {
+            var ordered = withHeads.OrderBy(s => double.IsNaN(s.SortX) ? s.X : s.SortX).ToList();
+            var first = ordered[0]; var last = ordered[^1];
+            var tries = new List<(double from, double to, double stemX)>();
+            if (first.X - c.X0 >= 1.3 * ss) tries.Add((c.X0 - 0.8 * ss, first.X - 1.0 * ss, c.X0));
+            if (ordered.Count >= 2 && c.X1 - last.X >= 1.5 * ss) tries.Add((last.X + 1.0 * ss, c.X1 + 0.8 * ss, c.X1));
+            foreach (var (from, to, endX) in tries)
+            {
+                // the beam must really reach out there (at the beam level of the nearer stem)
+                double by = BeamAt(endX);
+                if (double.IsNaN(by)) continue;
+                var found = FindHeadInGap(c, staff, from, to, up, BeamAt, viaStem: true);
+                if (found == null || found.Value.score < 0.9) continue;
+                var (hx, hy, score, hollow) = found.Value;
+                if (withHeads.Any(w => w.Heads.Any(h => Math.Abs(h.HeadX - hx) < 0.8 * ss))) continue;
+                var head = new Note { Head = new Rect((int)Math.Round(hx - 0.59 * ss), (int)Math.Round(hy - 0.5 * ss), (int)Math.Round(hx + 0.59 * ss), (int)Math.Round(hy + 0.5 * ss)), HeadType = hollow ? "half" : "black", Confidence = score };
+                head.Step = (int)Math.Round(staff.StepAt(hx, hy));
+                int sx = (int)Math.Round(up ? hx + 0.5 * ss : hx - 0.5 * ss);
+                var extra = new Stem { X = sx, X0 = sx, X1 = sx, Up = up, Flags = majority, SortX = hx, Top = (int)Math.Min(head.Head.Y0, by), Bottom = (int)Math.Max(head.Head.Y1, by) };
+                extra.Heads.Add(head);
+                if (_opt.Verbose) extra.Trace = $"[BEAM END head p{score:0.00}]";
+                withHeads.Add(extra); stems.Add(extra);
+            }
+        }
+    }
+
     /// <summary>Best note head (verifier) inside the component between two x positions, or null.</summary>
-    private (double x, double y, double score, bool hollow)? FindHeadInGap(Component c, Staff staff, double xFrom, double xTo, bool up, Func<double, double> beamAt)
+    private (double x, double y, double score, bool hollow)? FindHeadInGap(Component c, Staff staff, double xFrom, double xTo, bool up, Func<double, double> beamAt, bool viaStem = false)
     {
         double ss = staff.Space;
         if (xTo - xFrom < 0.6 * ss) return null;
@@ -1903,14 +1950,37 @@ public sealed class SymbolAnalyzer
             // on the head side of the beam, at least 1.5 spaces away from it
             double beamY = beamAt(x);
             if (up ? y < beamY + 1.5 * ss : y > beamY - 1.5 * ss) continue;
-            // the head must be ink of this component, not a ledger line or a beam
-            if (_cm.Labels[y * _cm.Width + x] != c.Label) continue;
+            // the head must be ink of this component, not a ledger line or a beam; at a beam end it may belong to another
+            // component (merged with a tie) when a stem runs from it to the beam
+            int label = _cm.Labels[y * _cm.Width + x];
+            if (label != c.Label)
+            {
+                if (!viaStem || label <= 0) continue;
+                var other = label - 1 < _cm.Components.Count ? _cm.Components[label - 1] : null;
+                if (other == null || other.Width > 3.0 * ss || other.Height > 2.6 * ss || !StemToBeam(x, y, up, beamY, ss)) continue;
+            }
             double stepF = staff.StepAt(x, y);
             if ((stepF <= -2.5 || stepF >= 10.5) && OtherStaffAt(staff, x, y) == null && !HasLedgerLine(x, y, ss)) continue;
             if (LooksLikeBeam(x, y, ss, 1) || LooksLikeBeam(x, y, ss, -1)) continue;
             best = (x, y, p, ph > pb);
         }
         return best;
+    }
+
+    /// <summary>A stem from the head at (x, y) to the beam: ink in a narrow column beside the head on the stem side over
+    /// at least 80% of the rows between the head and the beam.</summary>
+    private bool StemToBeam(int x, int y, bool up, double beamY, double ss)
+    {
+        int sx = (int)Math.Round(up ? x + 0.5 * ss : x - 0.5 * ss), w = Math.Max(2, (int)Math.Round(0.2 * ss));
+        int y0 = (int)Math.Round(Math.Min(y, beamY)), y1 = (int)Math.Round(Math.Max(y, beamY));
+        if (y1 - y0 < ss) return false;
+        int rows = 0, inked = 0;
+        for (int yy = y0; yy <= y1; yy++)
+        {
+            rows++;
+            for (int xx = sx - w; xx <= sx + w; xx++) if (xx >= 0 && xx < _bin.Width && yy >= 0 && yy < _bin.Height && _bin[xx, yy]) { inked++; break; }
+        }
+        return inked >= 0.8 * rows;
     }
 
     private static void FillNoteSymbol(MusicSymbol sym, Stem st, Staff staff)
@@ -2097,6 +2167,19 @@ public sealed class SymbolAnalyzer
         if (_clf == null) return false;
         var p = _clf.Classify(_cm.Mask(c), c.Width, c.Height, ss);
         return p.Label is "digit" or "text" or "dynamic" && p.Probability >= 0.6;
+    }
+
+    /// <summary>
+    /// Nothing sounds before the clef at the start of a staff: a stemless "head" above or below the staff there is part
+    /// of a boxed rehearsal number or other text over the clef (old parts print the box right above it).
+    /// </summary>
+    private void DropNotesBeforeClef(List<MusicSymbol> syms, Staff staff)
+    {
+        double ss = staff.Space;
+        var clef = syms.Where(s => s.Kind == SymbolKind.Clef && s.Bounds.X0 <= staff.Left + 4 * ss).OrderBy(s => s.Bounds.X0).FirstOrDefault();
+        if (clef == null) return;
+        syms.RemoveAll(s => s.Kind is SymbolKind.Note or SymbolKind.Chord && s.StemUp == null && s.Bounds.CenterX <= clef.Bounds.X1 + 0.5 * ss
+                            && s.Notes.Count > 0 && s.Notes.All(n => n.Step > 9 || n.Step < -1));
     }
 
     /// <summary>
@@ -2412,6 +2495,17 @@ public sealed class SymbolAnalyzer
                 cand.note.Dots++;
                 cand.sym.Dots = Math.Max(cand.sym.Dots, cand.note.Dots);
                 dotOf[cand.note] = d;
+                syms.Remove(d);
+                continue;
+            }
+            // a dotted rest: the dot right of the rest, within its height (a dotted quarter or 8th rest)
+            var rest = syms.Where(r => r.Kind == SymbolKind.Rest && r.Dots == 0 && r.Duration is "quarter" or "8th" or "16th" or "half"
+                                       && d.Bounds.CenterX > r.Bounds.X1 && d.Bounds.CenterX < r.Bounds.X1 + 1.0 * ss
+                                       && d.Bounds.CenterY >= r.Bounds.Y0 - 0.3 * ss && d.Bounds.CenterY <= r.Bounds.Y0 + 0.6 * r.Bounds.Height)
+                           .OrderBy(r => d.Bounds.CenterX - r.Bounds.X1).FirstOrDefault();
+            if (rest != null && !notes.Any(p => p.note.HeadX > rest.Bounds.X1 && p.note.Head.X0 < d.Bounds.CenterX))
+            {
+                rest.Dots = 1;
                 syms.Remove(d);
                 continue;
             }

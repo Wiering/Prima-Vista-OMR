@@ -91,7 +91,7 @@ public static class InstrumentNameReader
     }
 
     /// <summary>OCR of a region (enlarged by <paramref name="scale"/>); bounds are returned in page coordinates.</summary>
-    private static IReadOnlyList<TextLine> Recognize(GrayImage gray, ITextRecognizer ocr, Rect r, double scale, bool pad = false)
+    internal static IReadOnlyList<TextLine> Recognize(GrayImage gray, ITextRecognizer ocr, Rect r, double scale, bool pad = false)
     {
         if (pad)
         {

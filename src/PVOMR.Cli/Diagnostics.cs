@@ -11,7 +11,8 @@ static class Diagnostics
     {
         var map = new Dictionary<Measure, PVOMR.Core.Score.ScoreMeasure>();
         var staffOf = new Dictionary<Measure, int>();
-        try { PVOMR.Core.Score.MusicAssembler.Build(pages, new PVOMR.Core.Score.MusicAssembler.Options { MeasureMap = map, MeasureStaff = staffOf }); }
+        PVOMR.Core.Score.Score score;
+        try { score = PVOMR.Core.Score.MusicAssembler.Build(pages, new PVOMR.Core.Score.MusicAssembler.Options { MeasureMap = map, MeasureStaff = staffOf }); }
         catch (Exception ex) { Console.WriteLine($"  fit: assembler failed: {ex.Message}"); return; }
         int total = 0, ok = 0, tooLong = 0, tooShort = 0, dropped = 0, unknown = 0;
         var misfits = new List<string>();
@@ -32,6 +33,10 @@ static class Diagnostics
             }
         int known = total - unknown;
         Console.WriteLine($"  fit: {ok}/{known} measures add up ({(known > 0 ? 100.0 * ok / known : 0):0}%), {tooLong} too long, {tooShort} too short, {dropped} needed dropping{(unknown > 0 ? $", {unknown} without time signature" : "")}");
+        var checks = score.BarNumbers.Where(b => b.Page == p.PageNumber && b.Agrees != null).ToList();
+        if (score.BarNumbers.Any(b => b.Page == p.PageNumber))
+            Console.WriteLine($"  bar numbers: {score.BarNumbers.Count(b => b.Page == p.PageNumber)} read, {checks.Count(b => b.Agrees == true)} of {checks.Count} agree with the count"
+                              + string.Concat(checks.Where(b => b.Agrees == false).Select(b => $"; bars {b.Since}-{b.Printed} (staff {b.Staff + 1}): {b.PrintedSpan} printed, {b.CountedSpan} counted")));
         if (verbose) foreach (var l in misfits) Console.WriteLine(l);
     }
 

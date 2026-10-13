@@ -129,12 +129,16 @@ public sealed class PageAnalyzer
         {
             InstrumentNameReader.Read(gray, result, _opt.TextRecognizer);
             foreach (var st in result.Staves.Where(s => s.InstrumentName != null)) result.Notes.Add($"staff {st.Index + 1} instrument name: {st.InstrumentName}");
+            BarNumberReader.Read(gray, result, _opt.TextRecognizer);
         }
 
         // 4. symbols
         var symbolAnalyzer = new SymbolAnalyzer(_glyphs, bin0, noStaff, comps, result, _opt, _classifier, _headVerifier);
         symbolAnalyzer.Run();
         MeasureSplitter.SplitMissedBarlines(result);
+        MeasureSplitter.RemoveBarlinesInClefs(result);
+        BarNumberReader.FromSymbols(result);
+        MultiRests.Detect(result);
 
         // 5. musical interpretation (clefs, key signatures, pitches)
         MusicInterpreter.Interpret(result, previous);
