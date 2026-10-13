@@ -214,6 +214,17 @@ public static class MusicAssembler
             }
             if (part.Instrument == null && part.StaffCount == 2) part.Instrument = Instruments.Match("Piano");
         }
+        // transposing instruments: the key in the printed name, else the usual one (all readings: the abbreviation may
+        // carry the key when the full name was misread)
+        for (int i = 0; i < score.Parts.Count; i++)
+        {
+            var part = score.Parts[i];
+            if (part.Instrument == null) continue;
+            var withKey = namesOf[i].Where(n => Instruments.Match(n)?.Id == part.Instrument.Id).Prepend(part.Name)
+                                    .Select(n => Instruments.TranspositionOf(part.Instrument, n)).ToList();
+            var named = namesOf[i].Concat(new[] { part.Name }).FirstOrDefault(n => Instruments.Tokens(n).Any(t => t is "in" or "en"));
+            part.Transpose = named != null ? Instruments.TranspositionOf(part.Instrument, named) : withKey.FirstOrDefault();
+        }
         // "Basso" is the bass voice when the other parts are voices, otherwise the double basses
         if (score.Parts.Count(p => p.Instrument?.Voice == true) >= 2)
             for (int i = 0; i < score.Parts.Count; i++) if (bassWord[i]) score.Parts[i].Instrument = Instruments.Bass;

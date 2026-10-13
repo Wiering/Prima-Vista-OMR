@@ -185,6 +185,78 @@ public static class Instruments
         return words.Any(w => w.Count(char.IsLetter) >= 3 && !w.TrimEnd('.').All(c => c is 'I' or 'V' or 'X' or 'L'));
     }
 
+    /// <summary>Written-to-sounding interval of a transposing instrument (MusicXML transpose: diatonic steps,
+    /// chromatic semitones, octaves). Null for instruments that sound as written.</summary>
+    public sealed record Transposition(int Diatonic, int Chromatic, int Octave)
+    {
+        public override string ToString() => $"{Chromatic + 12 * Octave:+0;-0} semitones";
+    }
+
+    // key names as printed after "in"/"en"/"aus": letter step (C = 0 ... B = 6) and semitone pitch class
+    private static (int step, int pc)? KeyOf(string token, string? next)
+    {
+        bool flatNext = next is "b" or "bemol" or "flat";
+        (int, int)? k = token switch
+        {
+            "c" or "ut" or "do" => (0, 0), "des" or "db" or "reb" => (1, 1), "d" or "re" => (1, 2), "es" or "eb" or "mib" => (2, 3),
+            "e" or "mi" => (2, 4), "f" or "fa" => (3, 5), "fis" => (3, 6), "ges" or "gb" or "solb" => (4, 6), "g" or "sol" => (4, 7),
+            "as" or "ab" or "lab" => (5, 8), "a" or "la" => (5, 9), "b" or "bb" or "sib" => (6, 10), "h" => (6, 11), "si" => (6, 11), _ => null,
+        };
+        if (k is (int st, int pc) && flatNext && token is "si" or "mi" or "la" or "re" or "sol" or "e" or "a" or "d" or "g") k = (st, (pc + 11) % 12);
+        return k;
+    }
+
+    /// <summary>
+    /// The transposition of a part from its instrument and printed name ("Clarinetti in B", "Corni in Es", "Trombe in
+    /// D", "Cor anglais"), with the usual defaults when no key is printed (horn in F, clarinet in B flat).
+    /// </summary>
+    public static Transposition? TranspositionOf(Instrument? inst, string? printedName)
+    {
+        if (inst == null) return null;
+        var tokens = Tokens(printedName ?? "");
+        (int step, int pc)? key = null;
+        for (int i = 0; i < tokens.Count && key == null; i++)
+        {
+            bool marker = tokens[i] is "in" or "en" or "aus" or "dalla" or "di";
+            if (marker && i + 1 < tokens.Count) key = KeyOf(tokens[i + 1], i + 2 < tokens.Count ? tokens[i + 2] : null);
+        }
+        // "Clarinetti A", "Horn F": a key letter right after the instrument word
+        if (key == null && tokens.Count >= 2 && Match(tokens[0]) != null && tokens[1].Length <= 3) key = KeyOf(tokens[1], tokens.Count > 2 ? tokens[2] : null);
+        bool basso = tokens.Contains("basso") || tokens.Contains("tief"), alto = tokens.Contains("alto") || tokens.Contains("hoch");
+        // sounding below the written note by the interval from the key note up to C (B flat: a major second)
+        Transposition Down((int step, int pc) k, int extraOctaves = 0) =>
+            k.pc == 0 ? new(0, 0, -1 + extraOctaves) : new(-(7 - k.step) % 7, -(12 - k.pc), extraOctaves);
+        Transposition Up((int step, int pc) k) => new(k.step, k.pc, 0);
+        switch (inst.Id)
+        {
+            case "clarinet":
+            {
+                var k = key ?? (6, 10);
+                if (k.pc == 0) return null;
+                return k.pc is 2 or 3 ? Up(k) : Down(k);   // D and E flat clarinets sound above, B flat and A below
+            }
+            case "bass-clarinet": { var k = key ?? (6, 10); return Down(k, -1); }
+            case "horn":
+            {
+                var k = key ?? (3, 5);
+                if (k.pc == 0) return basso || !alto ? new(0, 0, -1) : null;                 // horn in C: basso unless "alto"
+                if (k.pc >= 10 && !alto) return Down(k, -1);                                  // B flat / H basso: a ninth below
+                return Down(k);
+            }
+            case "english-horn": return Down(key ?? (3, 5));
+            case "trumpet": case "cornet":
+            {
+                if (key is not (int, int) k || k.pc == 0) return null;                          // in C, or unknown
+                return k.pc >= 8 ? Down(k) : Up(k);                                            // A, B flat below; D ... G above
+            }
+            case "saxophone": { var k = key ?? (2, 3); return k.pc == 3 ? new(-5, -9, 0) : Down(k, -1); }   // alto in E flat, tenor in B flat
+            case "piccolo": case "celesta": case "xylophone": return new(0, 0, 1);
+            case "glockenspiel": return new(0, 0, 2);
+            case "contrabass": case "violone": case "contrabassoon": case "guitar": return new(0, 0, -1);
+            default: return null;
+        }
+    }
+
     /// <summary>A word that is one of the table's abbreviations ("Clar", "Picc", "Timp").</summary>
     public static bool IsAbbreviation(string word)
     {

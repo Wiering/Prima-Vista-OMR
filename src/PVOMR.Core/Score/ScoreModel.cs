@@ -18,6 +18,8 @@ public sealed class Part
     public string? Abbreviation { get; set; }
     /// <summary>The recognised instrument (sound for playback), null when the name was not understood.</summary>
     public Instrument? Instrument { get; set; }
+    /// <summary>Written-to-sounding interval of a transposing instrument (clarinet in B flat, horn in F ...).</summary>
+    public Instruments.Transposition? Transpose { get; set; }
     public int StaffCount { get; set; } = 1;
     public List<ScoreMeasure> Measures { get; } = new();
 }

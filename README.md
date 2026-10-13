@@ -292,6 +292,13 @@ command line and the GUI therefore target `net9.0-windows10.0.19041.0` (the exec
 * Parts get the printed full name (the longest reading, OCR slips replaced by the instrument's name plus its
   numeral), a short abbreviation when later systems print one, and a MusicXML `score-instrument` and
   `midi-instrument` with the General MIDI program, so MuseScore plays a violin part as a violin.
+* Transposing instruments get a MusicXML `<transpose>` (written to sounding pitch), so MuseScore plays them at
+  concert pitch: the key is read from the printed name ("Clarinetti in B", "Corni in Es", "Trombe in D", "Clarinet
+  A", "Horn F"; German, English, Italian and French key names), with the usual defaults when none is printed
+  (clarinet and bass clarinet in B flat, horn and English horn in F, horn in C and B flat basso unless marked
+  "alto"; trumpets in A and B flat sound below, in D to G above). Piccolo, celesta and xylophone sound an octave
+  higher, glockenspiel two, double bass, contrabassoon and guitar an octave lower. MuseScore 4 imports both the
+  transposition and the instrument sound.
 * Systems that leave out instruments are aligned to the full system by name where names were read, and by
   clef otherwise; a named staff is not aligned to an unnamed reference staff while the reference names that
   instrument elsewhere (Debussy Petite Suite: the harp no longer lands on the clarinet part).

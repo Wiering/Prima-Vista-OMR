@@ -165,6 +165,15 @@ public static class MusicXmlWriter
                     if (c.OctaveChange != 0) w.WriteElementString("clef-octave-change", c.OctaveChange.ToString());
                     w.WriteEndElement();
                 }
+                if (first && part.Transpose is { } tr)
+                {
+                    // the part is written transposed: what it sounds (playback; concert-pitch display)
+                    w.WriteStartElement("transpose");
+                    w.WriteElementString("diatonic", tr.Diatonic.ToString());
+                    w.WriteElementString("chromatic", tr.Chromatic.ToString());
+                    if (tr.Octave != 0) w.WriteElementString("octave-change", tr.Octave.ToString());
+                    w.WriteEndElement();
+                }
                 w.WriteEndElement();
             }
 
