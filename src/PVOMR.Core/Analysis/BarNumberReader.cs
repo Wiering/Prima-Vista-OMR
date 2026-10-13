@@ -78,7 +78,7 @@ public static class BarNumberReader
     {
         var r = Region(st);
         bool Part(MusicSymbol s) => s.Kind is SymbolKind.Tuplet or SymbolKind.TimeSignature or SymbolKind.Breath or SymbolKind.Text or SymbolKind.Unknown
-                                              or SymbolKind.Number or SymbolKind.Articulation or SymbolKind.Dot
+                                              or SymbolKind.Number or SymbolKind.Articulation or SymbolKind.Dot or SymbolKind.Ornament or SymbolKind.Dynamic
                                     && s.Bounds.X0 >= r.X0 - st.Space && s.Bounds.X1 <= r.X1 && s.Bounds.Y0 >= r.Y0 - st.Space && s.Bounds.Y1 <= r.Y1 + 0.3 * st.Space;
         var parts = new List<(List<MusicSymbol> list, MusicSymbol s)>();
         foreach (var m in st.Measures) foreach (var s in m.Symbols.Where(Part)) parts.Add((m.Symbols, s));

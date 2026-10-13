@@ -514,6 +514,19 @@ public static class MusicAssembler
                     sm.Warnings.Add($"staff {staffNo} voice {voice.Key}: {take.Count} faint augmentation dot(s) taken to fit {time}");
                 }
             }
+            if (sum > expected)
+            {
+                // a stemless black head (its stem and flag broke away) read as a quarter: an 8th when exactly that
+                // makes the voice fit
+                var stemless = evs.FirstOrDefault(e => e.StemlessBlack && e.Type == "quarter" && e.Dots == 0 && sum - e.Duration / 2 == expected);
+                if (stemless != null)
+                {
+                    stemless.Type = "eighth"; stemless.Duration /= 2;
+                    sum = evs.Sum(e => e.Duration);
+                    sm.Fit.Sums[^1] = (staffNo, voice.Key, sum);
+                    sm.Warnings.Add($"staff {staffNo} voice {voice.Key}: stemless head at x={stemless.X} taken as an 8th to fit {time}");
+                }
+            }
             if (sum == expected) continue;
             if (sum > expected)
             {
@@ -597,6 +610,7 @@ public static class MusicAssembler
         // user-corrected or user-added symbols are never dropped to make a measure fit
         bool asserted = s.Attributes.ContainsKey("corrected") || s.Attributes.ContainsKey("added");
         if (!asserted && (s.StemUp == null || s.Notes.Any(n => n.Step > 18 || n.Step < -10))) ev.Uncertain = true;
+        if (!asserted && s.StemUp == null && s.Notes.Count > 0 && s.Notes.All(n => n.HeadType == "black")) ev.StemlessBlack = true;
         if (s.Attributes.TryGetValue("articulation", out var art) && art == "staccato") ev.Articulations.Add("staccato");
         if (s.Attributes.ContainsKey("dotcand") && ev.Dots == 0 && !ev.IsRest) ev.DotCandidate = true;
         // small notes: grace-note candidates, settled by the measure length in Validate

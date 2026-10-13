@@ -235,6 +235,8 @@ public sealed class CorrectionStore
                         return PVOMR.Core.Analysis.MeasureSplitter.SplitAt(a, s.Staff, s);
                     }
                     s.Kind = k;
+                    // a dot made by correction: the augmentation dot of the note on its left
+                    if (k == SymbolKind.Dot && s.Staff != null) AttachDot(s);
                 }
                 if (e.Duration != null) { s.Duration = e.Duration; if (s.Kind == SymbolKind.Rest) s.Name = "rest" + RestSuffix(e.Duration); }
                 if (e.Dots != null) { s.Dots = e.Dots.Value; foreach (var n in s.Notes) n.Dots = e.Dots.Value; }
@@ -266,6 +268,26 @@ public sealed class CorrectionStore
             default:
                 return false;
         }
+    }
+
+    /// <summary>Attaches a dot to the note (or rest) left of it at its height and removes the dot symbol.</summary>
+    private static void AttachDot(MusicSymbol dot)
+    {
+        var staff = dot.Staff!;
+        double ss = staff.Space, dx = dot.Bounds.CenterX, dy = dot.Bounds.CenterY;
+        var all = staff.Measures.SelectMany(m => m.Symbols).ToList();
+        var candidates = all.SelectMany(s => s.Kind == SymbolKind.NoteGroup ? s.Children.Select(c => (owner: c, parent: (MusicSymbol?)s)) : new[] { (owner: s, parent: (MusicSymbol?)null) })
+                            .Where(t => t.owner.Kind is SymbolKind.Note or SymbolKind.Chord or SymbolKind.Rest)
+                            .Select(t => (t.owner, t.parent, x1: t.owner.Notes.Count > 0 ? t.owner.Notes.Max(n => n.Head.X1) : t.owner.Bounds.X1,
+                                          y: t.owner.Notes.Count > 0 ? t.owner.Notes.Min(n => Math.Abs(n.HeadY - dy)) : Math.Abs(t.owner.Bounds.CenterY - dy)))
+                            .Where(t => t.x1 < dx && dx - t.x1 <= 2.0 * ss && t.y <= 1.0 * ss)
+                            .OrderBy(t => dx - t.x1).ToList();
+        if (candidates.Count == 0) return;
+        var target = candidates[0].owner;
+        target.Dots = Math.Max(1, target.Dots);
+        foreach (var n in target.Notes) n.Dots = Math.Max(1, n.Dots);
+        target.Attributes["corrected"] = "1";
+        foreach (var m in staff.Measures) m.Symbols.Remove(dot);
     }
 
     private static string RestSuffix(string duration) => duration switch

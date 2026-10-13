@@ -369,6 +369,27 @@ public sealed class PageView : Control
         context.DrawRectangle(new SolidColorBrush(Color.FromArgb(40, 255, 140, 0)), pen, new Avalonia.Rect(r.X0 - 2, r.Y0 - 2, r.Width + 4, r.Height + 4));
     }
 
+    /// <summary>Head colours by duration: grey whole, amber half, green quarter, cyan 8th, blue 16th, purple 32nd, pink 64th.</summary>
+    public static Color DurationColor(string? duration) => (duration ?? "").TrimEnd('?') switch
+    {
+        "whole" or "breve" => Color.FromRgb(130, 130, 130),
+        "half" => Color.FromRgb(230, 170, 0),
+        "quarter" => Color.FromRgb(0, 180, 0),
+        "8th" => Color.FromRgb(0, 170, 210),
+        "16th" => Color.FromRgb(40, 70, 235),
+        "32nd" => Color.FromRgb(170, 40, 210),
+        "64th" => Color.FromRgb(235, 40, 130),
+        _ => Color.FromRgb(0, 180, 0),
+    };
+
+    private static readonly Dictionary<string, IBrush> HeadBrushes = new();
+    private static IBrush HeadBrush(string? duration)
+    {
+        string key = (duration ?? "").TrimEnd('?');
+        if (!HeadBrushes.TryGetValue(key, out var b)) { var c = DurationColor(key); HeadBrushes[key] = b = new SolidColorBrush(Color.FromArgb(120, c.R, c.G, c.B)); }
+        return b;
+    }
+
     private void DrawSymbol(DrawingContext context, MusicSymbol s, float ss, Typeface typeface, double thin)
     {
         var r = s.Bounds;
@@ -382,11 +403,11 @@ public sealed class PageView : Control
         var textBrush = new SolidColorBrush(Color.FromRgb(200, 0, 120));
         if (s.Notes.Count > 0 || s.Children.Count > 0)
         {
-            var headBrush = new SolidColorBrush(Color.FromArgb(90, 0, 200, 0));
-            var notes = s.Notes.Concat(s.Children.SelectMany(c => c.Notes));
-            foreach (var n in notes)
+            // heads coloured by duration, so that a wrong value stands out without clicking every note
+            var notes = s.Children.Count > 0 ? s.Children.SelectMany(c => c.Notes.Select(n => (n, dur: c.Duration))) : s.Notes.Select(n => (n, dur: s.Duration));
+            foreach (var (n, dur) in notes)
             {
-                if (ShowBoxes) context.DrawEllipse(headBrush, null, new Point(n.Head.CenterX + 0.5, n.Head.CenterY + 0.5), n.Head.Width / 2.0 + 0.5, n.Head.Height / 2.0 + 0.5);
+                if (ShowBoxes) context.DrawEllipse(HeadBrush(dur), null, new Point(n.Head.CenterX + 0.5, n.Head.CenterY + 0.5), n.Head.Width / 2.0 + 0.5, n.Head.Height / 2.0 + 0.5);
                 if (ShowLabels && n.Pitch != null)
                 {
                     var ft = new FormattedText(n.Pitch, CultureInfo.InvariantCulture, FlowDirection.LeftToRight, typeface, Math.Max(5, ss * 0.6), textBrush);

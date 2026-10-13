@@ -439,6 +439,25 @@ Second round:
 Fifth of the corpus +203 (125 pages better, 58 worse); synthetic hard 95.5/95.9 -> 96.9/96.7 (84 % exact);
 Brandenburg 6 viola parts 435 -> 464.
 
+Third round (worked through Viola 1 page by page with the user):
+
+* the same head found twice with stems the same way (the next group's first note taken again at a beam's end) is one
+  note; a chord left with one head is a note; notes in beamed groups have at least one beam, are never half notes
+  (light heads are black), and a note without any beam over its stem leaves the group as a quarter;
+* beam counts: counted per stem with a thickness test (a slur or line remnant is no beam), from outside the expected
+  beam line; a lone extra beam goes to the side where it really runs (16 16 8 against 8 16 16); 3+ beams rechecked;
+* notes under beams also from flagged notes under a single note's beam, articulations and taller pieces, only where
+  beam ink runs over their stem; a headless stem takes the head of a neighbour's "chord" standing where its head
+  belongs; group notes are ordered by head position;
+* hollow heads need a head's size and a sure verdict when they stand alone; faint dots up to 0.65 spaces tall;
+* a stemless black head counts as an 8th when exactly that makes the measure fit;
+* an arc with a dot under it is a fermata; "tr" above the staff (read as text or a dynamic) is a trill;
+* hairpins must lie level and not above the staff;
+* GUI: note heads coloured by duration (legend in the toolbar); a symbol corrected to a dot attaches to its note.
+
+Fifth of the corpus +271 (164 pages better, 56 worse); synthetic clean 97 % exact, degraded 99.1/98.2;
+Brandenburg 6 viola parts 464 -> 500 (Viola 1 page 1: 42 of 42).
+
 ## Tuplets
 
 Triplets (and other tuplets) are supported end to end: the generator (`--style tuplets`, also part of `hard`)

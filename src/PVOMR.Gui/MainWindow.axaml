@@ -49,6 +49,11 @@
       <CheckBox Name="BoxesCheck" Content="Boxes" IsChecked="True"/>
       <CheckBox Name="LabelsCheck" Content="Labels" IsChecked="True"/>
       <CheckBox Name="FitsCheck" Content="Duration check" IsChecked="True"/>
+      <TextBlock VerticalAlignment="Center" FontSize="11" Margin="4,0,0,0" ToolTip.Tip="Note head colours by duration">
+        <Run Text="heads:" Foreground="Gray"/>
+        <Run Text=" whole" Foreground="#828282"/><Run Text=" half" Foreground="#E6AA00"/><Run Text=" 4th" Foreground="#00B400"/>
+        <Run Text=" 8th" Foreground="#00AAD2"/><Run Text=" 16th" Foreground="#2846EB"/><Run Text=" 32nd" Foreground="#AA28D2"/><Run Text=" 64th" Foreground="#EB2882"/>
+      </TextBlock>
       <Border Width="1" Background="#808080" Margin="6,2"/>
       <Button Name="FitButton" Classes="tool" Content="Fit"/>
       <Button Name="FitWidthButton" Classes="tool" Content="Fit width"/>
