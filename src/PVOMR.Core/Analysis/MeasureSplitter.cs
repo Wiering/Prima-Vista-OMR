@@ -55,17 +55,37 @@ public static class MeasureSplitter
 
     /// <summary>Removes the bar line at x on every staff of the system, joining the measures on both sides. False when
     /// there is none, or it is the first or last line of the staff (nothing to join).</summary>
-    public static bool RemoveBarline(PageAnalysis page, Staff staff, double x)
+    public static bool RemoveBarline(PageAnalysis page, Staff staff, double x, bool systemWide = true)
     {
         bool any = false;
-        foreach (var st in SystemStaves(page, staff, out var sys))
+        foreach (var st in systemWide ? SystemStaves(page, staff, out _) : new List<Staff> { staff })
         {
             var b = BarlineAt(st, x);
             double bx = b?.X ?? x;
             // the two measures that meet at the line (found by position: a measure may hold another staff's line object)
             int i = st.Measures.FindIndex(m => m.RightBarline != null && m.RightBarline == b);
             if (i < 0) i = st.Measures.FindIndex(m => Math.Abs(m.X1 - bx) <= Math.Max(st.Space, b == null ? 0 : (b.X1 - b.X0) / 2.0 + 0.5 * st.Space));
-            if (i < 0 || i + 1 >= st.Measures.Count) continue;
+            double edgeTol = Math.Max(st.Space, b == null ? 0 : (b.X1 - b.X0) / 2.0 + 0.5 * st.Space);
+            if (b != null && !st.Measures.Any(m => Math.Abs(m.X0 - bx) <= edgeTol || Math.Abs(m.X1 - bx) <= edgeTol))
+            {
+                // a line inside a measure (no boundary: a sliver was merged over it): it only has to go from the list
+                st.Barlines.Remove(b);
+                any = true;
+                continue;
+            }
+            if (i < 0 || i + 1 >= st.Measures.Count)
+            {
+                // the first or last line of the staff (often the heavy bar of a clef at the start): nothing to join,
+                // the measure next to it simply runs to the staff's edge
+                double tol = Math.Max(st.Space, b == null ? 0 : (b.X1 - b.X0) / 2.0 + 0.5 * st.Space);
+                var firstM = st.Measures.FirstOrDefault(); var lastM = st.Measures.LastOrDefault();
+                if (firstM != null && Math.Abs(firstM.X0 - bx) <= tol) { firstM.X0 = Math.Min(firstM.X0, st.Left); firstM.LeftBarline = null; }
+                else if (lastM != null && Math.Abs(lastM.X1 - bx) <= tol) { lastM.X1 = Math.Max(lastM.X1, st.Right); lastM.RightBarline = null; }
+                else continue;
+                if (b != null) st.Barlines.Remove(b);
+                any = true;
+                continue;
+            }
             var left = st.Measures[i]; var right = st.Measures[i + 1];
             left.X1 = right.X1; left.RightBarline = right.RightBarline;
             left.Symbols.AddRange(right.Symbols);
@@ -108,12 +128,14 @@ public static class MeasureSplitter
         foreach (var st in page.Staves)
         {
             double ss = st.Space;
-            var clefs = st.Measures.SelectMany(m => m.Symbols).Where(s => s.Kind == SymbolKind.Clef && s.Bounds.Width >= 1.2 * ss).ToList();
+            // only C clefs (their heavy and thin bars), and only a line within the clef's own ink: a clef change right
+            // after a real bar line in a full score keeps its bar line; the line goes on this staff only
+            var clefs = st.Measures.SelectMany(m => m.Symbols).Where(s => s.Kind == SymbolKind.Clef && s.Name == "cClef" && s.Bounds.Width >= 1.2 * ss).ToList();
             foreach (var c in clefs)
             {
-                var bar = st.Barlines.FirstOrDefault(b => b.X >= c.Bounds.X0 - 0.3 * ss && b.X <= c.Bounds.X0 + 0.45 * c.Bounds.Width);
-                if (bar == null || st.Measures.Count < 2) continue;
-                if (RemoveBarline(page, st, bar.X))
+                var bar = st.Barlines.FirstOrDefault(b => b.X0 >= c.Bounds.X0 - 2 && b.X <= c.Bounds.X0 + 0.45 * c.Bounds.Width);
+                if (bar == null) continue;
+                if (RemoveBarline(page, st, bar.X, systemWide: false))
                 {
                     page.Notes.Add($"staff {st.Index + 1}: bar line at x={bar.X:0} is part of a clef; removed");
                     removed++;
