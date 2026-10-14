@@ -109,12 +109,36 @@ public static class BarlineDetector
         if (widths.Count >= 4)
         {
             int median = widths[widths.Count / 2];
+            // with bar lines two pixels wide, one-pixel lines are stems when they are a small minority
+            if (median == 2 && widths.Count(w => w == 1) * 4 < widths.Count) median = 3;
             if (median >= 3)
+            {
+                // a thin line standing at the same place on two more staves nearby, or running on through the gap to a
+                // neighbouring staff's line, is a bar line printed thin (a stem does neither)
+                bool Aligned(Staff st, Barline b, Staff o) => o.Barlines.Any(ob => Math.Abs(ob.X - b.X) <= Math.Max(3, 0.15 * st.Space));
+                bool Continues(Staff a, Staff c, Barline b)
+                {
+                    var (up, lo) = a.Index < c.Index ? (a, c) : (c, a);
+                    int y0 = (int)up.BottomY(b.X) + 1, y1 = (int)lo.TopY(b.X) - 1, rows = 0, ink = 0;
+                    for (int y = Math.Max(0, y0); y <= Math.Min(bin.Height - 1, y1); y++)
+                    {
+                        rows++;
+                        for (int x = b.X0 - 2; x <= b.X1 + 2; x++) if (x >= 0 && x < bin.Width && bin[x, y]) { ink++; break; }
+                    }
+                    return rows > 0 && ink >= 0.9 * rows;
+                }
+                bool Spanning(Staff st, Barline b)
+                {
+                    var near = staves.Where(o => o != st && Math.Abs(o.Index - st.Index) <= 3 && Aligned(st, b, o)).ToList();
+                    return near.Count >= 2 || near.Any(o => Math.Abs(o.Index - st.Index) == 1 && Continues(st, o, b));
+                }
+                var thin = staves.ToDictionary(st => st, st => st.Barlines.Where(b => b.X1 - b.X0 + 1 < 0.55 * median && !Spanning(st, b)).ToList());
                 foreach (var st in staves)
                 {
-                    if (BarDump) foreach (var b in st.Barlines.Where(b => b.X1 - b.X0 + 1 < 0.55 * median)) Console.Error.WriteLine($"bars staff {st.Index + 1}: removed thin {b.Kind}@{b.X0}-{b.X1} (median {median})");
-                    st.Barlines.RemoveAll(b => b.X1 - b.X0 + 1 < 0.55 * median);
+                    if (BarDump) foreach (var b in thin[st]) Console.Error.WriteLine($"bars staff {st.Index + 1}: removed thin {b.Kind}@{b.X0}-{b.X1} (median {median})");
+                    st.Barlines.RemoveAll(thin[st].Contains);
                 }
+            }
         }
         // spanning: a barline continues to the next staff when the ink is continuous in the gap and the next staff has a barline at the same x
         for (int si = 0; si < staves.Count; si++)
@@ -283,7 +307,27 @@ public static class BarlineDetector
             // barlines end on the outer staff lines (of this or another staff); a run ending elsewhere is suspect
             bool onLine = staves.Any(st => xc >= st.Left - st.Space && xc <= st.Right + st.Space
                                            && (Math.Abs(yEnd - st.TopY(xc)) <= 0.6 * ss || Math.Abs(yEnd - st.BottomY(xc)) <= 0.6 * ss));
-            if (onLine) continue;
+            if (onLine)
+            {
+                // a half note on an outer staff line has a stem running from one outer line to the other, just like a
+                // bar line: its (hollow, often broken) head sits beside the end, left of the bottom end of an up stem,
+                // right of the top end of a down stem
+                bool bottom = yEnd == c.RunBottom;
+                int hx0 = bottom ? (int)(c.X0 - 0.9 * ss) : c.X1 + 1 + (int)(0.05 * ss), hx1 = bottom ? c.X0 - 1 - (int)(0.05 * ss) : (int)(c.X1 + 0.9 * ss);
+                int hy0 = (int)(yEnd - 0.6 * ss), hy1 = (int)(yEnd + 0.6 * ss), head = 0;
+                for (int y = Math.Max(0, hy0); y <= Math.Min(cm.Height - 1, hy1); y++)
+                    for (int x = Math.Max(0, hx0); x <= Math.Min(cm.Width - 1, hx1); x++)
+                    {
+                        int l = cm.Labels[y * cm.Width + x];
+                        if (l == 0) continue;
+                        var other = cm.At(x, y);
+                        if (other != null && other.Height > 1.6 * ss) continue;
+                        head++;
+                    }
+                if (BarDump) Console.Error.WriteLine($"   head beside {(bottom ? "bottom" : "top")} end: {head} px (limit {0.04 * ss * ss:0})");
+                if (head >= 0.04 * ss * ss) return false;
+                continue;
+            }
             int fy0 = (int)(yEnd - 0.7 * ss), fy1 = (int)(yEnd + 0.7 * ss);
             int fx0 = (int)(xc - 1.4 * ss), fx1 = (int)(xc + 1.4 * ss);
             int foreign = 0;

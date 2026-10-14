@@ -332,6 +332,15 @@ public static class StaffDetector
         double below = LongRunCoverageOfLine(bin, st, st.Lines[4], +st.Space);
         bool shiftUp = above > cover[4] + 0.3 && above > 0.6 && cover[4] < Math.Min(cover[1], cover[2]) - 0.2;
         bool shiftDown = below > cover[0] + 0.3 && below > 0.6 && cover[0] < Math.Min(cover[2], cover[3]) - 0.2;
+        // a staff line has ink all along; a row of dense ledger lines (high notes above the staff) breaks between notes:
+        // a line just outside that is fully inked against an outer line that is not means the staff was taken one off
+        if (!shiftUp && !shiftDown)
+        {
+            double inkAbove = InkCoverageOfLine(bin, st, st.Lines[0], -st.Space), inkBelow = InkCoverageOfLine(bin, st, st.Lines[4], +st.Space);
+            double ink0 = InkCoverageOfLine(bin, st, st.Lines[0], 0), ink4 = InkCoverageOfLine(bin, st, st.Lines[4], 0);
+            shiftDown = inkBelow >= 0.97 && ink0 < 0.9 && ink4 >= 0.97;
+            shiftUp = !shiftDown && inkAbove >= 0.97 && ink4 < 0.9 && ink0 >= 0.97;
+        }
         if (!shiftUp && !shiftDown) return;
         var lines = new List<StaffLine>();
         if (shiftUp)
@@ -349,6 +358,20 @@ public static class StaffDetector
         st.Lines.Clear(); st.Lines.AddRange(lines);
         foreach (var line in st.Lines) Refine(bin, line, st, thinRun);
         log.Add($"staff at y={st.CenterY:0} shifted one line {(shiftUp ? "up" : "down")}: outside line coverage {(shiftUp ? above : below):0.00} vs weakest outer line {(shiftUp ? cover[4] : cover[0]):0.00}");
+    }
+
+    /// <summary>Fraction of the staff width with any ink on the line (shifted by dy).</summary>
+    private static double InkCoverageOfLine(BinaryImage bin, Staff st, StaffLine line, double dy)
+    {
+        int tol = (int)Math.Max(1, Math.Round(st.LineThickness * 0.6 + 0.5));
+        int x0 = (int)st.Left, x1 = (int)st.Right, on = 0;
+        if (x1 - x0 < 4) return 0;
+        for (int x = x0; x <= x1; x++)
+        {
+            int yc = (int)Math.Round(line.YAt(x) + dy);
+            for (int d = -tol; d <= tol; d++) if (bin[x, yc + d]) { on++; break; }
+        }
+        return on / (double)(x1 - x0 + 1);
     }
 
     private static double LongRunCoverageOfLine(BinaryImage bin, Staff st, StaffLine line, double dy)

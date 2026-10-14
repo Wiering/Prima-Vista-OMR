@@ -29,7 +29,7 @@ public static class BarNumberReader
                              .FirstOrDefault(mm => mm.Success);
                 if (m == null) continue;
                 int n = int.Parse(m.Groups[1].Value);
-                if (n < 1 || n > 5000) continue;
+                if (n < 2 || n > 5000) continue;   // bar 1 is not numbered: a lone 1 is a movement number
                 st.BarNumber = n;
                 page.Notes.Add($"staff {st.Index + 1}: bar number {n}");
                 break;
@@ -53,10 +53,12 @@ public static class BarNumberReader
     /// </summary>
     public static void FromSymbols(PageAnalysis page)
     {
+        Neighbours(page);
         foreach (var sys in page.Systems)
         {
             var st = sys.Staves[0];
             if (st.BarNumber != null) { Replace(page, st); continue; }
+            if (st.MovementStart) { Heading(page, st); continue; }
             var r = Region(st);
             var digits = st.Measures.SelectMany(m => m.Symbols).Concat(page.PageSymbols)
                            .Where(s => DigitName.IsMatch(s.Name ?? "") && s.Bounds.CenterX >= r.X0 && s.Bounds.CenterX <= r.X1 && s.Bounds.CenterY >= r.Y0 && s.Bounds.CenterY <= r.Y1)
@@ -65,11 +67,51 @@ public static class BarNumberReader
             // one number: digits side by side at one height
             if (digits.Any(d => Math.Abs(d.Bounds.CenterY - digits[0].Bounds.CenterY) > 0.5 * st.Space)) continue;
             int n = int.Parse(string.Concat(digits.Select(d => DigitName.Match(d.Name!).Groups[1].Value)));
-            if (n < 1) continue;
+            if (n < 2) continue;
             st.BarNumber = n;
             page.Notes.Add($"staff {st.Index + 1}: bar number {n} (from digit glyphs)");
             Replace(page, st);
         }
+    }
+
+    /// <summary>
+    /// A number read from digit shapes that disagrees with both neighbouring systems (the previous number plus that
+    /// system's measures, the next number minus this system's) takes the alternative reading that agrees with one.
+    /// </summary>
+    private static void Neighbours(PageAnalysis page)
+    {
+        var firsts = page.Systems.Select(s => s.Staves[0]).ToList();
+        for (int pass = 0; pass < 2; pass++)
+            for (int i = 0; i < firsts.Count; i++)
+            {
+                var st = firsts[i];
+                if (st.BarNumber == null || st.BarNumberAlternatives.Count == 0) continue;
+                var expect = new List<int>();
+                if (i > 0 && firsts[i - 1].BarNumber is int p) expect.Add(p + firsts[i - 1].Measures.Count);
+                if (i + 1 < firsts.Count && firsts[i + 1].BarNumber is int q) expect.Add(q - st.Measures.Count);
+                if (expect.Count == 0 || expect.Contains(st.BarNumber.Value)) continue;
+                var alt = st.BarNumberAlternatives.FirstOrDefault(expect.Contains);
+                if (alt == 0) continue;
+                page.Notes.Add($"staff {st.Index + 1}: bar number {st.BarNumber} read as {alt} (agrees with the neighbouring systems)");
+                st.BarNumberAlternatives.Remove(alt);
+                st.BarNumberAlternatives.Add(st.BarNumber.Value);
+                st.BarNumber = alt;
+            }
+    }
+
+    /// <summary>The glyphs of a movement heading (letters read as tuplet digits, dynamics, ...) become one text.</summary>
+    private static void Heading(PageAnalysis page, Staff st)
+    {
+        if (st.HeadingBounds is not Rect r) return;
+        bool Part(MusicSymbol s) => s.Kind is not (SymbolKind.Note or SymbolKind.Chord or SymbolKind.NoteGroup or SymbolKind.Rest or SymbolKind.Clef or SymbolKind.KeySignature or SymbolKind.Accidental)
+                                    && s.Bounds.X0 >= r.X0 - 2 && s.Bounds.X1 <= r.X1 + 2 && s.Bounds.Y0 >= r.Y0 - 2 && s.Bounds.Y1 <= r.Y1 + 2;
+        var parts = new List<(List<MusicSymbol> list, MusicSymbol s)>();
+        foreach (var m in st.Measures) foreach (var s in m.Symbols.Where(Part)) parts.Add((m.Symbols, s));
+        foreach (var s in page.PageSymbols.Where(Part)) parts.Add((page.PageSymbols, s));
+        foreach (var (list, s) in parts) list.Remove(s);
+        var text = new MusicSymbol { Kind = SymbolKind.Text, Name = "heading", Staff = st, Bounds = r, Confidence = 0.9 };
+        text.Attributes["heading"] = "movement";
+        (st.Measures.Count > 0 ? st.Measures[0].Symbols : page.PageSymbols).Add(text);
     }
 
     /// <summary>The digits (and the box) of a bar number were classified as tuplet or time-signature digits, breath
@@ -77,6 +119,12 @@ public static class BarNumberReader
     private static void Replace(PageAnalysis page, Staff st)
     {
         var r = Region(st);
+        // read from the digit shapes: exactly the digits found (they may stand further right than the usual region)
+        if (st.BarNumberBounds is Rect b)
+        {
+            int pad = (int)Math.Round(0.3 * st.Space);
+            r = new Rect(Math.Min(r.X0, b.X0 - pad), Math.Min(r.Y0, b.Y0 - pad), Math.Max(r.X1, b.X1 + pad), Math.Max(r.Y1, b.Y1 + pad));
+        }
         bool Part(MusicSymbol s) => s.Kind is SymbolKind.Tuplet or SymbolKind.TimeSignature or SymbolKind.Breath or SymbolKind.Text or SymbolKind.Unknown
                                               or SymbolKind.Number or SymbolKind.Articulation or SymbolKind.Dot or SymbolKind.Ornament or SymbolKind.Dynamic
                                     && s.Bounds.X0 >= r.X0 - st.Space && s.Bounds.X1 <= r.X1 && s.Bounds.Y0 >= r.Y0 - st.Space && s.Bounds.Y1 <= r.Y1 + 0.3 * st.Space;

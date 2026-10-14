@@ -49,6 +49,8 @@ public sealed class SymbolEdit
     public int? Step { get; set; }
     public int? Dx { get; set; }
     public int? Dy { get; set; }
+    /// <summary>set: makes the symbol a time signature with this value ("3/8", "C", "C|").</summary>
+    public string? Time { get; set; }
 
     [JsonIgnore] public Rect Bounds { get => new(X0, Y0, X1, Y1); set { X0 = value.X0; Y0 = value.Y0; X1 = value.X1; Y1 = value.Y1; } }
 
@@ -145,6 +147,25 @@ public sealed class CorrectionStore
         return applied;
     }
 
+    /// <summary>The value of a time signature symbol as typed in the inspector ("3/8", "C", "C|"), else empty.</summary>
+    public static string TimeText(MusicSymbol s) => s.Kind != SymbolKind.TimeSignature ? ""
+        : s.Name == "timeSigCommon" ? "C" : s.Name == "timeSigCutCommon" ? "C|" : s.Attributes.GetValueOrDefault("stack") ?? "";
+
+    public static bool ValidTime(string t) => t is "C" or "c" or "C|" or "c|"
+        || t.Split('/') is [var n, var d] && int.TryParse(n, out int bn) && bn is > 0 and <= 32 && int.TryParse(d, out int bd) && bd is 1 or 2 or 4 or 8 or 16 or 32;
+
+    private static void SetTime(MusicSymbol s, string t)
+    {
+        s.Kind = SymbolKind.TimeSignature;
+        s.Attributes.Remove("stack"); s.Attributes.Remove("time");
+        if (t is "C" or "c") s.Name = "timeSigCommon";
+        else if (t is "C|" or "c|") s.Name = "timeSigCutCommon";
+        else { s.Name = "timeSigStack"; s.Attributes["stack"] = t; }
+        // counts as a signature at the start of its measure (not a stray digit)
+        s.Attributes["timezone"] = "1";
+        s.Notes.Clear(); s.Children.Clear(); s.Duration = null; s.StemUp = null; s.Dots = 0;
+    }
+
     /// <summary>Note heads of a symbol in inspector order: its own heads, or those of its children (beamed groups).</summary>
     public static List<Note> Heads(MusicSymbol s) => s.Notes.Count > 0 ? s.Notes : s.Children.SelectMany(c => c.Notes).ToList();
 
@@ -238,6 +259,7 @@ public sealed class CorrectionStore
                     // a dot made by correction: the augmentation dot of the note on its left
                     if (k == SymbolKind.Dot && s.Staff != null) AttachDot(s);
                 }
+                if (e.Time != null) SetTime(s, e.Time);
                 if (e.Duration != null) { s.Duration = e.Duration; if (s.Kind == SymbolKind.Rest) s.Name = "rest" + RestSuffix(e.Duration); }
                 if (e.Dots != null) { s.Dots = e.Dots.Value; foreach (var n in s.Notes) n.Dots = e.Dots.Value; }
                 if (e.Stem != null) s.StemUp = e.Stem switch { "up" => true, "down" => false, _ => null };

@@ -55,6 +55,8 @@ public sealed class PageView : Control
     /// <summary>Duration check per measure (from the assembler); measures that do not fit are tinted.</summary>
     public Dictionary<Measure, PVOMR.Core.Score.MeasureFit>? Fits { get; set; }
     public bool ShowFits { get; set; } = true;
+    /// <summary>Printed bar numbers that disagree with the measure count, by staff index: what the check found.</summary>
+    public Dictionary<int, string>? BarNumberProblems { get; set; }
 
     public bool ShowStaffLines { get; set; } = true;
     public bool ShowBoxes { get; set; } = true;
@@ -401,6 +403,15 @@ public sealed class PageView : Control
         }
         if (s == _selected) DrawSelection(context, r, thin);
         var textBrush = new SolidColorBrush(Color.FromRgb(200, 0, 120));
+        // a printed bar number the count disagrees with: a missed or extra bar line before it (or a misread number)
+        if (s.Kind == SymbolKind.Number && s.Name == "barNumber" && s.Staff != null && BarNumberProblems != null && BarNumberProblems.TryGetValue(s.Staff.Index, out var problem))
+        {
+            var red = new SolidColorBrush(Color.FromRgb(230, 0, 0));
+            context.DrawRectangle(new SolidColorBrush(Color.FromArgb(60, 255, 0, 0)), new Pen(red, 3 * thin), new Avalonia.Rect(r.X0 - 3, r.Y0 - 3, r.Width + 6, r.Height + 6));
+            var pt = new FormattedText(problem, CultureInfo.InvariantCulture, FlowDirection.LeftToRight, typeface, Math.Max(6, ss * 0.7), red);
+            context.DrawText(pt, new Point(r.X1 + ss * 0.5, r.Y0));
+            return;
+        }
         if (s.Notes.Count > 0 || s.Children.Count > 0)
         {
             // heads coloured by duration, so that a wrong value stands out without clicking every note
@@ -434,6 +445,7 @@ public sealed class PageView : Control
                 SymbolKind.Clef => s.Attributes.GetValueOrDefault("clef", "clef"),
                 SymbolKind.KeySignature => "key",
                 SymbolKind.TimeSignature => s.Attributes.GetValueOrDefault("time", "time"),
+                SymbolKind.Number when s.Name == "barNumber" => $"bar {s.Attributes.GetValueOrDefault("bar", "?")}",
                 _ => s.Name.Length > 14 ? s.Kind.ToString() : s.Name,
             };
             var ft = new FormattedText(label, CultureInfo.InvariantCulture, FlowDirection.LeftToRight, typeface, Math.Max(5, ss * 0.7), textBrush);

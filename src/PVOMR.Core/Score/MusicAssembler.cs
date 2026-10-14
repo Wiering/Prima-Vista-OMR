@@ -88,6 +88,9 @@ public static class MusicAssembler
             int firstMi = sliver ? 1 : 0;
             // the bar number printed over the system: the first one sets the numbering (an export that starts in the
             // middle of a piece), the others are checked against the count
+            // a movement starts at bar 1: an unprinted number the next printed ones are checked against
+            if (sys.Staves[0].MovementStart && sys.Staves[0].BarNumber == null)
+                score.BarNumbers.Add(new BarNumberCheck(pg.PageNumber, sys.Staves[0].Index, 1, partMeasureCount[0] + 1));
             if (sys.Staves[0].BarNumber is int printed)
             {
                 if (partMeasureCount.All(c => c == 0) && score.BarNumbers.Count == 0)
@@ -357,10 +360,16 @@ public static class MusicAssembler
         }
         else if (firstOfPart && staffNo == 1) { sm.KeyFifths = staff.KeyFifths; ctx.Key = staff.KeyFifths; }
 
-        var time = ParseTime(staff.TimeSignature);
+        // the signature printed in this measure (a stray digit marked "ignored" is none); the staff's own value is the last
+        // one on the staff, which holds for this measure only when no change follows later on the staff
+        static TimeSpec? Own(Measure x) => x.Symbols.Where(s => s.Kind == SymbolKind.TimeSignature).Select(s => ParseTime(s.Attributes.GetValueOrDefault("time"))).FirstOrDefault(t => t != null);
+        var own = Own(m);
+        int mIndex = staff.Measures.IndexOf(m);
+        bool changeLater = mIndex >= 0 && staff.Measures.Skip(mIndex + 1).Any(x => Own(x) != null);
+        var time = own ?? (changeLater ? null : ParseTime(staff.TimeSignature));
         // a signature printed on this staff is recorded for it even when unchanged (the other staff may change alone)
-        if (syms.Any(s => s.Kind == SymbolKind.TimeSignature) && time != null) sm.StaffTimes[staffNo - 1] = time;
-        if (syms.Any(s => s.Kind == SymbolKind.TimeSignature) && time != null && (ctx.Time == null || !ctx.Time.Equals(time)))
+        if (own != null) sm.StaffTimes[staffNo - 1] = own;
+        if (own != null && (ctx.Time == null || !ctx.Time.Equals(own)))
         {
             if (staffNo == 1) sm.Time = time;
             if (staffNo == 1) sm.TimeFromStartGlyph = syms.Any(s => s.Kind == SymbolKind.TimeSignature && s.Name is "timeSigCommon" or "timeSigCutCommon" && s.Attributes.ContainsKey("timezone"));
@@ -518,13 +527,16 @@ public static class MusicAssembler
             {
                 // a stemless black head (its stem and flag broke away) read as a quarter: an 8th when exactly that
                 // makes the voice fit
-                var stemless = evs.FirstOrDefault(e => e.StemlessBlack && e.Type == "quarter" && e.Dots == 0 && sum - e.Duration / 2 == expected);
-                if (stemless != null)
+                // (also a quarter with a possible hairline flag); one of them, or all of them
+                var cands = evs.Where(e => e.StemlessBlack && e.Type == "quarter" && e.Dots == 0).ToList();
+                var take = cands.FirstOrDefault(e => sum - e.Duration / 2 == expected) is { } one ? new List<ScoreEvent> { one }
+                         : cands.Count > 1 && sum - cands.Sum(e => e.Duration / 2) == expected ? cands : null;
+                if (take != null)
                 {
-                    stemless.Type = "eighth"; stemless.Duration /= 2;
+                    foreach (var e in take) { e.Type = "eighth"; e.Duration /= 2; }
                     sum = evs.Sum(e => e.Duration);
                     sm.Fit.Sums[^1] = (staffNo, voice.Key, sum);
-                    sm.Warnings.Add($"staff {staffNo} voice {voice.Key}: stemless head at x={stemless.X} taken as an 8th to fit {time}");
+                    sm.Warnings.Add($"staff {staffNo} voice {voice.Key}: {take.Count} quarter(s) without a clear flag taken as 8ths to fit {time}");
                 }
             }
             if (sum == expected) continue;
@@ -611,6 +623,7 @@ public static class MusicAssembler
         bool asserted = s.Attributes.ContainsKey("corrected") || s.Attributes.ContainsKey("added");
         if (!asserted && (s.StemUp == null || s.Notes.Any(n => n.Step > 18 || n.Step < -10))) ev.Uncertain = true;
         if (!asserted && s.StemUp == null && s.Notes.Count > 0 && s.Notes.All(n => n.HeadType == "black")) ev.StemlessBlack = true;
+        if (!asserted && s.Attributes.ContainsKey("flagcand")) ev.StemlessBlack = true;   // a hairline flag may make it an 8th
         if (s.Attributes.TryGetValue("articulation", out var art) && art == "staccato") ev.Articulations.Add("staccato");
         if (s.Attributes.ContainsKey("dotcand") && ev.Dots == 0 && !ev.IsRest) ev.DotCandidate = true;
         // small notes: grace-note candidates, settled by the measure length in Validate
@@ -893,6 +906,19 @@ public static class MusicAssembler
                                 && e.Y > staff.TopY(e.X) - 2 * ss && e.Y < staff.BottomY(e.X) + 2 * ss
                                 && events.Any(o => !isSecond(o) && !o.IsRest && Math.Abs(o.X - e.X) < 0.8 * ss)))) continue;
                     double c = Cost(isSecond);
+                    // a second voice that does not fill the measure needs both voices to start it together (a note,
+                    // chord, whole note or rest of each at the same place): otherwise a melody whose stems merely turn
+                    // with the pitch would hide its wrong duration in an invented, unfinished second voice
+                    if (name != "single")
+                    {
+                        var vb = events.Where(isSecond).ToList();
+                        if (Repaired(vb) < L)
+                        {
+                            var fa = events.Where(e => !isSecond(e)).MinBy(e => e.X);
+                            var fb = vb.MinBy(e => e.X);
+                            if (fa == null || fb == null || Math.Abs(fa.X - fb.X) > 1.6 * ss || (fa.IsRest && fb.IsRest)) continue;
+                        }
+                    }
                     // an alternative split must make the measure add up exactly; a direction-based one may also merely
                     // improve a measure that really has stems both ways (a single-voice measure with a wrong duration
                     // must not be "fixed" by inventing a second voice)

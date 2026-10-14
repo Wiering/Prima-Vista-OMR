@@ -368,7 +368,13 @@ public partial class MainWindow : Window
         string stem = StemBox.SelectedItem as string ?? "(none)";
         string current = s.StemUp == true ? "up" : s.StemUp == false ? "down" : "(none)";
         if (stem != current) e.Stem = stem == "(none)" ? "none" : stem;
-        if (e.Kind == null && e.Duration == null && e.Dots == null && e.Stem == null) { Status("nothing changed"); return; }
+        string time = (SymTimeBox.Text ?? "").Trim();
+        if (time.Length > 0 && time != CorrectionStore.TimeText(s))
+        {
+            if (!CorrectionStore.ValidTime(time)) { Status($"\"{time}\" is no time signature (use e.g. 3/8, C or C|)"); return; }
+            e.Time = time; e.Kind = null; e.Duration = null; e.Dots = null; e.Stem = null;
+        }
+        if (e.Kind == null && e.Duration == null && e.Dots == null && e.Stem == null && e.Time == null) { Status("nothing changed"); return; }
         Edit(e, s);
     }
 
@@ -399,6 +405,8 @@ public partial class MainWindow : Window
             var pages = _pages.OrderBy(p => p.Key).Select(p => p.Value.Analysis).ToList();
             var score = MusicAssembler.Build(pages, new MusicAssembler.Options { Title = Path.GetFileNameWithoutExtension(_file), MeasureMap = _measureMap, MeasureStaff = _measureStaff });
             _barChecks = score.BarNumbers.Where(b => b.Page == _page).ToList();
+            View.BarNumberProblems = _barChecks.Where(b => b.Agrees == false)
+                                               .ToDictionary(b => b.Staff, b => $"{b.PrintedSpan} bars since bar {b.Since}, {b.CountedSpan} counted");
         }
         catch (Exception ex) { Status($"duration check failed: {ex.Message}"); }
         View.Fits = _measureMap.ToDictionary(kv => kv.Key, kv => FitOf(kv.Key));
@@ -537,11 +545,13 @@ public partial class MainWindow : Window
                 DurationBox.SelectedItem = s.Duration != null && Durations.Contains(s.Duration.TrimEnd('?')) ? s.Duration.TrimEnd('?') : null;
                 DotsBox.Value = s.Dots;
                 StemBox.SelectedItem = s.StemUp == true ? "up" : s.StemUp == false ? "down" : "(none)";
+                SymTimeBox.Text = CorrectionStore.TimeText(s);
             }
             else
             {
                 SymbolInfo.Text = "(none)";
                 KindBox.SelectedItem = null; DurationBox.SelectedItem = null; DotsBox.Value = 0; StemBox.SelectedItem = null;
+                SymTimeBox.Text = "";
             }
             BuildHeadsPanel(s);
 

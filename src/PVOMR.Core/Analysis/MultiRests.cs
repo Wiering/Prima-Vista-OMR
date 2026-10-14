@@ -34,8 +34,10 @@ public static class MultiRests
                                                   && Inside(s) && s.Bounds.Width >= 0.3 * ss && s.Bounds.Width <= 1.1 * ss
                                                   && (Between(s.Bounds.Height, 0.8, 1.3, ss) || Between(s.Bounds.Height, 1.8, 2.35, ss))).ToList();
                 var wholes = m.Symbols.Where(s => s.Kind == SymbolKind.Rest && s.Duration == "whole").ToList();
-                // a modern multi-rest: a thick horizontal bar over the middle line
-                var hbar = m.Symbols.Where(s => Inside(s) && s.Bounds.Width >= 2.0 * ss && s.Bounds.Height >= 0.35 * ss && s.Bounds.Height <= 1.3 * ss
+                // a modern multi-rest: a thick horizontal bar over the middle line, often with serifs at its ends reaching
+                // from the second to the fourth line (the H shape)
+                var hbar = m.Symbols.Where(s => Inside(s) && s.Bounds.Width >= 2.0 * ss && s.Bounds.Height >= 0.35 * ss && s.Bounds.Height <= 2.4 * ss
+                                                && (s.Bounds.Height <= 1.3 * ss || Math.Abs(s.Bounds.CenterY - st.CenterY) <= 0.5 * ss)
                                                 && s.Kind is SymbolKind.Unknown or SymbolKind.Ledger or SymbolKind.Rest or SymbolKind.Text).ToList();
                 // the number above the staff over the rest
                 var digits = m.Symbols.Where(s => DigitName.IsMatch(s.Name ?? "") && s.Bounds.CenterY < st.TopY(cx(s)) - 0.2 * ss

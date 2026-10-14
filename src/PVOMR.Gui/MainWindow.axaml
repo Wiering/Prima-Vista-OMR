@@ -95,7 +95,7 @@
 
           <TextBlock Classes="h" Text="Symbol"/>
           <TextBlock Name="SymbolInfo" TextWrapping="Wrap" FontFamily="Consolas,Courier New,monospace" FontSize="12" Text="(none)"/>
-          <Grid ColumnDefinitions="60,*" RowDefinitions="Auto,Auto,Auto,Auto" Margin="0,4,0,0">
+          <Grid ColumnDefinitions="60,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto" Margin="0,4,0,0">
             <TextBlock Classes="lbl" Grid.Row="0" Grid.Column="0" Text="Kind"/>
             <ComboBox Name="KindBox" Grid.Row="0" Grid.Column="1" HorizontalAlignment="Stretch" Margin="0,2"/>
             <TextBlock Classes="lbl" Grid.Row="1" Grid.Column="0" Text="Duration"/>
@@ -104,6 +104,8 @@
             <NumericUpDown Name="DotsBox" Grid.Row="2" Grid.Column="1" Minimum="0" Maximum="3" Increment="1" FormatString="0" Margin="0,2"/>
             <TextBlock Classes="lbl" Grid.Row="3" Grid.Column="0" Text="Stem"/>
             <ComboBox Name="StemBox" Grid.Row="3" Grid.Column="1" HorizontalAlignment="Stretch" Margin="0,2"/>
+            <TextBlock Classes="lbl" Grid.Row="4" Grid.Column="0" Text="Time"/>
+            <TextBox Name="SymTimeBox" Grid.Row="4" Grid.Column="1" Watermark="makes it a time signature, e.g. 3/8 or C" Margin="0,2"/>
           </Grid>
           <TextBlock Text="Note heads" Margin="0,6,0,0"/>
           <StackPanel Name="HeadsPanel" Spacing="2"/>

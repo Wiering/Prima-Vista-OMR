@@ -66,6 +66,14 @@ public sealed class Staff
     public bool BraceToNext { get; set; }
     /// <summary>The bar number printed above the start of the staff (OCR; null when none was read).</summary>
     public int? BarNumber { get; set; }
+    /// <summary>Other readings of a bar number read from digit shapes (similar digits swapped), for the neighbour check.</summary>
+    public List<int> BarNumberAlternatives { get; } = new();
+    /// <summary>A movement number ("2. Adagio") stands over this staff: the bar numbering starts again.</summary>
+    public bool MovementStart { get; set; }
+    /// <summary>Where the bar number was read from its digit shapes.</summary>
+    public Rect? BarNumberBounds { get; set; }
+    /// <summary>The movement heading's text line ("2. Adagio ma non tanto").</summary>
+    public Rect? HeadingBounds { get; set; }
     public ClefKind? ForcedClef { get; set; }
     public int? ForcedKey { get; set; }
     public string? ForcedTime { get; set; }

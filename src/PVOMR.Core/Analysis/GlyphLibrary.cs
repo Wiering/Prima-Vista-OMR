@@ -29,6 +29,9 @@ public sealed class GlyphMatch
 public sealed class GlyphLibrary
 {
     public List<GlyphTemplate> Templates { get; } = new();
+    /// <summary>Digits for bar numbers: the SMuFL tuplet and time signature digits and the digits of common text fonts
+    /// (bar numbers are set in the text font, often bold or italic). Kept apart from the music glyphs.</summary>
+    public List<GlyphTemplate> Digits { get; } = new();
     public List<string> Fonts { get; } = new();
 
     public static readonly (string name, int cp, SymbolKind kind)[] GlyphSet =
@@ -79,6 +82,16 @@ public sealed class GlyphLibrary
         {
             try { lib.AddFont(f); lib.Fonts.Add(Path.GetFileNameWithoutExtension(f)); }
             catch (Exception ex) { log.Add($"font {Path.GetFileName(f)} failed: {ex.Message}"); }
+        }
+        foreach (var (family, bold, italic) in new[] { ("Times New Roman", false, false), ("Times New Roman", true, false), ("Times New Roman", false, true), ("Times New Roman", true, true),
+                                                      ("Arial", false, false), ("Arial", true, false), ("Arial", false, true), ("Arial", true, true) })
+        {
+            try
+            {
+                using var tf = SKTypeface.FromFamilyName(family, bold ? SKFontStyleWeight.Bold : SKFontStyleWeight.Normal, SKFontStyleWidth.Normal, italic ? SKFontStyleSlant.Italic : SKFontStyleSlant.Upright);
+                if (tf != null) for (int d = 0; d <= 9; d++) lib.AddDigit(tf, ((char)('0' + d)).ToString(), d, $"{family}{(bold ? " bold" : "")}{(italic ? " italic" : "")}");
+            }
+            catch (Exception ex) { log.Add($"digit font {family} failed: {ex.Message}"); }
         }
         log.Add($"glyph templates: {lib.Templates.Count} from {lib.Fonts.Count} fonts ({string.Join(", ", lib.Fonts)})");
         return lib.Templates.Count > 0 ? lib : null;
@@ -135,6 +148,62 @@ public sealed class GlyphLibrary
             t.Count = PopCount(t.Bits);
             Templates.Add(t);
         }
+        for (int d = 0; d <= 9; d++)
+        {
+            AddDigit(tf, char.ConvertFromUtf32(0xE880 + d), d, fontName + " tuplet");
+            AddDigit(tf, char.ConvertFromUtf32(0xE080 + d), d, fontName + " timeSig");
+        }
+    }
+
+    private void AddDigit(SKTypeface tf, string s, int digit, string fontName)
+    {
+        if (!tf.ContainsGlyphs(s)) return;
+        const int size = 160, W = 320, H = 320;
+        using var font = new SKFont(tf, size) { Subpixel = false, Edging = SKFontEdging.Alias };
+        using var paint = new SKPaint { Color = SKColors.Black, IsAntialias = false, Style = SKPaintStyle.Fill };
+        using var bmp = new SKBitmap(W, H, SKColorType.Bgra8888, SKAlphaType.Premul);
+        using var canvas = new SKCanvas(bmp);
+        canvas.Clear(SKColors.White);
+        canvas.DrawText(s, 60, 220, SKTextAlign.Left, font, paint);
+        canvas.Flush();
+        var px = bmp.GetPixelSpan();
+        int x0 = W, y0 = H, x1 = -1, y1 = -1;
+        for (int y = 0; y < H; y++)
+            for (int x = 0; x < W; x++)
+                if (px[(y * W + x) * 4 + 1] < 128) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+        if (x1 < 0) return;
+        int w = x1 - x0 + 1, h = y1 - y0 + 1;
+        var mask = new byte[w * h];
+        for (int y = y0; y <= y1; y++)
+            for (int x = x0; x <= x1; x++)
+                if (px[(y * W + x) * 4 + 1] < 128) mask[(y - y0) * w + (x - x0)] = 1;
+        var t = new GlyphTemplate { Name = "digit" + digit, Font = fontName, Kind = SymbolKind.Number, WidthSS = w, HeightSS = h };
+        Normalize(mask, w, h, t.Bits);
+        Dilate(t.Bits, t.Dilated);
+        t.Count = PopCount(t.Bits);
+        Digits.Add(t);
+    }
+
+    /// <summary>The best digit for a glyph mask, judged by shape and proportions only (bar numbers come in any size).</summary>
+    public (int digit, double score) MatchDigit(byte[] mask, int w, int h) => RankDigits(mask, w, h)[0];
+
+    /// <summary>All ten digits for a glyph mask, best first.</summary>
+    public List<(int digit, double score)> RankDigits(byte[] mask, int w, int h)
+    {
+        var bits = new ulong[GlyphTemplate.N * GlyphTemplate.N / 64];
+        var dil = new ulong[bits.Length];
+        Normalize(mask, w, h, bits);
+        Dilate(bits, dil);
+        int cnt = PopCount(bits);
+        double aspect = w / (double)h;
+        var best = new double[10];
+        foreach (var t in Digits)
+        {
+            double s = Similarity(bits, dil, cnt, t.Bits, t.Dilated, t.Count) - 0.5 * Math.Abs(Math.Log(aspect / (t.WidthSS / t.HeightSS)));
+            int d = t.Name[5] - '0';
+            if (s > best[d]) best[d] = s;
+        }
+        return Enumerable.Range(0, 10).Select(d => (d, best[d])).OrderByDescending(p => p.Item2).ToList();
     }
 
     /// <summary>Resample a w x h byte mask into a 32x32 bitset (each cell set if at least half of its source pixels are ink).</summary>
