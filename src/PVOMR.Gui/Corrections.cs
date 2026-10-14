@@ -256,6 +256,16 @@ public sealed class CorrectionStore
                         return PVOMR.Core.Analysis.MeasureSplitter.SplitAt(a, s.Staff, s);
                     }
                     s.Kind = k;
+                    // a rest or other sign made a note: it gets a head where it stands (as an added note does)
+                    if (k is SymbolKind.Note or SymbolKind.Chord && s.Notes.Count == 0 && s.Children.Count == 0 && s.Staff != null)
+                    {
+                        string d = e.Duration ?? s.Duration ?? "quarter";
+                        s.Kind = SymbolKind.Note; s.Name = "note";
+                        s.Attributes.Remove("measures");
+                        int step = e.Step ?? (int)Math.Round(s.Staff.StepAt(s.Bounds.CenterX, s.Bounds.CenterY));
+                        s.Notes.Add(new Note { Head = s.Bounds, Step = step, HeadType = d == "whole" ? "whole" : d == "half" ? "half" : "black" });
+                        if (d != "whole" && s.StemUp == null) s.StemUp = e.Stem != "down";
+                    }
                     // a dot made by correction: the augmentation dot of the note on its left
                     if (k == SymbolKind.Dot && s.Staff != null) AttachDot(s);
                 }

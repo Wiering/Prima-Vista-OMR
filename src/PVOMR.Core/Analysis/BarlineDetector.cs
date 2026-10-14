@@ -67,7 +67,8 @@ public static class BarlineDetector
             {
                 var c = merged[i];
                 var bar = new Barline { X = c.Xc, X0 = c.X0, X1 = c.X1, StaffFrom = si, StaffTo = si, Kind = c.Thick ? BarlineKind.Thick : BarlineKind.Single };
-                if (i + 1 < merged.Count && merged[i + 1].X0 - c.X1 <= 1.2 * ss)
+                // two thin lines (a double bar) stand closer together than a thin and a thick one
+                if (i + 1 < merged.Count && merged[i + 1].X0 - c.X1 <= (c.Thick || merged[i + 1].Thick ? 1.2 : 0.9) * ss)
                 {
                     var d = merged[i + 1];
                     bool dotsLeft = HasRepeatDots(noStaff, staff, c.X0, -1);
@@ -284,6 +285,20 @@ public static class BarlineDetector
         {
             // the run scan stops a few spaces beyond the staff: when the component itself goes on (a barline spanning to
             // the next staff) this is not an end at all
+            // a bar line never ends in a beam: the line's own ink running off to one side only at its end, a space long
+            // and as thick as a beam, is a stem ending in its beam (a beam crossing a bar line sticks out on both sides)
+            {
+                int beamRows = 0, lo = Math.Max(0, (int)(yEnd - 0.6 * ss)), hi = Math.Min(cm.Height - 1, (int)(yEnd + 0.6 * ss));
+                for (int y = lo; y <= hi; y++)
+                {
+                    int r = 0, l = 0;
+                    while (c.X1 + 1 + r < cm.Width && cm.Labels[y * cm.Width + c.X1 + 1 + r] == comp.Label) r++;
+                    while (c.X0 - 1 - l >= 0 && cm.Labels[y * cm.Width + c.X0 - 1 - l] == comp.Label) l++;
+                    if (Math.Max(r, l) >= 1.0 * ss && Math.Min(r, l) <= 0.15 * ss) beamRows++;
+                }
+                if (BarDump) Console.Error.WriteLine($"   beam at {(yEnd == c.RunTop ? "top" : "bottom")} end: {beamRows} rows (limit {0.3 * ss:0})");
+                if (beamRows >= 0.3 * ss) return false;
+            }
             bool continues = yEnd == c.RunTop ? comp.Y0 < yEnd - 1.0 * ss : comp.Y1 > yEnd + 1.0 * ss;
             if (continues) continue;
             // ink touching the run right at its end (a head whose stem this is): barlines are not touched by note heads
@@ -314,7 +329,7 @@ public static class BarlineDetector
                 // right of the top end of a down stem
                 bool bottom = yEnd == c.RunBottom;
                 int hx0 = bottom ? (int)(c.X0 - 0.9 * ss) : c.X1 + 1 + (int)(0.05 * ss), hx1 = bottom ? c.X0 - 1 - (int)(0.05 * ss) : (int)(c.X1 + 0.9 * ss);
-                int hy0 = (int)(yEnd - 0.6 * ss), hy1 = (int)(yEnd + 0.6 * ss), head = 0;
+                int hy0 = (int)(yEnd - 0.6 * ss), hy1 = (int)(yEnd + 0.6 * ss), head = 0, gap = int.MaxValue;
                 for (int y = Math.Max(0, hy0); y <= Math.Min(cm.Height - 1, hy1); y++)
                     for (int x = Math.Max(0, hx0); x <= Math.Min(cm.Width - 1, hx1); x++)
                     {
@@ -323,9 +338,12 @@ public static class BarlineDetector
                         var other = cm.At(x, y);
                         if (other != null && other.Height > 1.6 * ss) continue;
                         head++;
+                        gap = Math.Min(gap, bottom ? c.X0 - 1 - x : x - c.X1 - 1);
                     }
-                if (BarDump) Console.Error.WriteLine($"   head beside {(bottom ? "bottom" : "top")} end: {head} px (limit {0.04 * ss * ss:0})");
-                if (head >= 0.04 * ss * ss) return false;
+                // the head touches its stem; a sign printed after the bar line (an ornament, a small number) stands clear of it
+                bool touching = gap <= Math.Max(2, 0.15 * ss) + 0.05 * ss;
+                if (BarDump) Console.Error.WriteLine($"   head beside {(bottom ? "bottom" : "top")} end: {head} px (limit {0.04 * ss * ss:0}), gap {(gap == int.MaxValue ? "-" : gap.ToString())}");
+                if (head >= 0.04 * ss * ss && touching) return false;
                 continue;
             }
             int fy0 = (int)(yEnd - 0.7 * ss), fy1 = (int)(yEnd + 0.7 * ss);
@@ -338,6 +356,17 @@ public static class BarlineDetector
                     if (l != 0 && l != comp.Label) foreign++;
                 }
             if (foreign >= 0.12 * ss * ss) return false;
+            // the line's own component widening at an end off the staff lines: its head or beam (a stem)
+            int wideRows = 0;
+            for (int y = Math.Max(0, fy0); y <= Math.Min(cm.Height - 1, fy1); y++)
+            {
+                int rMin = int.MaxValue, rMax = -1;
+                for (int x = Math.Max(0, fx0); x <= Math.Min(cm.Width - 1, fx1); x++)
+                    if (cm.Labels[y * cm.Width + x] == comp.Label) { if (x < rMin) rMin = x; if (x > rMax) rMax = x; }
+                if (rMax >= 0 && rMax - rMin + 1 > Math.Max(0.6 * ss, 3 * c.Width + 2)) wideRows++;
+            }
+            if (BarDump) Console.Error.WriteLine($"   {(yEnd == c.RunTop ? "top" : "bottom")} end off the lines: {wideRows} wide rows of its own (limit {0.3 * ss:0})");
+            if (wideRows >= 0.3 * ss) return false;
         }
         return true;
     }

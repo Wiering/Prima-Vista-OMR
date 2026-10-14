@@ -198,6 +198,7 @@ public static class StaffDetector
             if (!unique.Any(k => Overlaps(k, st) && SameLines(k, st))) unique.Add(st);
             else result.Log.Add($"dropped staff at y={st.CenterY:0} x={st.Left:0}-{st.Right:0}: lies on a longer staff after shifting");
         keep = unique;
+        foreach (var st in keep) ExtendRight(bin, st, result.Log);
         // Short candidates right next to a much longer staff with the same spacing are ledger-line structures.
         double maxWidth = keep.Count == 0 ? 0 : keep.Max(st => st.Right - st.Left);
         keep = keep.Where(st =>
@@ -229,6 +230,35 @@ public static class StaffDetector
         foreach (var st in keep.OrderBy(s => s.CenterY).ThenBy(s => s.Left)) { st.Index = idx++; result.Staves.Add(st); }
         result.Log.Add($"{result.Staves.Count} staves");
         return result;
+    }
+
+    /// <summary>
+    /// The strips that found a staff may stop short of its end (a stretch too short for a chain of its own, lines
+    /// hidden under beams): the five lines are followed further while at least four of them have ink at their height.
+    /// </summary>
+    private static void ExtendRight(BinaryImage bin, Staff st, List<string> log)
+    {
+        double ss = st.Space;
+        if (st.Lines.Count != 5 || st.Lines.Any(l => l.Points.Count < 2)) return;
+        // the lines go on with their overall slope
+        double Slope(StaffLine l) => (l.Points[^1].Y - l.Points[0].Y) / Math.Max(1, l.Points[^1].X - l.Points[0].X);
+        double YOn(StaffLine l, int x) => l.Points[^1].Y + Slope(l) * (x - l.Points[^1].X);
+        int start = (int)st.Right, last = start, misses = 0;
+        for (int x = start + 1; x < bin.Width; x++)
+        {
+            int found = 0;
+            foreach (var l in st.Lines)
+            {
+                int y = (int)Math.Round(YOn(l, x));
+                for (int dy = -1; dy <= 1; dy++) if (y + dy >= 0 && y + dy < bin.Height && bin[x, y + dy]) { found++; break; }
+            }
+            if (found >= 4) { last = x; misses = 0; }
+            else if (++misses > 0.5 * ss) break;
+        }
+        if (last - start < 2 * ss) return;
+        foreach (var l in st.Lines) l.Points.Add((last, YOn(l, last)));
+        log.Add($"staff at y={st.CenterY:0}: lines followed from x={start} to x={last}");
+        st.Right = last;
     }
 
     private static List<Staff> MergeFragments(BinaryImage bin, List<Staff> staves, int maxRun, List<string> log)

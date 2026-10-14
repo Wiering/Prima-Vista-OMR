@@ -55,6 +55,14 @@ public static class MusicInterpreter
                     if (st.ForcedTime != null) continue;
                     var own = Score.MusicAssembler.ParseTime(st.TimeSignature);
                     if (own != null && maj != null && (own.TripletsAgainst(maj) || maj.TripletsAgainst(own))) continue;
+                    // the misread signature itself takes the majority value too (the score reads each measure's own)
+                    // (as does a signature placed in the time zone that gave no reading of its own)
+                    foreach (var sy in st.Measures.SelectMany(m => m.Symbols).Where(sy => sy.Kind == SymbolKind.TimeSignature))
+                    {
+                        string? t = sy.Attributes.GetValueOrDefault("time");
+                        if ((st.TimeSignature != null && st.TimeSignature != time && t == st.TimeSignature)
+                            || (sy.Attributes.ContainsKey("timezone") && Score.MusicAssembler.ParseTime(t) == null)) sy.Attributes["time"] = time;
+                    }
                     st.TimeSignature = time;
                 }
             }
@@ -209,8 +217,20 @@ public static class MusicInterpreter
                 {
                     // stack digits: upper (numerator) and lower (denominator) by vertical position; several columns for multi-digit numbers
                     double mid = staff.CenterY;
-                    var upper = timeDigits.Where(t => t.Bounds.CenterY < mid).OrderBy(t => t.Bounds.X0).Select(Digit).ToList();
-                    var lower = timeDigits.Where(t => t.Bounds.CenterY >= mid).OrderBy(t => t.Bounds.X0).Select(Digit).ToList();
+                    var upper = timeDigits.Where(t => t.Bounds.CenterY < mid).OrderBy(t => t.Bounds.X0).Select(t => Digit(t, staff.Space)).ToList();
+                    var lower = timeDigits.Where(t => t.Bounds.CenterY >= mid).OrderBy(t => t.Bounds.X0).Select(t => Digit(t, staff.Space)).ToList();
+                    // a lone "1" over 8 or 16 with a digit-sized glyph of another kind right after it (the "2" read as a
+                    // dynamic or text): 12, the usual two-digit numerator
+                    if (upper.Count == 1 && upper[0] == "1" && lower.Count == 1 && lower[0] is "8" or "16")
+                    {
+                        var one = timeDigits.First(t => t.Bounds.CenterY < mid);
+                        // (the glyph may have broken into pieces: their union counts)
+                        var after = ordered.Where(o => o.Kind is SymbolKind.Dynamic or SymbolKind.Text or SymbolKind.Unknown
+                                                       && o.Bounds.X0 >= one.Bounds.X1 - 0.5 * staff.Space && o.Bounds.X0 <= one.Bounds.X1 + 1.0 * staff.Space
+                                                       && o.Bounds.CenterY < mid && o.Bounds.Y0 >= staff.TopY(o.Bounds.CenterX) - 0.5 * staff.Space).ToList();
+                        if (after.Count > 0 && after.Max(o => o.Bounds.Y1) - after.Min(o => o.Bounds.Y0) + 1 >= 1.2 * staff.Space)
+                            upper = new List<string> { "1", "2" };
+                    }
                     if (upper.Count > 2) upper = upper.Take(2).ToList();
                     if (lower.Count > 2) lower = lower.Take(2).ToList();
                     if (upper.Count > 0 && lower.Count > 0) time = string.Concat(upper) + "/" + string.Concat(lower);
@@ -250,7 +270,9 @@ public static class MusicInterpreter
         if (!keyFromThisStaff && forcedKey == null && prev != null) staff.KeyFifths = prev.KeyFifths;
     }
 
-    private static string Digit(MusicSymbol s) => s.Name.StartsWith("timeSig") && s.Name.Length == 8 && char.IsDigit(s.Name[7]) ? s.Name[7].ToString() : "?";
+    // a digit of unknown value that is a narrow upright bar is a 1 (the "1" of a 12/8)
+    private static string Digit(MusicSymbol s, double ss) => s.Name.StartsWith("timeSig") && s.Name.Length == 8 && char.IsDigit(s.Name[7]) ? s.Name[7].ToString()
+        : s.Name == "timeSig?" && s.Bounds.Width <= 0.6 * ss && s.Bounds.Height >= 1.4 * ss ? "1" : "?";
 
     private static ClefKind ClefFrom(MusicSymbol s)
     {

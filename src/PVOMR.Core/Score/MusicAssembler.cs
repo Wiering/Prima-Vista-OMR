@@ -19,6 +19,8 @@ public static class MusicAssembler
         public Dictionary<Measure, ScoreMeasure>? MeasureMap { get; set; }
         /// <summary>Filled with MeasureMap: the staff number (1 or 2) each recognised measure became within its part.</summary>
         public Dictionary<Measure, int>? MeasureStaff { get; set; }
+        /// <summary>Measures before the first time signature of a part take that signature (checking pages out of context).</summary>
+        public bool AssumeFirstTime { get; set; }
     }
 
     private sealed class StaffContext
@@ -173,6 +175,20 @@ public static class MusicAssembler
         }
         NameParts(score, namesOf, pages);
         foreach (var part in score.Parts) FinishPart(part, score);
+        if (options.AssumeFirstTime)
+        {
+            // measures still without a time signature (before the first one found) are checked against the part's first
+            // signature, or the first of any part
+            var anyFirst = score.Parts.Select(p => p.Measures.FirstOrDefault(m => m.Time != null)?.Time).FirstOrDefault(t => t != null);
+            foreach (var part in score.Parts)
+            {
+                var t = part.Measures.FirstOrDefault(m => m.Time != null)?.Time ?? anyFirst;
+                if (t == null) continue;
+                foreach (var m in part.Measures)
+                    for (int st = 1; st <= part.StaffCount; st++)
+                        if (m.Fit.ForStaff(st).Expected == null) Validate(m, t, st);
+            }
+        }
         return score;
     }
 
@@ -367,6 +383,14 @@ public static class MusicAssembler
         int mIndex = staff.Measures.IndexOf(m);
         bool changeLater = mIndex >= 0 && staff.Measures.Skip(mIndex + 1).Any(x => Own(x) != null);
         var time = own ?? (changeLater ? null : ParseTime(staff.TimeSignature));
+        // a sliver without music before the staff's first signature (the staff start left of the system's bar line) is
+        // under that signature
+        if (own == null && changeLater && mIndex >= 0 && !m.Symbols.Any(IsMusic))
+        {
+            int k = mIndex + 1;
+            while (k < staff.Measures.Count && Own(staff.Measures[k]) == null && !staff.Measures[k].Symbols.Any(IsMusic)) k++;
+            if (k < staff.Measures.Count && Own(staff.Measures[k]) is TimeSpec next) time = next;
+        }
         // a signature printed on this staff is recorded for it even when unchanged (the other staff may change alone)
         if (own != null) sm.StaffTimes[staffNo - 1] = own;
         if (own != null && (ctx.Time == null || !ctx.Time.Equals(own)))
@@ -489,7 +513,16 @@ public static class MusicAssembler
         {
             var evs = voice.ToList();
             int sum = evs.Sum(e => e.Duration);
-            if (evs.Count == 1 && evs[0].IsRest && evs[0].Type == "whole") { evs[0].Duration = expected; evs[0].MeasureRest = true; sm.Fit.Sums.Add((staffNo, voice.Key, expected)); continue; }
+            // a lone rest in a staff's measure is the bar rest: a whole rest, or a block read as a half rest (it sits on a
+            // line instead of hanging from one) that alone could not fill the measure
+            if (evs.Count == 1 && evs[0].IsRest && evs[0].Dots == 0 && evs[0].TupletActual == 0
+                && (evs[0].Type == "whole" || evs[0].Type == "half" && expected > evs[0].Duration && !sm.Events.Any(e => e.Staff == staffNo && e != evs[0])))
+            {
+                evs[0].Duration = expected; evs[0].MeasureRest = true;
+                // beside another voice the bar rest says nothing about that voice's length (it must not hide a short one)
+                if (!sm.Events.Any(e => e.Staff == staffNo && e.Voice != voice.Key)) sm.Fit.Sums.Add((staffNo, voice.Key, expected));
+                continue;
+            }
             sm.Fit.Sums.Add((staffNo, voice.Key, sum));
             if (sum != expected)
             {
@@ -616,7 +649,7 @@ public static class MusicAssembler
     private static ScoreEvent MakeNoteEvent(MusicSymbol s, Staff staff, int staffNo, ClefKind clef, int fifths, ScoreMeasure sm)
     {
         var ev = new ScoreEvent { Staff = staffNo, StemUp = s.StemUp, X = (int)Math.Round(s.Notes.Count > 0 ? s.Notes.Min(n => n.HeadX) : s.Bounds.CenterX), Y = (int)s.Bounds.CenterY, Confidence = s.Confidence };
-        SetType(ev, s.Duration, s.Dots > 0 ? s.Dots : s.Notes.Max(n => n.Dots), sm);
+        SetType(ev, s.Duration, s.Dots > 0 ? s.Dots : s.Notes.Select(n => n.Dots).DefaultIfEmpty(0).Max(), sm);
         foreach (var n in s.Notes.OrderBy(n => n.Step)) ev.Notes.Add(MakeNote(n, clef, fifths));
         // stemless heads (whole notes, but also text glyphs taken for heads) and heads far outside the staff are suspects
         // user-corrected or user-added symbols are never dropped to make a measure fit
@@ -869,10 +902,14 @@ public static class MusicAssembler
                 if (unc.SelectMany((a, i) => unc.Skip(i + 1).Select(b => a.Duration + b.Duration)).Any(d => sum - d == L)) return L;
                 return sum;
             }
+            // a whole rest hanging outside the staff, in a measure with notes: the other player's (or voice's) bar rest
+            bool BarRestApart(ScoreEvent e) => e.IsRest && e.Type == "whole" && (e.Y > staff.BottomY(e.X) || e.Y < staff.TopY(e.X))
+                                               && events.Any(o => !o.IsRest);
+            static bool OnlyBarRest(List<ScoreEvent> v) => v.Count == 1 && v[0].IsRest && v[0].Type == "whole";
             double Cost(Func<ScoreEvent, bool> isSecond)
             {
                 var va = events.Where(e => !isSecond(e)).ToList(); var vb = events.Where(isSecond).ToList();
-                int a = Repaired(va), b = Repaired(vb);
+                int a = Repaired(va), b = OnlyBarRest(vb) ? L : Repaired(vb);
                 // a repair (dropping notes) costs a little: of two splits that both add up, the one keeping every note wins
                 double repairs = (a != va.Sum(e => e.Duration) ? 0.5 : 0) + (b != vb.Sum(e => e.Duration) ? 0.5 : 0);
                 if (b == 0) return Math.Abs(a - L) + repairs;
@@ -887,6 +924,7 @@ public static class MusicAssembler
                 ("direction, rests down", e => e.IsRest || dir[e] == false),
                 ("direction flipped", e => e.IsRest ? e.Y <= staff.CenterY : dir[e] == true),
                 ("long notes", e => !e.IsRest && (e.Type is "whole" or "half" || e.Dots > 0) && e.Beams.Length == 0),
+                ("bar rest apart", BarRestApart),
             };
             // only consider splits that use both stem directions or separate long from short notes; a measure that adds
             // up as one voice stays one voice
@@ -897,11 +935,12 @@ public static class MusicAssembler
             else
                 foreach (var (name, isSecond) in candidates)
                 {
-                    if (name != "single" && name != "long notes" && !bothDirections) continue;
+                    if (name == "bar rest apart" && events.Count(BarRestApart) != 1) continue;
+                    if (name != "single" && name != "long notes" && name != "bar rest apart" && !bothDirections) continue;
                     // a second voice made only of uncertain notes is a stray head hiding from the duration check
                     // (exception: held long notes struck together with a note of the moving voice, such as a drone
                     // double stop; stemless, so uncertain, but a glyph that lines up with a head is no stray mark)
-                    if (name != "single" && !events.Any(e => isSecond(e) && !e.Uncertain && !e.IsRest)
+                    if (name != "single" && name != "bar rest apart" && !events.Any(e => isSecond(e) && !e.Uncertain && !e.IsRest)
                         && !(name == "long notes" && events.Where(isSecond).All(e => !e.IsRest && e.Notes.Count > 0
                                 && e.Y > staff.TopY(e.X) - 2 * ss && e.Y < staff.BottomY(e.X) + 2 * ss
                                 && events.Any(o => !isSecond(o) && !o.IsRest && Math.Abs(o.X - e.X) < 0.8 * ss)))) continue;
@@ -912,7 +951,7 @@ public static class MusicAssembler
                     if (name != "single")
                     {
                         var vb = events.Where(isSecond).ToList();
-                        if (Repaired(vb) < L)
+                        if (!OnlyBarRest(vb) && Repaired(vb) < L)
                         {
                             var fa = events.Where(e => !isSecond(e)).MinBy(e => e.X);
                             var fb = vb.MinBy(e => e.X);
@@ -922,7 +961,7 @@ public static class MusicAssembler
                     // an alternative split must make the measure add up exactly; a direction-based one may also merely
                     // improve a measure that really has stems both ways (a single-voice measure with a wrong duration
                     // must not be "fixed" by inventing a second voice)
-                    bool directionBased = name.StartsWith("direction") && bothDirections;
+                    bool directionBased = name.StartsWith("direction") && bothDirections || name == "bar rest apart";
                     if (c < best.cost - 1e-9 && (c < 1e-9 || directionBased)) best = (name, isSecond, c);
                 }
             if (Environment.GetEnvironmentVariable("PVOMR_VOICEDUMP") == "1")
@@ -1010,10 +1049,12 @@ public static class MusicAssembler
                 if (informative.Count < 4) continue;
                 var sums = Samples(informative);
                 int fitting = expected == null ? 0 : sums.Count(x => x == expected);
-                if (expected != null && fitting * 5 >= sums.Count) continue;   // at least a fifth fits: the signature stands
                 if (sums.Count < 4) continue;
                 int mode = sums.GroupBy(x => x).OrderByDescending(g => g.Count()).ThenByDescending(g => g.Key).First().Key;
                 int share = sums.Count(x => x == mode);
+                // at least a fifth fits: the signature stands, unless another length holds the majority and three times as
+                // many measures
+                if (expected != null && fitting * 5 >= sums.Count && !(share * 2 >= sums.Count && share >= 3 * fitting)) continue;
                 int eighth = Score.Divisions / 2;
                 // the agreeing measures must be at least 30% (40% when no signature was read at all) and twice the fitting ones
                 int needed = expected == null ? (sums.Count * 2 + 4) / 5 : (sums.Count * 3 + 9) / 10;
@@ -1030,22 +1071,44 @@ public static class MusicAssembler
                 if (assembled != null) carriedFix = (assembled.Value, t);
             }
         }
-        // pickup measure
-        if (part.Measures.Count > 1)
+        // pickup measures: the first measure of the part, and the first of a movement (after a final bar line, its time
+        // signature stated again) when it is shorter than the time signature
+        for (int i = 0; i < part.Measures.Count - 1; i++)
         {
-            var first = part.Measures[0];
+            var first = part.Measures[i];
+            if (i > 0 && !(part.Measures[i - 1].RightBar == BarStyle.LightHeavy && first.Time != null)) continue;
             var time = first.Time;
-            if (time != null)
+            if (time == null) continue;
+            var sums = first.Events.GroupBy(e => e.Voice).Select(g => g.Sum(e => e.Duration)).ToList();
+            int sum = sums.Count > 0 ? sums.Max() : 0;
+            bool consistent = sums.Count > 0 && sums.All(x => x == sum);
+            if (consistent && sum > 0 && sum < time.Length && sum % (Score.Divisions / 4) == 0 && first.Warnings.Any(w => w.Contains("duration")))
             {
-                var sums = first.Events.GroupBy(e => e.Voice).Select(g => g.Sum(e => e.Duration)).ToList();
-                int sum = sums.Count > 0 ? sums.Max() : 0;
-                bool consistent = sums.Count > 0 && sums.All(x => x == sum);
-                if (consistent && sum > 0 && sum < time.Length && sum % (Score.Divisions / 4) == 0 && first.Warnings.Any(w => w.Contains("duration")))
+                first.Implicit = true;
+                first.Warnings.RemoveAll(w => w.Contains("duration"));
+                first.Fit.Sums.Clear();
+                if (i == 0)
                 {
-                    first.Implicit = true;
-                    first.Warnings.RemoveAll(w => w.Contains("duration"));
                     foreach (var m in part.Measures) m.Number--;   // pickup is measure 0
                     first.Number = 0;
+                }
+                // the movement's last measure (up to its final bar line, or the part's end) completes the pickup: it is
+                // short by exactly the pickup's length
+                int j = i + 1;
+                while (j < part.Measures.Count - 1 && part.Measures[j].RightBar != BarStyle.LightHeavy && !(part.Measures[j + 1].Time != null && part.Measures[j].RightBar == BarStyle.LightLight)) j++;
+                var last = part.Measures[j];
+                int rest = last.Fit.Sums.Count > 0 ? last.Fit.Sums.Max(x => x.Sum) : -1;
+                // a quarter of the pickup that may carry a hairline flag is the 8th the final measure leaves room for
+                if (rest > 0 && rest != time.Length - sum && first.Events.FirstOrDefault(e => !e.IsRest && e.StemlessBlack && e.Type == "quarter" && time.Length - (sum - e.Duration / 2) == rest) is { } fl)
+                {
+                    fl.Type = "eighth"; fl.Duration /= 2; fl.Beams = Array.Empty<BeamState>();
+                    sum -= fl.Duration;
+                }
+                if (j > i && last.Time == null && rest == time.Length - sum && last.Fit.Sums.All(x => x.Sum <= time.Length - sum))
+                {
+                    last.Implicit = true;
+                    last.Warnings.RemoveAll(w => w.Contains("duration"));
+                    last.Fit.Sums.Clear();
                 }
             }
         }
