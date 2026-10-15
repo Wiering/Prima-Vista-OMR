@@ -49,6 +49,8 @@ public sealed class MergeBar
 /// <summary>A note, chord or rest: sounding pitches (empty for a rest) and the length in whole notes.</summary>
 public sealed record BarEvent(IReadOnlyList<PitchSpec> Pitches, Fraction Length, bool TieToNext)
 {
+    /// <summary>The events of the source this stands for (one; several rests counted as one rest).</summary>
+    public IReadOnlyList<ScoreEvent> Sources { get; init; } = Array.Empty<ScoreEvent>();
     public bool IsRest => Pitches.Count == 0;
     public override string ToString() => (IsRest ? "r" : string.Join("+", Pitches)) + ":" + Length;
 }

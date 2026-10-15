@@ -5,7 +5,12 @@ namespace PVOMR.Merge;
 public enum DiffKind { Pitch, Accidental, Duration, ExtraNote, MissingNote, NoteRest, Key, Time, MissingBar, ExtraBar }
 
 /// <summary>One difference between two versions of a bar (A and B).</summary>
-public sealed record BarDiff(DiffKind Kind, string Text, int StepOffset = 0);
+public sealed record BarDiff(DiffKind Kind, string Text, int StepOffset = 0)
+{
+    /// <summary>The events concerned in A and in B (null where the note is missing on that side).</summary>
+    public BarEvent? EventA { get; init; }
+    public BarEvent? EventB { get; init; }
+}
 
 /// <summary>A bar of the music as found in two strands (either may be missing) and how they differ.</summary>
 public sealed class ComparisonRow
@@ -94,6 +99,9 @@ public static class Comparer
         return (s[n, m], pairs);
     }
 
+    /// <summary>The differences between two versions of a bar.</summary>
+    public static List<BarDiff> Diff(MergeBar a, MergeBar b) => Row(a, b).Diffs;
+
     private static ComparisonRow Row(MergeBar a, MergeBar b)
     {
         var row = new ComparisonRow { A = a, B = b };
@@ -106,20 +114,20 @@ public static class Comparer
         foreach (var (i, j) in pairs)
         {
             pos++;
-            if (j < 0) { row.Diffs.Add(new BarDiff(DiffKind.ExtraNote, $"note {pos}: {ea[i]} only in A")); continue; }
-            if (i < 0) { row.Diffs.Add(new BarDiff(DiffKind.MissingNote, $"note {pos}: {eb[j]} only in B")); continue; }
+            if (j < 0) { row.Diffs.Add(new BarDiff(DiffKind.ExtraNote, $"note {pos}: {ea[i]} only in A") { EventA = ea[i] }); continue; }
+            if (i < 0) { row.Diffs.Add(new BarDiff(DiffKind.MissingNote, $"note {pos}: {eb[j]} only in B") { EventB = eb[j] }); continue; }
             BarEvent x = ea[i], y = eb[j];
-            if (x.IsRest != y.IsRest) { row.Diffs.Add(new BarDiff(DiffKind.NoteRest, $"note {pos}: {x} vs {y}")); continue; }
-            if (x.Length.CompareTo(y.Length) != 0) row.Diffs.Add(new BarDiff(DiffKind.Duration, $"note {pos}: {x} vs {y}"));
+            if (x.IsRest != y.IsRest) { row.Diffs.Add(new BarDiff(DiffKind.NoteRest, $"note {pos}: {x} vs {y}") { EventA = x, EventB = y }); continue; }
+            if (x.Length.CompareTo(y.Length) != 0) row.Diffs.Add(new BarDiff(DiffKind.Duration, $"note {pos}: {x} vs {y}") { EventA = x, EventB = y });
             if (x.IsRest) continue;
             var px = x.Pitches; var py = y.Pitches;
-            if (px.Count != py.Count) { row.Diffs.Add(new BarDiff(DiffKind.Pitch, $"note {pos}: {x} vs {y}")); continue; }
+            if (px.Count != py.Count) { row.Diffs.Add(new BarDiff(DiffKind.Pitch, $"note {pos}: {x} vs {y}") { EventA = x, EventB = y }); continue; }
             for (int k = 0; k < px.Count; k++)
             {
                 if (StrandReader.Midi(px[k]) == StrandReader.Midi(py[k])) continue;
                 int steps = StrandReader.Diatonic(py[k]) - StrandReader.Diatonic(px[k]);
-                row.Diffs.Add(steps == 0 ? new BarDiff(DiffKind.Accidental, $"note {pos}: {px[k]} vs {py[k]}")
-                                         : new BarDiff(DiffKind.Pitch, $"note {pos}: {px[k]} vs {py[k]}", steps));
+                row.Diffs.Add(steps == 0 ? new BarDiff(DiffKind.Accidental, $"note {pos}: {px[k]} vs {py[k]}") { EventA = x, EventB = y }
+                                         : new BarDiff(DiffKind.Pitch, $"note {pos}: {px[k]} vs {py[k]}", steps) { EventA = x, EventB = y });
             }
         }
         return row;

@@ -64,6 +64,9 @@ public sealed class PageView : Control
     public bool ShowBarlines { get; set; } = true;
 
     public MusicSymbol? Selected { get => _selected; set { _selected = value; InvalidateVisual(); } }
+    /// <summary>When set, only these recognised symbols are drawn (framed), nothing else: the merge view shows just the
+    /// notes that differ between versions.</summary>
+    public IReadOnlyCollection<MusicSymbol>? OnlySymbols { get; set; }
     public Staff? SelectedStaff => _selectedStaff;
     public Barline? SelectedBarline => _selectedBarline;
     public double Zoom => _zoom;
@@ -121,6 +124,15 @@ public sealed class PageView : Control
     {
         var centre = new Point(Bounds.Width / 2, Bounds.Height / 2);
         ZoomAround(centre, zoom / _zoom);
+    }
+
+    /// <summary>Zooms and scrolls so that the rectangle (image coordinates) fills the view.</summary>
+    public void ZoomTo(PVOMR.Core.Model.Rect r)
+    {
+        if (_bitmap == null || Bounds.Width <= 0 || Bounds.Height <= 0) return;
+        _zoom = Math.Min(Bounds.Width / Math.Max(1, r.Width), Bounds.Height / Math.Max(1, r.Height)) * 0.95;
+        _offset = new Point(Bounds.Width / 2 - r.CenterX * _zoom, Bounds.Height / 2 - r.CenterY * _zoom);
+        InvalidateVisual();
     }
 
     /// <summary>Scrolls so that the rectangle (image coordinates) is visible, zooming in when it is tiny on screen.</summary>
@@ -302,6 +314,16 @@ public sealed class PageView : Control
     {
         var a = _analysis!;
         double thin = 1.0 / _zoom;
+        if (OnlySymbols != null)
+        {
+            var tf = new Typeface("Inter");
+            foreach (var s in OnlySymbols)
+            {
+                DrawSymbol(context, s, (float)(s.Staff?.Space ?? a.StaffSpace), tf, thin);
+                DrawSelection(context, s.Bounds, thin);
+            }
+            return;
+        }
         if (ShowFits && Fits != null)
         {
             var longBrush = new SolidColorBrush(Color.FromArgb(55, 255, 0, 0));
