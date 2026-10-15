@@ -10,6 +10,11 @@ public sealed class Strand
 {
     public string Source { get; init; } = "";
     public string Label { get; init; } = "";
+    public string PartName { get; init; } = "";
+    /// <summary>The staff taken from the part (null = all of it).</summary>
+    public int? Staff { get; init; }
+    /// <summary>Staves of the strand as written out: 1 for a single staff taken from a part.</summary>
+    public int StaffCount { get; init; } = 1;
     public List<MergeBar> Bars { get; } = new();
     public override string ToString() => $"{Label} ({Bars.Count} bars)";
 }
@@ -24,6 +29,9 @@ public sealed class MergeBar
     public int Line { get; init; }
     public int KeyFifths { get; init; }
     public string? Time { get; init; }
+    public TimeSpec? TimeSpec { get; init; }
+    /// <summary>The clef in force per staff of the strand (one entry for a single staff).</summary>
+    public ClefSpec?[] Clefs { get; init; } = new ClefSpec?[2];
     /// <summary>Length of the bar by its time signature, in whole notes (null without one).</summary>
     public Fraction? Expected { get; init; }
     public bool Pickup { get; init; }

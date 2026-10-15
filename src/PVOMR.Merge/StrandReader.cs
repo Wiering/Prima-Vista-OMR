@@ -12,8 +12,10 @@ public static class StrandReader
     {
         if (partIndex < 0 || partIndex >= score.Parts.Count) throw new ArgumentOutOfRangeException(nameof(partIndex), $"the score has {score.Parts.Count} part(s)");
         var part = score.Parts[partIndex];
-        var strand = new Strand { Source = source, Label = $"{Path.GetFileNameWithoutExtension(source)} / {part.Name}{(staff is int s ? $" staff {s}" : "")}" };
+        var strand = new Strand { Source = source, Label = $"{Path.GetFileNameWithoutExtension(source)} / {part.Name}{(staff is int s ? $" staff {s}" : "")}",
+                                  PartName = part.Name, Staff = staff, StaffCount = staff == null ? Math.Max(1, part.StaffCount) : 1 };
         int key = 0, page = 1, line = 1;
+        var clefs = new ClefSpec?[2];
         TimeSpec? time = null;
         foreach (var m in part.Measures)
         {
@@ -21,6 +23,7 @@ public static class StrandReader
             else if (m.NewSystem) line++;
             if (m.KeyFifths is int k) key = k;
             if (m.Time != null) time = m.Time;
+            for (int c = 0; c < 2; c++) if (m.Clefs[c] != null) clefs[c] = m.Clefs[c];
             var events = m.Events.Where(e => !e.Grace && (staff == null || e.Staff == staff)).ToList();
             var voices = events.GroupBy(e => e.Voice).OrderBy(g => g.Key)
                                .Select(g => g.OrderBy(e => e.X).Select(ToEvent).ToList()).Where(v => v.Count > 0).ToList();
@@ -30,7 +33,8 @@ public static class StrandReader
                             || voices.Count == 1 && voices[0].Count == 1 && voices[0][0].IsRest);
             var bar = new MergeBar
             {
-                Index = strand.Bars.Count, Number = m.Number, Page = page, Line = line, KeyFifths = key, Time = time?.ToString(),
+                Index = strand.Bars.Count, Number = m.Number, Page = page, Line = line, KeyFifths = key, Time = time?.ToString(), TimeSpec = time,
+                Clefs = staff is int st ? new[] { clefs[Math.Clamp(st - 1, 0, 1)], null } : (ClefSpec?[])clefs.Clone(),
                 Expected = expected, Pickup = m.Implicit, Fits = fits, SourceMeasure = m,
                 Key = string.Join(" | ", voices.Select(v => string.Join(" ", v))),
             };

@@ -44,12 +44,15 @@ static int Usage()
                               recognise and compare with the ground truth; prints precision/recall metrics
           pvomr compare <a.musicxml> <b.musicxml> [--part n] [--staff n] [--part-b n] [--staff-b n] [--all]
                               compare two versions of the same music bar by bar (sounding pitches)
+          pvomr merge <source> <source> [...] [--out merged.musicxml] [--all]   (source: file[@part[:staff]])
+                              merge versions of the same music: the best version of every bar, doubtful bars listed
         """);
     return 2;
 }
 
 if (args.Length > 0 && args[0] == "gen") return EvalCommands.Gen(args);
 if (args.Length > 0 && args[0] == "compare") return CompareCommand.Run(args);
+if (args.Length > 0 && args[0] == "merge") return MergeCommand.Run(args);
 if (args.Length > 0 && args[0] == "crops") return EvalCommands.Crops(args);
 if (args.Length > 0 && args[0] == "eval")
 {

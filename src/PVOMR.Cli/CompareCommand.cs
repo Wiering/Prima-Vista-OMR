@@ -50,3 +50,57 @@ static class CompareCommand
     private static string Where(ComparisonRow r) =>
         $"bar {r.A?.Number ?? r.B?.Number} (A {(r.A == null ? "-" : $"p{r.A.Page}.{r.A.Line}{(r.A.Fits ? "" : "!")}")}, B {(r.B == null ? "-" : $"p{r.B.Page}.{r.B.Line}{(r.B.Fits ? "" : "!")}")})";
 }
+
+/// <summary>"pvomr merge": several versions of the same music into one, the best version of every bar.</summary>
+static class MergeCommand
+{
+    public static int Run(string[] args)
+    {
+        var sources = new List<string>();
+        string? output = null; bool listAll = false;
+        for (int i = 1; i < args.Length; i++)
+        {
+            string a = args[i];
+            if (a == "--out" && i + 1 < args.Length) output = args[++i];
+            else if (a == "--all") listAll = true;
+            else if (a.StartsWith("--")) { Console.Error.WriteLine($"unknown option {a}"); return 2; }
+            else sources.Add(a);
+        }
+        if (sources.Count < 2) { Console.Error.WriteLine("usage: pvomr merge <source> <source> [...] [--out merged.musicxml] [--all]   (source: file[@part[:staff]])"); return 2; }
+        var strands = sources.Select(Parse).ToList();
+        var rows = Merger.Align(strands);
+        Merger.Choose(rows);
+        for (int s = 0; s < strands.Count; s++)
+            Console.WriteLine($"{(char)('A' + s)}: {strands[s]}, {strands[s].Bars.Count(b => b.Fits)} add up");
+        Console.WriteLine($"{rows.Count} bars: " + string.Join(", ", rows.GroupBy(r => r.Status).OrderBy(g => g.Key).Select(g => $"{g.Key} {g.Count()}")));
+        var used = rows.Where(r => r.Chosen >= 0).GroupBy(r => r.Chosen).OrderBy(g => g.Key).Select(g => $"{(char)('A' + g.Key)} {g.Count()}");
+        Console.WriteLine("taken from: " + string.Join(", ", used));
+        foreach (var r in rows.Where(r => listAll ? r.Status != RowStatus.Unanimous : r.Status == RowStatus.Flagged))
+        {
+            Console.WriteLine($"{r.Status} bar {rows.IndexOf(r) + 1}, chosen {(char)('A' + r.Chosen)}:");
+            for (int s = 0; s < strands.Count; s++)
+                if (r.Candidates[s] is MergeBar b)
+                    Console.WriteLine($"    {(char)('A' + s)} p{b.Page}.{b.Line} bar {b.Number}{(b.Fits ? "" : " (does not add up)")}: {b.Key}");
+        }
+        if (output != null)
+        {
+            PVOMR.Core.Score.MusicXmlWriter.Write(Merger.BuildScore(rows, strands, Path.GetFileNameWithoutExtension(output)), output);
+            Console.WriteLine($"written {output}");
+        }
+        return 0;
+    }
+
+    private static Strand Parse(string spec)
+    {
+        int at = spec.LastIndexOf('@');
+        string file = at > 0 ? spec[..at] : spec;
+        int part = 0; int? staff = null;
+        if (at > 0)
+        {
+            var bits = spec[(at + 1)..].Split(':');
+            part = int.Parse(bits[0]) - 1;
+            if (bits.Length > 1) staff = int.Parse(bits[1]);
+        }
+        return StrandReader.FromMusicXml(file, part, staff);
+    }
+}
