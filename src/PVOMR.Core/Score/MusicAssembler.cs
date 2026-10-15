@@ -533,6 +533,7 @@ public static class MusicAssembler
             for (int k = 0; k < bestLen; k++)
             {
                 var e = evs[best + k];
+                e.LooseTripletFrom = e.Duration;
                 e.Duration = e.Duration * 2 / 3;
                 e.TupletActual = 3; e.TupletNormal = 2;
                 e.TupletStart = k == 0; e.TupletStop = k == bestLen - 1;
@@ -1053,12 +1054,19 @@ public static class MusicAssembler
             // one sample per staff (the fullest voice): the two staves of a piano measure are judged separately
             List<int> Samples(List<ScoreMeasure> run) => run
                 .Where(m => !(m.Events.Count == 1 && m.Events[0].IsRest && m.Events[0].Type == "whole") && m.Events.Count > 0)
-                .SelectMany(m => m.Events.GroupBy(e => e.Staff).Select(g => g.GroupBy(e => e.Voice).Select(v => v.Sum(e => e.Duration)).Max()))
+                // (as written: a loose triplet was fitted to the signature being questioned)
+                .SelectMany(m => m.Events.GroupBy(e => e.Staff).Select(g => g.GroupBy(e => e.Voice).Select(v => v.Sum(e => e.LooseTripletFrom > 0 ? e.LooseTripletFrom : e.Duration)).Max()))
                 .Where(x => x > 0).ToList();
             void Revalidate(List<ScoreMeasure> run, TimeSpec t)
             {
                 foreach (var m in run)
                 {
+                    // loose triplets were placed to fit the old signature
+                    foreach (var e in m.Events.Where(e => e.LooseTripletFrom > 0))
+                    {
+                        e.Duration = e.LooseTripletFrom; e.LooseTripletFrom = 0;
+                        e.TupletActual = 0; e.TupletNormal = 0; e.TupletStart = e.TupletStop = false;
+                    }
                     m.Warnings.RemoveAll(w => w.Contains("duration") || w.Contains("dropped uncertain"));
                     m.Fit.Sums.Clear(); m.Fit.DroppedPerStaff[0] = m.Fit.DroppedPerStaff[1] = 0;
                     for (int st = 1; st <= part.StaffCount; st++) Validate(m, t, st);

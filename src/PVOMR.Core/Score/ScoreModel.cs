@@ -176,6 +176,8 @@ public sealed class ScoreEvent
     public List<int> SlurStops { get; } = new();
     /// <summary>Tuplet ratio (actual:normal), 0 = none. Duration already reflects the tuplet.</summary>
     public int TupletActual { get; set; }
+    /// <summary>The written duration before a loose triplet (a "3" over separate notes) shortened it; 0 = not one.</summary>
+    public int LooseTripletFrom { get; set; }
     public int TupletNormal { get; set; }
     public bool TupletStart { get; set; }
     public bool TupletStop { get; set; }
