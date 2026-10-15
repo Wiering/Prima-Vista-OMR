@@ -167,7 +167,7 @@ public partial class MainWindow : Window
             var image = await Task.Run(() => RecognitionEngine.Render(file, page, dpi, out _));
             if (page == _page) View.SetPreview(image);
             Status(_engine == null ? $"page {page}: loading models and fonts…" : $"recognising page {page}…");
-            _pages.TryGetValue(page - 1, out var previous);
+            _pages.TryGetValue(PVOMR.Core.Analysis.PageOrder.Previous(file, page), out var previous);
             var result = await Task.Run(() =>
             {
                 _engine ??= new RecognitionEngine();
@@ -383,7 +383,7 @@ public partial class MainWindow : Window
     {
         if (_current == null) return;
         _current.Modified = true;
-        _pages.TryGetValue(_page - 1, out var previousPage);
+        _pages.TryGetValue(PVOMR.Core.Analysis.PageOrder.Previous(_file ?? "", _page), out var previousPage);
         RecognitionEngine.Reinterpret(_current, previousPage);
         View.SetAnalysis(_current.Analysis);
         ComputeFits();

@@ -919,7 +919,7 @@ public static class MusicAssembler
         // an up-stem and a down-stem note at the same x are two voices (also a unison with stems both ways), adjacent ones are not
         if (ups >= 1 && downs >= 1)
             foreach (var a in notes.Where(n => dir[n] == true))
-                if (notes.Any(b => dir[b] == false && Math.Abs(b.X - a.X) < 0.6 * ss)) { twoVoices = true; break; }
+                if (notes.Any(b => dir[b] == false && Math.Abs(b.X - a.X) < 1.0 * ss)) { twoVoices = true; break; }
         int baseVoice = (staffNo - 1) * 2 + 1;
         // the default split: by stem direction, rests by their height
         bool DefaultSecond(ScoreEvent e) => e.IsRest ? e.Y > staff.CenterY : dir[e] == false;

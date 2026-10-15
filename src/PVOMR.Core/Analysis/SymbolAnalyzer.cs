@@ -229,6 +229,7 @@ public sealed class SymbolAnalyzer
             AttachDetachedStems(syms, staff);
             AttachDetachedHeads(syms, staff);
             RemoveDuplicateHeads(syms, staff);
+            ChordHeadsOfOtherVoice(syms, staff);
             MergeBrokenStemChords(syms, staff);
             AttachDetachedFlags(syms, staff);
             ContinueBeams(syms, staff);
@@ -237,6 +238,7 @@ public sealed class SymbolAnalyzer
             DropOverlappingHeads(syms, staff);
             DropSymbolsOnHeads(syms, staff);
             AccidentalsInUnknowns(syms, staff);
+            DoubleSharpsReadAsText(syms, staff);
             TrillsAboveStaff(syms, staff);
             DropNotesWithoutHeads(syms);
             BarlinesReadAsStems(syms, staff);
@@ -275,6 +277,26 @@ public sealed class SymbolAnalyzer
             DropNotesBeforeClef(syms, staff);
             foreach (var s in syms.OrderBy(s => s.Bounds.X0))
             {
+                // a beam carried across a bar line: each measure gets the stems on its side
+                if (s.Kind == SymbolKind.NoteGroup && s.Children.Count >= 2)
+                {
+                    var parts = s.Children.Where(c => c.Notes.Count > 0).GroupBy(c => FindMeasure(staff, c)).Where(g => g.Key != null).ToList();
+                    if (parts.Count > 1)
+                    {
+                        foreach (var g in parts)
+                        {
+                            var kids = g.ToList();
+                            var part = new MusicSymbol { Kind = SymbolKind.NoteGroup, Name = s.Name, Staff = staff, Confidence = s.Confidence, StemUp = s.StemUp, Flags = s.Flags,
+                                                         Duration = s.Duration, Bounds = kids.Skip(1).Aggregate(kids[0].Bounds, (a, c) => a.Union(c.Bounds)) };
+                            foreach (var kv in s.Attributes) part.Attributes[kv.Key] = kv.Value;
+                            part.Attributes["beam"] = "across a bar line";
+                            part.Children.AddRange(kids);
+                            part.Notes.AddRange(kids.SelectMany(c => c.Notes));
+                            g.Key!.Symbols.Add(part);
+                        }
+                        continue;
+                    }
+                }
                 var m = FindMeasure(staff, s);
                 if (m != null) m.Symbols.Add(s);
             }
@@ -1294,6 +1316,28 @@ public sealed class SymbolAnalyzer
             }
             if (h.Notes.Count > 1) h.Notes.Sort((a, b) => b.Step.CompareTo(a.Step));
         }
+    }
+
+    /// <summary>
+    /// One head read twice, by a chord with its stem one way and by a note of the other voice with its stem the other way,
+    /// a step apart (the two stems place it slightly differently): it is the single note's, not the chord's (a real unison
+    /// is read at the same step and stays).
+    /// </summary>
+    private static void ChordHeadsOfOtherVoice(List<MusicSymbol> syms, Staff staff)
+    {
+        double ss = staff.Space;
+        var owners = syms.Where(s => s.Kind is SymbolKind.Note or SymbolKind.Chord or SymbolKind.NoteGroup)
+                         .SelectMany(s => s.Kind == SymbolKind.NoteGroup && s.Children.Count > 0 ? s.Children : new List<MusicSymbol> { s })
+                         .Where(o => o.StemUp != null && o.Notes.Count > 0).ToList();
+        foreach (var chord in owners.Where(o => o.Notes.Count >= 2))
+            foreach (var h in chord.Notes.ToList())
+            {
+                if (chord.Notes.Count < 2) break;
+                bool other = owners.Any(o => o != chord && o.StemUp == !chord.StemUp && o.Notes.Count == 1
+                                             && Math.Abs(o.Notes[0].HeadX - h.HeadX) <= 0.4 * ss && Math.Abs(o.Notes[0].HeadY - h.HeadY) <= 0.4 * ss
+                                             && Math.Abs(o.Notes[0].Step - h.Step) == 1);
+                if (other) chord.Notes.Remove(h);
+            }
     }
 
     /// <summary>
@@ -2876,6 +2920,8 @@ public sealed class SymbolAnalyzer
                 {
                     double beamY = others[others.Count / 2];
                     up = Math.Abs(st.Top - beamY) < Math.Abs(st.Bottom - beamY);
+                    // level with it: single-head stems of another voice (beamed on the other side) say nothing
+                    if (Math.Abs((up ? st.Top : st.Bottom) - beamY) > 1.5 * staff.Space) continue;
                 }
                 int yEnd = up ? st.Top : st.Bottom;
                 var atEnd = st.Heads.Where(h => Math.Abs(h.HeadY - yEnd) <= 1.0 * staff.Space).ToList();
@@ -3959,6 +4005,34 @@ public sealed class SymbolAnalyzer
                 syms.Remove(o);
             }
             if (w.Notes.Count > 1) { w.Kind = SymbolKind.Chord; w.Name = "chord"; w.Notes.Sort((a, b) => b.Step.CompareTo(a.Step)); }
+        }
+    }
+
+    /// <summary>
+    /// A double sharp (a small x) is often read as text: a small square glyph right before a head at its height that
+    /// matches the double sharp template.
+    /// </summary>
+    private void DoubleSharpsReadAsText(List<MusicSymbol> syms, Staff staff)
+    {
+        if (_lib == null) return;
+        double ss = staff.Space;
+        var heads = syms.Where(s => s.Kind is SymbolKind.Note or SymbolKind.Chord or SymbolKind.NoteGroup).SelectMany(s => s.Notes.Concat(s.Children.SelectMany(c => c.Notes))).ToList();
+        foreach (var t in syms.Where(s => s.Kind is SymbolKind.Text or SymbolKind.Unknown && (!s.Attributes.TryGetValue("glyphs", out var g) || g == "1")
+                                          && s.Bounds.Width >= 0.4 * ss && s.Bounds.Width <= 1.0 * ss && s.Bounds.Height >= 0.4 * ss && s.Bounds.Height <= 1.0 * ss
+                                          && Math.Abs(s.Bounds.Width - s.Bounds.Height) <= 0.3 * ss).ToList())
+        {
+            var r = t.Bounds;
+            if (!heads.Any(h => h.Head.X0 >= r.X1 - 0.1 * ss && h.Head.X0 - r.X1 <= 0.8 * ss && Math.Abs(h.HeadY - r.CenterY) <= 0.4 * ss)) continue;
+            int w = r.Width, hh = r.Height;
+            var mask = new byte[w * hh];
+            for (int y = 0; y < hh; y++)
+                for (int x = 0; x < w; x++)
+                    if (_ns[r.X0 + x, r.Y0 + y]) mask[y * w + x] = 1;
+            var m = _lib.Match(mask, w, hh, ss, 0.4, g => g.Kind == SymbolKind.Accidental);
+            if (Environment.GetEnvironmentVariable("PVOMR_DSDUMP") == "1") Console.Error.WriteLine($"DS {r}: {string.Join(" ", m.Take(3).Select(x => $"{x.Template.Name} {x.Score:0.00}"))}");
+            if (m.Count == 0 || m[0].Template.Name != "accidentalDoubleSharp" || m[0].Score < 0.55) continue;
+            t.Kind = SymbolKind.Accidental; t.Name = "accidentalDoubleSharp"; t.Confidence = Math.Round(m[0].Score, 2);
+            t.Step = (int)Math.Round(staff.StepAt(r.CenterX, r.CenterY));
         }
     }
 

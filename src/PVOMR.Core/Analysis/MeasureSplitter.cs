@@ -170,16 +170,20 @@ public static class MeasureSplitter
     }
 
     /// <summary>
-    /// A brace matched in the middle of a staff of a one-staff system is a bar line the detector missed (a thin stroke
-    /// over the full staff height; braces only stand left of the system). Returns the number of bar lines added.
+    /// A brace matched in the middle of a staff is a bar line the detector missed (a thin stroke over the full staff
+    /// height; braces only stand left of the system); in a system of several staves when another staff has the line
+    /// there. Returns the number of bar lines added.
     /// </summary>
     public static int SplitMissedBarlines(PageAnalysis page)
     {
         int added = 0;
-        foreach (var sys in page.Systems.Where(s => s.Staves.Count == 1))
+        foreach (var sys in page.Systems)
+        foreach (var st in sys.Staves.ToList())
         {
-            var st = sys.Staves[0];
             double ss = st.Space;
+            // in a system of several staves only where another staff has a bar line at that place (the system takes a
+            // line only when enough staves agree)
+            bool OthersHave(double cx) => sys.Staves.Count == 1 || sys.Staves.Any(o => o != st && o.Barlines.Any(b => Math.Abs(b.X - cx) <= 0.8 * ss));
             // braces, and thin strokes that run exactly from the top line to the bottom line taken for something else
             // (a "clef" or an unknown symbol a fraction of a space wide)
             bool Candidate(MusicSymbol s)
@@ -195,7 +199,7 @@ public static class MeasureSplitter
             foreach (var b in strokes)
             {
                 double cx = b.Bounds.CenterX;
-                if (cx < st.Left + 4 * ss || cx > st.Right - 1.0 * ss) continue;
+                if (cx < st.Left + 4 * ss || cx > st.Right - 1.0 * ss || !OthersHave(cx)) continue;
                 if (SplitAt(page, st, b))
                 {
                     page.Notes.Add($"staff {st.Index + 1}: a {b.Kind.ToString().ToLowerInvariant()} at x={cx:0} inside the staff taken as a missed bar line");
