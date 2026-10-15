@@ -23,6 +23,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\PVOMR.Core\PVOMR.Core.csproj" />
+    <ProjectReference Include="..\PVOMR.Merge\PVOMR.Merge.csproj" />
     <ProjectReference Include="..\PVOMR.Ocr\PVOMR.Ocr.csproj" />
   </ItemGroup>
 

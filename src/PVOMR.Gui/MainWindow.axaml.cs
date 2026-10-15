@@ -63,6 +63,7 @@ public partial class MainWindow : Window
         };
         KeyDown += OnKey;
         ExportButton.Click += async (_, _) => await ExportAsync();
+        MergeButton.Click += (_, _) => new MergeWindow(() => _engine ??= new RecognitionEngine()).Show(this);
         FitButton.Click += (_, _) => View.FitPage();
         FitWidthButton.Click += (_, _) => View.FitWidth();
         Zoom100Button.Click += (_, _) => View.SetZoom(1);
