@@ -238,6 +238,7 @@ public sealed class SymbolAnalyzer
             AccidentalsInUnknowns(syms, staff);
             TrillsAboveStaff(syms, staff);
             DropNotesWithoutHeads(syms);
+            BarlinesReadAsStems(syms, staff);
             // nothing is written left of the staff lines but the brace or bracket, whose tip can look like a head on a stem
             syms.RemoveAll(s => s.Kind is SymbolKind.Note or SymbolKind.Chord && s.Notes.Count > 0 && s.Notes.All(n => n.HeadX < staff.Left));
             ResolveLoneBeamlets(syms, staff);
@@ -247,7 +248,7 @@ public sealed class SymbolAnalyzer
             DigitsReadAsHeads(syms, staff);
             // a note clear of the staff stands on ledger lines, the first one a space off the staff; without it the
             // "note" is handwriting or text (a chord with heads that far out on its own is a stemless one)
-            syms.RemoveAll(s => (s.Kind == SymbolKind.Note || s.Kind == SymbolKind.Chord && s.StemUp == null) && s.Notes.Count > 0
+            syms.RemoveAll(s => (s.Kind is SymbolKind.Note or SymbolKind.NoteGroup || s.Kind == SymbolKind.Chord && s.StemUp == null) && s.Notes.Count > 0
                                 && s.Notes.All(n => (n.Step < -1 || n.Step > 9)
                                                     && !HasLedgerLine(n.HeadX, staff.BottomY(n.HeadX) - (n.Step > 9 ? 10 : -2) * staff.Space / 2, staff.Space)));
             EighthRestsFromPieces(syms, staff);
@@ -258,6 +259,15 @@ public sealed class SymbolAnalyzer
             StackedWholeNotes(syms, staff);
             AttachDotsAndAccidentals(syms, staff);
             DropRestsInAccidentals(syms, staff);
+            // a "half or whole rest" on or close beside a note head (1.2 ss) is a piece of a tie or ledger line at the chord
+            {
+                var hd = syms.Where(s => s.Kind is SymbolKind.Note or SymbolKind.Chord or SymbolKind.NoteGroup).SelectMany(s => s.Notes.Concat(s.Children.SelectMany(c => c.Notes))).ToList();
+                syms.RemoveAll(r => r.Kind == SymbolKind.Rest && r.Duration is "half" or "whole" && r.Name != "multiRest"
+                                    && hd.Any(n => n.Head.X0 < r.Bounds.X1 + 1.2 * staff.Space && n.Head.X1 > r.Bounds.X0 - 1.2 * staff.Space && Math.Abs(n.HeadY - r.Bounds.CenterY) <= 0.6 * staff.Space));
+            }
+            // an unsure short rest floating a space clear of the staff: strings and dots of a chord diagram, text
+            syms.RemoveAll(r => r.Kind == SymbolKind.Rest && r.Duration is "quarter" or "8th" or "16th" && r.Confidence < 0.8
+                                && (r.Bounds.Y1 < staff.TopY(r.Bounds.CenterX) - staff.Space || r.Bounds.Y0 > staff.BottomY(r.Bounds.CenterX) + staff.Space));
             TiesReadAsHeads(syms, staff);
             DetectHairpinsAndSlurs(syms, staff);
             MarkGraceNotes(syms, staff);
@@ -891,10 +901,13 @@ public sealed class SymbolAnalyzer
         if (bu != null && bl != null)
         {
             int ext = (int)Math.Round(0.5 * ss), lineHalf = (int)Math.Ceiling(staff.LineThickness / 2) + 1;
-            double above = InkColumns(bu.X, bu.W, bu.Y - lineHalf - ext, bu.Y - lineHalf), below = InkColumns(bl.X, bl.W, bl.Y + bl.H + lineHalf, bl.Y + bl.H + lineHalf + ext);
+            // (a quarter space clear of the template: a bold digit runs a little past it)
+            int clear = (int)Math.Round(0.25 * ss);
+            double above = InkColumns(bu.X, bu.W, bu.Y - lineHalf - clear - ext, bu.Y - lineHalf - clear), below = InkColumns(bl.X, bl.W, bl.Y + bl.H + lineHalf + clear, bl.Y + bl.H + lineHalf + clear + ext);
             if (above > 0.3 || below > 0.3) digitScore = 0;
             // a stem through the digit's edge (a note, not a digit): a vertical ink run of a staff space crossing the boundary
-            if (HasStemThrough(bu.X, bu.W, bu.Y - lineHalf - 1, ss) || HasStemThrough(bl.X, bl.W, bl.Y + bl.H + lineHalf + 1, ss)) digitScore = 0;
+            // (going on beyond the edge: a digit's own stroke, the stem of a 4, pokes out only a little)
+            if (HasStemThrough(bu.X, bu.W, bu.Y - lineHalf - 1, ss, -1) || HasStemThrough(bl.X, bl.W, bl.Y + bl.H + lineHalf + 1, ss, +1)) digitScore = 0;
             if (bu.T.Name == "timeSig1" && bl.T.Name == "timeSig1") digitScore = 0;
             else if (bu.T.Name == "timeSig1" || bl.T.Name == "timeSig1") digitScore -= 0.08;
         }
@@ -3831,6 +3844,26 @@ public sealed class SymbolAnalyzer
         }
     }
 
+    /// <summary>
+    /// A bar line of this staff, or one the other staves of the system have and this one lacks (a repeat sign, its dots
+    /// read as heads): a note there whose stem fills the staff height is that bar line.
+    /// </summary>
+    private void BarlinesReadAsStems(List<MusicSymbol> syms, Staff staff)
+    {
+        double ss = staff.Space;
+        var sys = _page.Systems.FirstOrDefault(s => s.Staves.Contains(staff));
+        // the staff's own heavy, double and repeat bar lines (a note may stand right at a single one): the note's box
+        // takes in the line itself (a chord right beside it does not); a line
+        // only the other staves have: near its position
+        var xs = staff.Barlines.Where(b => b.Kind is not (BarlineKind.SystemStart or BarlineKind.Single)).Select(b => (x: (b.X0 + b.X1) / 2.0, reach: 0.0)).ToList();
+        if (sys != null && sys.Staves.Count > 1)
+            xs.AddRange(sys.MeasureBoundaries.Where(x => !staff.Barlines.Any(b => b.X0 - 0.6 * ss <= x && b.X1 + 0.6 * ss >= x)).Select(x => (x, reach: 0.4 * ss)));
+        foreach (var (x, reach) in xs)
+            syms.RemoveAll(s => s.Kind is SymbolKind.Note or SymbolKind.Chord && s.Bounds.X0 <= x + reach && s.Bounds.X1 >= x - reach
+                                && s.Bounds.Y0 <= staff.TopY(x) + 0.3 * ss && s.Bounds.Y1 >= staff.BottomY(x) - 0.3 * ss
+                                && s.Notes.All(n => Math.Abs(n.HeadX - x) <= 1.2 * ss));
+    }
+
     /// <summary>Stemless whole notes one above the other (within half a space across) are one chord.</summary>
     private static void StackedWholeNotes(List<MusicSymbol> syms, Staff staff)
     {
@@ -3881,6 +3914,15 @@ public sealed class SymbolAnalyzer
         }
     }
 
+    /// <summary>A horizontal ink run of 1.5 spaces or more starting within 0.4 spaces right of the box, at its rows.</summary>
+    private bool TieRightOf(Rect b, double ss)
+    {
+        for (int y = b.Y0; y <= b.Y1; y++)
+            for (int x = b.X1 + 1; x <= b.X1 + (int)Math.Round(0.4 * ss); x++)
+                if (x < _ns.Width && _ns[x, y] && _ns.HorizontalRunAt(x, y, out _) >= 1.5 * ss) return true;
+        return false;
+    }
+
     private void AttachDotsAndAccidentals(List<MusicSymbol> syms, Staff staff)
     {
         double ss = staff.Space;
@@ -3927,6 +3969,8 @@ public sealed class SymbolAnalyzer
             // a dot is round: a sliver (the middle of a natural sign) is none
             double aspect = d.Bounds.Width / (double)Math.Max(1, d.Bounds.Height);
             if (aspect < 0.45 || aspect > 2.2) continue;
+            // the broken-off tip of a tie: the tie's long body starts right after it
+            if (TieRightOf(d.Bounds, ss)) { syms.Remove(d); continue; }
             // augmentation dot: right of a head, roughly at head height (in a space); one per head, nearest in height,
             // and a second dot only when it lies beside the first (double dot), not above or below it
             // some engravers set the dot well clear of the head: further out only when no other note stands in between

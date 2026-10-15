@@ -1054,13 +1054,13 @@ public static class MusicAssembler
                 if (sums.Count < 4) continue;
                 int mode = sums.GroupBy(x => x).OrderByDescending(g => g.Count()).ThenByDescending(g => g.Key).First().Key;
                 int share = sums.Count(x => x == mode);
-                // at least a fifth fits: the signature stands, unless another length holds the majority and three times as
-                // many measures
-                if (expected != null && fitting * 5 >= sums.Count && !(share * 2 >= sums.Count && share >= 3 * fitting)) continue;
+                // at least a fifth fits: the signature stands, unless another length holds the majority and half as many
+                // measures again
+                if (expected != null && fitting * 5 >= sums.Count && !(share * 2 >= sums.Count && share * 2 >= 3 * fitting)) continue;
                 int eighth = Score.Divisions / 2;
-                // the agreeing measures must be at least 30% (40% when no signature was read at all) and twice the fitting ones
+                // the agreeing measures must be at least 30% (40% when no signature was read at all) and half as many again as the fitting ones
                 int needed = expected == null ? (sums.Count * 2 + 4) / 5 : (sums.Count * 3 + 9) / 10;
-                if (share < needed || share < 2 * fitting || mode == expected || mode % eighth != 0 || mode < 2 * eighth || mode > 24 * eighth) continue;
+                if (share < needed || share * 2 < 3 * fitting || mode == expected || mode % eighth != 0 || mode < 2 * eighth || mode > 24 * eighth) continue;
                 int eighths = mode / eighth;
                 TimeSpec t = eighths % 2 == 0 ? new TimeSpec(eighths / 2, 4) : new TimeSpec(eighths, 8);
                 var first = run[0];

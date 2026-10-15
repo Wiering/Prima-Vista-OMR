@@ -124,6 +124,23 @@ public sealed class PageAnalyzer
         var comps = ConnectedComponents.Label(noStaff);
         ctx.Components = comps;
         BarlineDetector.Detect(bin0, noStaff, comps, result.Staves, result.Notes);
+        // a guitar chord diagram is a small grid: a "staff" a few spaces wide whose strings read as a run of bar lines
+        if (result.Staves.Count > 1)
+        {
+            double width = result.Staves.Select(st => st.Right - st.Left).OrderBy(w => w).ElementAt(result.Staves.Count / 2);
+            int removed = result.Staves.RemoveAll(st => st.Right - st.Left < 25 * st.Space && st.Right - st.Left < width / 3
+                                                         && st.Barlines.Count(b => b.Kind != BarlineKind.SystemStart) >= 4);
+            if (removed > 0)
+            {
+                // renumber, also the staves the bar lines span (by their old numbers)
+                var newIndex = result.Staves.Select((st, i) => (st.Index, i)).ToDictionary(p => p.Index, p => p.i);
+                int Map(int old, bool up) { while (!newIndex.ContainsKey(old) && old >= 0 && old <= newIndex.Keys.Max()) old += up ? 1 : -1; return newIndex.TryGetValue(old, out int v) ? v : 0; }
+                foreach (var st in result.Staves)
+                    foreach (var b in st.Barlines) { int from = Map(b.StaffFrom, true), to = Map(b.StaffTo, false); b.StaffFrom = from; b.StaffTo = Math.Max(from, to); }
+                for (int i = 0; i < result.Staves.Count; i++) result.Staves[i].Index = i;
+                result.Notes.Add($"{removed} chord diagram(s) taken for staves dropped");
+            }
+        }
         result.Systems.AddRange(SystemBuilder.Build(bin0, result.Staves, result.Notes));
         if (_opt.TextRecognizer != null)
         {

@@ -61,6 +61,26 @@ public static class BarlineDetector
                 }
                 else merged.Add(c);
             }
+            // a bar line with a note right after it: the stem of a half note hanging from a head beside its top (the
+            // hollow head often broken by staff removal) passes for the second line of a double bar. Double bars stand
+            // tight; a wider pair whose second line has a head-sized blob right of its top end and nothing further down
+            // there (a key or time signature goes on down) is a bar line and a stem
+            for (int i = 0; i + 1 < merged.Count; i++)
+            {
+                var a = merged[i]; var d = merged[i + 1];
+                double gap = d.X0 - a.X1;
+                if (gap <= 0.5 * ss || gap > 0.9 * ss || a.Thick || d.Thick) continue;
+                int x0 = d.X1 + (int)(0.3 * ss), x1 = d.X1 + (int)(1.6 * ss);
+                double top = staff.TopY(d.Xc);
+                int near = 0, below = 0;
+                for (int x = Math.Max(0, x0); x <= Math.Min(noStaff.Width - 1, x1); x++)
+                {
+                    for (int y = (int)(top - 0.6 * ss); y <= (int)(top + 0.6 * ss); y++) if (y >= 0 && y < noStaff.Height && noStaff[x, y]) near++;
+                    for (int y = (int)(top + 1.2 * ss); y <= (int)(top + 2.0 * ss); y++) if (y >= 0 && y < noStaff.Height && noStaff[x, y]) below++;
+                }
+                if (BarDump) Console.Error.WriteLine($"bar staff {si + 1} pair {a.X0}/{d.X0}: head beside second top {near} px, below {below}");
+                if (near >= 0.15 * ss * ss && below <= 0.1 * near) merged.RemoveAt(i + 1);
+            }
             // Classify kinds (pairs within 1.2 staff spaces).
             var bars = new List<Barline>();
             for (int i = 0; i < merged.Count; i++)
