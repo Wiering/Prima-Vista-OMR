@@ -73,7 +73,8 @@ public static class SystemBuilder
             if (!byRoot.TryGetValue(r, out var sys)) { sys = new StaffSystem(); byRoot[r] = sys; systems.Add(sys); }
             sys.Staves.Add(staves[i]);
         }
-        systems.Sort((p, q) => p.Staves[0].CenterY.CompareTo(q.Staves[0].CenterY));
+        // in reading order: by the staves' order (top to bottom; a spread's left page before its right page)
+        systems.Sort((p, q) => p.Staves.Min(st => st.Index).CompareTo(q.Staves.Min(st => st.Index)));
         for (int i = 0; i < systems.Count; i++)
         {
             var sys = systems[i];

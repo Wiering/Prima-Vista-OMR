@@ -109,6 +109,23 @@ public sealed class PageAnalyzer
         result.LineThickness = staffRes.LineThickness;
         result.Staves.AddRange(staffRes.Staves);
         ctx.Gray = gray; ctx.Binary = bin0;
+        // a scanned spread (two pages side by side): the staves form two columns that do not overlap; the left page
+        // comes first, each page top to bottom (staves numbered by height alone would interleave the two pages)
+        if (result.Staves.Count >= 2)
+        {
+            var byLeft = result.Staves.OrderBy(st => st.Left).ToList();
+            List<Staff>? leftCol = null, rightCol = null;
+            for (int k = 1; k < byLeft.Count && leftCol == null; k++)
+                if (byLeft.Take(k).Max(st => st.Right) < byLeft.Skip(k).Min(st => st.Left) - 3 * byLeft[0].Space)
+                { leftCol = byLeft.Take(k).ToList(); rightCol = byLeft.Skip(k).ToList(); }
+            if (leftCol != null && rightCol != null)
+            {
+                var ordered = leftCol.OrderBy(st => st.CenterY).Concat(rightCol.OrderBy(st => st.CenterY)).ToList();
+                result.Staves.Clear(); result.Staves.AddRange(ordered);
+                for (int i = 0; i < ordered.Count; i++) ordered[i].Index = i;
+                result.Notes.Add($"two pages side by side: {leftCol.Count} staves left, {rightCol.Count} right");
+            }
+        }
 
         if (result.Staves.Count == 0)
         {
