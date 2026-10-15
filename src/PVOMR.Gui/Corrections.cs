@@ -105,6 +105,36 @@ public sealed class CorrectionStore
 
     public void Clear(int page) { _file.Pages.RemoveAll(p => p.Page == page); Save(); }
 
+    /// <summary>The corrections, page by page.</summary>
+    public IReadOnlyList<PageCorrections> Pages => _file.Pages;
+
+    /// <summary>Removes some entries of a page.</summary>
+    public void Remove(int page, IEnumerable<SymbolEdit> edits, IEnumerable<StaffOverride> staves)
+    {
+        var pc = _file.Pages.FirstOrDefault(p => p.Page == page);
+        if (pc == null) return;
+        foreach (var e in edits.ToList()) pc.Edits.Remove(e);
+        foreach (var s in staves.ToList()) pc.Staves.Remove(s);
+        Save();
+    }
+
+    /// <summary>A short description of an edit, for lists.</summary>
+    public static string Describe(SymbolEdit e) => e.Op switch
+    {
+        "set" => "set" + (e.Kind != null ? $" {e.Kind}" : "") + (e.Duration != null ? $" {e.Duration}" : "") + (e.Dots is int d ? $" {d} dot(s)" : "")
+                 + (e.Stem != null ? $" stem {e.Stem}" : "") + (e.Time != null ? $" time {e.Time}" : ""),
+        "head" => $"head {e.Head + 1} to step {e.Step}",
+        "removeHead" => $"head {e.Head + 1} removed",
+        "accidental" => $"head {e.Head + 1} accidental {(e.Alter switch { 1 => "♯", -1 => "♭", 0 => "♮", 2 => "x", -2 => "♭♭", _ => "none" })}",
+        "add" => $"added {(e.Kind ?? "note").ToLowerInvariant()} {e.Duration}",
+        "delete" => "deleted",
+        "move" => $"moved {e.Dx},{e.Dy}",
+        "addBar" => "bar line added",
+        "deleteBar" => "bar line removed",
+        "setBar" => $"bar line {e.Kind}",
+        _ => e.Op,
+    };
+
     /// <summary>Removes the most recent entry of a page (the last edit, else the last staff override). Returns false when there is none.</summary>
     public bool UndoLast(int page)
     {

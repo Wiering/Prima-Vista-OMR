@@ -115,10 +115,6 @@
             <Button Name="DeleteSymbolButton" Content="Delete symbol"/>
           </StackPanel>
 
-          <TextBlock Classes="h" Text="Corrections"/>
-          <TextBlock Name="CorrectionsInfo" TextWrapping="Wrap" Text="Corrections are saved next to the score and replayed when the page is recognised again."/>
-          <Button Name="DiscardPageButton" Content="Discard this page's corrections"/>
-
           <TextBlock Classes="h" Text="Measures to check"/>
           <TextBlock Name="FitSummary" TextWrapping="Wrap" Text=""/>
           <ListBox Name="FitList" Height="150" FontFamily="Consolas,Courier New,monospace" FontSize="11"/>
@@ -126,6 +122,13 @@
           <TextBlock Classes="h" Text="Symbols in this measure"/>
           <TextBlock Name="MeasureFitText" TextWrapping="Wrap" Text=""/>
           <ListBox Name="MeasureList" Height="230" FontFamily="Consolas,Courier New,monospace" FontSize="11"/>
+
+          <TextBlock Classes="h" Text="Corrections"/>
+          <TextBlock Name="CorrectionsInfo" TextWrapping="Wrap" Text="Corrections are saved next to the score and replayed when the page is recognised again."/>
+          <ScrollViewer MaxHeight="220" HorizontalScrollBarVisibility="Disabled">
+            <StackPanel Name="CorrectionsList" Spacing="1"/>
+          </ScrollViewer>
+          <Button Name="DiscardPageButton" Content="Discard this page's corrections" Margin="0,4,0,0"/>
 
           <TextBlock Classes="h" Text="Notes and warnings"/>
           <TextBox Name="NotesBox" AcceptsReturn="True" IsReadOnly="True" Height="180" TextWrapping="Wrap" FontSize="11"/>

@@ -348,8 +348,11 @@ public sealed partial class MergeWindow : Window
             ShowBarText(slot.Bar, bar, s == e.Base ? e.Diff.EventA : s == e.Other ? e.Diff.EventB : null, third);
             // the suggested (or chosen) version: a thick outline; a version that does not add up: a thick red one
             bool chosen = s == row.Chosen;
-            slot.Border.BorderBrush = bar != null && !bar.Fits ? Brushes.Red : chosen ? new SolidColorBrush(Color.FromRgb(0, 150, 0)) : Brushes.Gray;
-            slot.Border.BorderThickness = new Thickness(bar != null && !bar.Fits || chosen ? 4 : 1);
+            // (red only where the rhythm differs from a version that adds up: with the same rhythm, adding up decides nothing)
+            int si = s;
+            bool red = bar != null && !bar.Fits && row.Candidates.Where((c, i) => i != si && c != null && c.Fits).Any(c => RhythmDiffers(bar, c!));
+            slot.Border.BorderBrush = red ? Brushes.Red : chosen ? new SolidColorBrush(Color.FromRgb(0, 150, 0)) : Brushes.Gray;
+            slot.Border.BorderThickness = new Thickness(red || chosen ? 4 : 1);
             string name = $"{Letter(s)}: {Path.GetFileName(src.Strand.Source)}";
             view.Labels = null; view.Marker = null;
             var at = Locate(s, bar);
@@ -624,13 +627,19 @@ public sealed partial class MergeWindow : Window
         if (_projectPath != null) _ = SaveProjectAsync(ask: false);
     }
 
-    /// <summary>The suggested version adds up and every other version of the bar does not.</summary>
+    /// <summary>The suggested version adds up and every other version of the bar does not, because of a different rhythm
+    /// (a version differing only in pitches says nothing about which one is right).</summary>
     private static bool OnlySuggestionFits(MergeRow row)
     {
         if (row.ChosenBar is not MergeBar b || !b.Fits) return false;
         var others = row.Candidates.Where((c, i) => i != row.Chosen && c != null).ToList();
-        return others.Count > 0 && others.All(c => !c!.Fits);
+        return others.Count > 0 && others.All(c => !c!.Fits && RhythmDiffers(b, c));
     }
+
+    /// <summary>The two bars differ in a way that changes whether they add up: a length, a note more or less.</summary>
+    private static bool RhythmDiffers(MergeBar x, MergeBar y) => Comparer.Diff(x, y).Any(d =>
+        d.Kind is DiffKind.Duration or DiffKind.ExtraNote or DiffKind.MissingNote
+        || d.Kind == DiffKind.NoteRest && d.EventA != null && d.EventB != null && d.EventA.Length.CompareTo(d.EventB.Length) != 0);
 
     /// <summary>The user's earlier choices, where the row still holds the same bar.</summary>
     private void ApplyChoices()

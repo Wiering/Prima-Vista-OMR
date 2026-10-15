@@ -56,10 +56,7 @@ public partial class MainWindow : Window
         {
             if (_updating || FitList.SelectedIndex < 0 || FitList.SelectedIndex >= _fitItems.Count) return;
             var (staff, measure, _) = _fitItems[FitList.SelectedIndex];
-            _selSym = null; _selStaff = staff; _selMeasure = measure;
-            View.Select(null, staff);
-            View.EnsureVisible(new Rect((int)measure.X0, (int)(staff.TopY(measure.X0) - 2 * staff.Space), (int)measure.X1, (int)(staff.BottomY(measure.X0) + 2 * staff.Space)));
-            UpdateInspector(measure: measure);
+            ShowMeasure(staff, measure);
         };
         KeyDown += OnKey;
         ExportButton.Click += async (_, _) => await ExportAsync();
@@ -582,10 +579,117 @@ public partial class MainWindow : Window
             UpdateFitList();
             CorrectionsInfo.Text = _store == null ? "" : _store.Count == 0
                 ? "No corrections yet. They are saved next to the score and replayed when a page is recognised again."
-                : $"{_store.Count} correction(s) saved in {Path.GetFileName(_store.Path)}" + (_store.HasPage(_page) ? " (this page has some)" : "");
+                : $"{_store.Count} correction(s) saved in {Path.GetFileName(_store.Path)}" + (_store.HasPage(_page) ? "" : " (none on this page)");
+            RefreshCorrections();
         }
         finally { _updating = false; }
         UpdateButtons();
+    }
+
+    /// <summary>Shows a measure: selected, scrolled into view, its symbols listed.</summary>
+    private void ShowMeasure(Staff staff, Measure measure, MusicSymbol? symbol = null)
+    {
+        _selSym = symbol; _selStaff = staff; _selMeasure = measure;
+        View.Select(symbol, staff);
+        View.EnsureVisible(new Rect((int)measure.X0, (int)(staff.TopY(measure.X0) - 2 * staff.Space), (int)measure.X1, (int)(staff.BottomY(measure.X0) + 2 * staff.Space)));
+        UpdateInspector(measure: measure);
+    }
+
+    // ------------------------------------------------------------------ the list of corrected measures
+
+    /// <summary>The corrections of one measure (Measure -1: the page is not recognised yet, or outside the measures; -2: staff settings).</summary>
+    private sealed record CorrectionGroup(int Page, int Staff, int Measure, string Where, List<SymbolEdit> Edits, List<StaffOverride> Staves);
+
+    private string _correctionsShown = "";
+
+    private List<CorrectionGroup> CorrectionGroups()
+    {
+        var groups = new List<CorrectionGroup>();
+        if (_store == null) return groups;
+        foreach (var pc in _store.Pages)
+        {
+            _pages.TryGetValue(pc.Page, out var pr);
+            var byKey = new Dictionary<(int staff, int measure), CorrectionGroup>();
+            foreach (var e in pc.Edits)
+            {
+                int mi = -1; string where;
+                if (e.Staff < 0) where = "outside the staves";
+                else if (pr != null && e.Staff < pr.Analysis.Staves.Count && CorrectionStore.MeasureAt(pr.Analysis.Staves[e.Staff], (e.X0 + e.X1) / 2.0) is Measure m)
+                { mi = m.Index; where = $"{e.Staff + 1}.{m.Index + 1}"; }
+                else where = $"staff {e.Staff + 1}";
+                if (!byKey.TryGetValue((e.Staff, mi), out var g)) byKey[(e.Staff, mi)] = g = new CorrectionGroup(pc.Page, e.Staff, mi, where, new(), new());
+                g.Edits.Add(e);
+            }
+            foreach (var so in pc.Staves)
+            {
+                if (!byKey.TryGetValue((so.Staff, -2), out var g)) byKey[(so.Staff, -2)] = g = new CorrectionGroup(pc.Page, so.Staff, -2, $"staff {so.Staff + 1} settings", new(), new());
+                g.Staves.Add(so);
+            }
+            groups.AddRange(byKey.Values.OrderBy(g => g.Staff).ThenBy(g => g.Measure));
+        }
+        return groups;
+    }
+
+    /// <summary>The corrected measures, each clickable (shows it) with a button that removes its corrections.</summary>
+    private void RefreshCorrections()
+    {
+        string signature = _store == null ? "" : $"{_store.Path}|{_store.Count}|{_store.Pages.Sum(p => p.Edits.Sum(e => e.GetHashCode()))}|{string.Join(",", _pages.Keys.OrderBy(k => k))}|{_page}";
+        if (signature == _correctionsShown) return;
+        _correctionsShown = signature;
+        CorrectionsList.Children.Clear();
+        foreach (var g in CorrectionGroups())
+        {
+            var parts = g.Edits.GroupBy(e => e.Op).Select(o => o.Count() > 1 ? $"{OpName(o.Key)} ×{o.Count()}" : OpName(o.Key))
+                         .Concat(g.Staves.Select(so => string.Join(" ", new[] { so.Clef, so.Key is int k ? $"key {k}" : null, so.Time }.Where(x => x != null))));
+            var details = g.Edits.Select(CorrectionStore.Describe).Concat(g.Staves.Select(so => $"clef {so.Clef ?? "-"}, key {so.Key?.ToString() ?? "-"}, time {so.Time ?? "-"}"));
+            var link = new Button
+            {
+                Content = $"p.{g.Page}  {g.Where}:  {string.Join(", ", parts)}", HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Stretch,
+                HorizontalContentAlignment = Avalonia.Layout.HorizontalAlignment.Left, Background = Avalonia.Media.Brushes.Transparent, Padding = new Avalonia.Thickness(4, 1), FontSize = 11,
+                FontWeight = g.Page == _page ? Avalonia.Media.FontWeight.SemiBold : Avalonia.Media.FontWeight.Normal,
+            };
+            ToolTip.SetTip(link, string.Join(Environment.NewLine, details));
+            var group = g;
+            link.Click += async (_, _) => await ShowCorrectionAsync(group);
+            var remove = new Button { Content = "✕", Padding = new Avalonia.Thickness(6, 1), FontSize = 11 };
+            ToolTip.SetTip(remove, "Remove these corrections (the page is recognised again)");
+            remove.Click += async (_, _) => await RemoveCorrectionsAsync(group);
+            var row = new DockPanel();
+            DockPanel.SetDock(remove, Dock.Right); row.Children.Add(remove);
+            row.Children.Add(link);
+            CorrectionsList.Children.Add(row);
+        }
+    }
+
+    private static string OpName(string op) => op switch
+    {
+        "set" => "changed", "head" => "pitch", "removeHead" => "head removed", "accidental" => "accidental", "add" => "added", "delete" => "deleted",
+        "move" => "moved", "addBar" => "bar line added", "deleteBar" => "bar line removed", "setBar" => "bar line kind", _ => op,
+    };
+
+    private async Task ShowCorrectionAsync(CorrectionGroup g)
+    {
+        if (_busy) return;
+        if (g.Page != _page) await GoToPageAsync(g.Page);
+        if (_current == null || g.Staff < 0 || g.Staff >= _current.Analysis.Staves.Count) return;
+        var staff = _current.Analysis.Staves[g.Staff];
+        var first = g.Edits.FirstOrDefault();
+        var measure = first != null ? CorrectionStore.MeasureAt(staff, (first.X0 + first.X1) / 2.0) : staff.Measures.FirstOrDefault();
+        if (measure == null) return;
+        // the corrected symbol itself, when it is still there (not for a deletion)
+        var symbol = g.Edits.Where(e => e.Op is not ("delete" or "addBar" or "deleteBar" or "setBar")).Select(e => CorrectionStore.Find(_current, e)).FirstOrDefault(x => x != null);
+        ShowMeasure(staff, measure, symbol);
+        Status($"page {g.Page}, measure {g.Where}: " + string.Join("; ", g.Edits.Select(CorrectionStore.Describe)));
+    }
+
+    private async Task RemoveCorrectionsAsync(CorrectionGroup g)
+    {
+        if (_store == null || _busy) return;
+        _store.Remove(g.Page, g.Edits, g.Staves);
+        _pages.Remove(g.Page);
+        if (g.Page == _page) await AnalyzeAsync(g.Page, force: true);
+        else RefreshCorrections();
+        Status($"removed {g.Edits.Count + g.Staves.Count} correction(s) of page {g.Page}, measure {g.Where}; {_store.Count} remain");
     }
 
     private void BuildHeadsPanel(MusicSymbol? s)
