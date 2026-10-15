@@ -490,6 +490,12 @@ public static class MusicAssembler
             else if (m.X1 >= staff.Right - 2 * ss) sm.Warnings.Add("no barline at the end of the measure (staff end)");
         }
 
+        // a loose triplet "3" (over separate notes, no beam or bracket): in a voice too long for the measure, the run of
+        // notes centred under it whose third is exactly the surplus becomes the triplet
+        if (ctx.Time != null)
+            foreach (var t in m.Symbols.Where(s => s.Kind == SymbolKind.Tuplet && s.Attributes.ContainsKey("loose")))
+                LooseTriplet(sm, staffNo, t, ctx.Time.Length, ss);
+
         // validation against the time signature
         if (ctx.Time != null) Validate(sm, ctx.Time, staffNo);
         else if (events.Count == 1 && events[0].IsRest && events[0].Type == "whole") events[0].MeasureRest = true;
@@ -503,6 +509,36 @@ public static class MusicAssembler
                 if (e.TupletActual == 0) { e.TupletActual = 3; e.TupletNormal = 2; }
                 else { e.TupletActual *= 3; e.TupletNormal *= 2; }
             }
+    }
+
+    private static void LooseTriplet(ScoreMeasure sm, int staffNo, MusicSymbol t, int length, double ss)
+    {
+        double tx = t.Bounds.CenterX;
+        foreach (var voice in sm.Events.Where(e => e.Staff == staffNo && !e.Grace).GroupBy(e => e.Voice))
+        {
+            var evs = voice.OrderBy(e => e.X).ToList();
+            int surplus = evs.Sum(e => e.Duration) - length;
+            if (surplus <= 0 || evs.Any(e => e.TupletActual != 0)) continue;
+            int best = -1, bestLen = 0; double bestD = double.MaxValue;
+            for (int i = 0; i < evs.Count; i++)
+                for (int n = 2; n <= 4 && i + n <= evs.Count; n++)
+                {
+                    int span = evs.Skip(i).Take(n).Sum(e => e.Duration);
+                    if (span % 3 != 0 || span / 3 != surplus) continue;
+                    double mid = (evs[i].X + evs[i + n - 1].X) / 2.0;
+                    double d = Math.Abs(mid - tx);
+                    if (d <= 2.5 * ss && d < bestD) { bestD = d; best = i; bestLen = n; }
+                }
+            if (best < 0) continue;
+            for (int k = 0; k < bestLen; k++)
+            {
+                var e = evs[best + k];
+                e.Duration = e.Duration * 2 / 3;
+                e.TupletActual = 3; e.TupletNormal = 2;
+                e.TupletStart = k == 0; e.TupletStop = k == bestLen - 1;
+            }
+            return;
+        }
     }
 
     /// <summary>Checks every voice of a staff against the measure length; drops uncertain events when that makes the measure add up.</summary>

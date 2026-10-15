@@ -224,6 +224,7 @@ public sealed class SymbolAnalyzer
             MergeDynamics(syms, staff);
             GroupDottedLines(syms, staff);
             MergeDuplicateRests(syms, staff);
+            LooseTupletThrees(syms, staff);
             AttachTuplets(syms, staff);
             AttachDetachedStems(syms, staff);
             AttachDetachedHeads(syms, staff);
@@ -544,13 +545,23 @@ public sealed class SymbolAnalyzer
     }
 
     /// <summary>Fraction of the columns [px, px+w) that carry ink in the rows [yFrom, yTo) of the original image.</summary>
-    private double InkColumns(int px, int w, int yFrom, int yTo)
+    /// <summary>The share of columns with ink in rows [yFrom, yTo); with joinY set, only ink joined to row joinY by an
+    /// unbroken vertical run counts (a stroke going on from the glyph, not a mark standing apart).</summary>
+    private double InkColumns(int px, int w, int yFrom, int yTo, int joinY = -1)
     {
         if (w <= 0 || yTo <= yFrom) return 0;
         int cols = 0;
         for (int x = px; x < px + w; x++)
         {
             if (x < 0 || x >= _bin.Width) continue;
+            if (joinY >= 0)
+            {
+                if (joinY >= _bin.Height || !_bin[x, joinY]) continue;
+                int y = joinY, step = joinY < yFrom ? 1 : -1, target = joinY < yFrom ? yFrom : yTo - 1;
+                while (y != target && y + step >= 0 && y + step < _bin.Height && _bin[x, y + step]) y += step;
+                if (y == target) cols++;
+                continue;
+            }
             for (int y = Math.Max(0, yFrom); y < yTo && y < _bin.Height; y++) if (_bin[x, y]) { cols++; break; }
         }
         return (double)cols / w;
@@ -855,18 +866,33 @@ public sealed class SymbolAnalyzer
             // a change of key comes first
             var keyChange = syms.Where(k => k.Attributes.ContainsKey("keychange") && k.Bounds.X0 > bar.X1 && k.Bounds.X0 < bar.X1 + 8 * ss).ToList();
             if (keyChange.Count > 0) xStart = Math.Max(xStart, keyChange.Max(k => k.Bounds.X1));
-            var near = comps.Where(c => !consumed.Contains(c) && c.X0 > xStart && c.X0 < xStart + 1.5 * ss && c.Width >= 0.6 * ss && c.Width <= 2.4 * ss
-                                        && c.CenterY > staff.TopY(c.CenterX) && c.CenterY < staff.BottomY(c.CenterX)).ToList();
-            // one staff-high piece (touching digits) or two stacked digit-sized pieces
-            bool tall = near.Any(c => c.Height >= 3.2 * ss && c.Height <= 4.6 * ss);
-            bool stacked = near.Any(a => a.Height >= 1.4 * ss && a.Height <= 2.4 * ss && near.Any(b => b != a && b.Y0 > a.CenterY + ss && b.Height >= 1.4 * ss && b.Height <= 2.4 * ss && Math.Abs(b.CenterX - a.CenterX) < 0.8 * ss));
-            // or a C (common or cut time, its left half may break off) around the middle line, often after a change of key
-            bool common = near.Any(c => c.Height >= 1.8 * ss && c.Height <= 3.2 * ss && c.Width >= 0.5 * ss && Math.Abs(c.CenterY - staff.Lines[2].YAt(c.CenterX)) <= 0.5 * ss);
-            if (!tall && !stacked && !common) continue;
-            // right after a change of key a C is expected: no note head beside an accidental to tell it from (the open-C
-            // test), and a worn one is enough
-            var sym = keyChange.Count > 0 ? TimeSignatureAt(xStart, staff, afterBar: false, commonMin: 0.65) : TimeSignatureAt(xStart, staff, afterBar: true);
-            if (KeyDump) Console.Error.WriteLine($"time change staff {staff.Index + 1} after bar {bar.X0}: {(sym == null ? "none" : sym.Attributes.GetValueOrDefault("stack") ?? sym.Name)}");
+            // a change of key not read as one (naturals cancelling the old key, then the new accidentals): the time
+            // signature may also start after any of the accidental-sized pieces following the bar
+            var starts = new List<int> { xStart };
+            foreach (var c in comps.Where(c => !consumed.Contains(c) && c.X0 > xStart && c.X0 < xStart + 5 * ss && c.Width >= 0.4 * ss && c.Width <= 1.2 * ss
+                                               && c.Height >= 1.8 * ss && c.Height <= 3.6 * ss && c.CenterY > staff.TopY(c.CenterX) - 0.5 * ss && c.CenterY < staff.BottomY(c.CenterX) + 0.5 * ss)
+                                   .OrderBy(c => c.X0))
+            {
+                if (c.X0 > starts[^1] + 1.5 * ss) break;   // the run of accidentals ended
+                starts.Add(Math.Max(starts[^1], c.X1));
+            }
+            MusicSymbol? sym = null;
+            foreach (int x0 in starts)
+            {
+                var near = comps.Where(c => !consumed.Contains(c) && c.X0 > x0 && c.X0 < x0 + 1.5 * ss && c.Width >= 0.6 * ss && c.Width <= 2.4 * ss
+                                            && c.CenterY > staff.TopY(c.CenterX) && c.CenterY < staff.BottomY(c.CenterX)).ToList();
+                // one staff-high piece (touching digits) or two stacked digit-sized pieces
+                bool tall = near.Any(c => c.Height >= 3.2 * ss && c.Height <= 4.6 * ss);
+                bool stacked = near.Any(a => a.Height >= 1.4 * ss && a.Height <= 2.4 * ss && near.Any(b => b != a && b.Y0 > a.CenterY + ss && b.Height >= 1.4 * ss && b.Height <= 2.4 * ss && Math.Abs(b.CenterX - a.CenterX) < 0.8 * ss));
+                // or a C (common or cut time, its left half may break off) around the middle line, often after a change of key
+                bool common = near.Any(c => c.Height >= 1.8 * ss && c.Height <= 3.2 * ss && c.Width >= 0.5 * ss && Math.Abs(c.CenterY - staff.Lines[2].YAt(c.CenterX)) <= 0.5 * ss);
+                if (!tall && !stacked && !common) continue;
+                // right after a change of key a C is expected: no note head beside an accidental to tell it from (the open-C
+                // test), and a worn one is enough
+                sym = keyChange.Count > 0 ? TimeSignatureAt(x0, staff, afterBar: false, commonMin: 0.65) : TimeSignatureAt(x0, staff, afterBar: true);
+                if (KeyDump) Console.Error.WriteLine($"time change staff {staff.Index + 1} after bar {bar.X0} from {x0}: {(sym == null ? "none" : sym.Attributes.GetValueOrDefault("stack") ?? sym.Name)}");
+                if (sym != null) break;
+            }
             if (sym == null) continue;
             sym.Attributes["timezone"] = "1";
             syms.Add(sym);
@@ -903,11 +929,15 @@ public sealed class SymbolAnalyzer
             int ext = (int)Math.Round(0.5 * ss), lineHalf = (int)Math.Ceiling(staff.LineThickness / 2) + 1;
             // (a quarter space clear of the template: a bold digit runs a little past it)
             int clear = (int)Math.Round(0.25 * ss);
-            double above = InkColumns(bu.X, bu.W, bu.Y - lineHalf - clear - ext, bu.Y - lineHalf - clear), below = InkColumns(bl.X, bl.W, bl.Y + bl.H + lineHalf + clear, bl.Y + bl.H + lineHalf + clear + ext);
+            // (joined to the digit's edge: a dynamic or text below the staff stands apart)
+            double above = InkColumns(bu.X, bu.W, bu.Y - lineHalf - clear - ext, bu.Y - lineHalf - clear, bu.Y),
+                   below = InkColumns(bl.X, bl.W, bl.Y + bl.H + lineHalf + clear, bl.Y + bl.H + lineHalf + clear + ext, bl.Y + bl.H - 1);
             if (above > 0.3 || below > 0.3) digitScore = 0;
             // a stem through the digit's edge (a note, not a digit): a vertical ink run of a staff space crossing the boundary
             // (going on beyond the edge: a digit's own stroke, the stem of a 4, pokes out only a little)
             if (HasStemThrough(bu.X, bu.W, bu.Y - lineHalf - 1, ss, -1) || HasStemThrough(bl.X, bl.W, bl.Y + bl.H + lineHalf + 1, ss, +1)) digitScore = 0;
+            // the stroke of a cut C pokes out a little at both ends (a 4's stem at one end only)
+            if (HasStemThrough(bu.X, bu.W, bu.Y - lineHalf - 1, ss) && HasStemThrough(bl.X, bl.W, bl.Y + bl.H + lineHalf + 1, ss)) digitScore = 0;
             if (bu.T.Name == "timeSig1" && bl.T.Name == "timeSig1") digitScore = 0;
             else if (bu.T.Name == "timeSig1" || bl.T.Name == "timeSig1") digitScore -= 0.08;
         }
@@ -2521,6 +2551,49 @@ public sealed class SymbolAnalyzer
         return true;
     }
 
+    /// <summary>
+    /// A small "3" over (or under) separate notes, a triplet without a beam or bracket, is often read as text: a small
+    /// glyph outside the staff, close to the stem ends of notes, that matches the 3 better than other digits.
+    /// </summary>
+    private void LooseTupletThrees(List<MusicSymbol> syms, Staff staff)
+    {
+        if (_lib == null) return;
+        double ss = staff.Space;
+        foreach (var t in syms.Where(s => (s.Kind is SymbolKind.Text or SymbolKind.Unknown && (!s.Attributes.TryGetValue("glyphs", out var g) || g == "1")
+                                           || s.Kind == SymbolKind.Tuplet && s.Confidence < 0.8 && s.Name != "tuplet3")
+                                          && s.Bounds.Height >= 0.6 * ss && s.Bounds.Height <= 1.4 * ss && s.Bounds.Width >= 0.3 * ss && s.Bounds.Width <= 1.1 * ss).ToList())
+        {
+            if (!syms.Contains(t)) continue;
+            // a thin 3 breaks into pieces (one may even go to the neighbouring staff): the box of all ink close around it
+            int pad = (int)Math.Round(0.4 * ss);
+            int bx0 = int.MaxValue, by0 = int.MaxValue, bx1 = -1, by1 = -1;
+            for (int y = Math.Max(0, t.Bounds.Y0 - pad); y <= Math.Min(_ns.Height - 1, t.Bounds.Y1 + pad); y++)
+                for (int x = Math.Max(0, t.Bounds.X0 - pad); x <= Math.Min(_ns.Width - 1, t.Bounds.X1 + pad); x++)
+                    if (_ns[x, y]) { bx0 = Math.Min(bx0, x); by0 = Math.Min(by0, y); bx1 = Math.Max(bx1, x); by1 = Math.Max(by1, y); }
+            var r = bx1 < 0 ? t.Bounds : new Rect(bx0, by0, bx1, by1);
+            if (r.Height > 1.6 * ss || r.Width > 1.3 * ss) r = t.Bounds;
+            var pieces = syms.Where(s => s != t && s.Kind is SymbolKind.Text or SymbolKind.Unknown or SymbolKind.Dot
+                                         && s.Bounds.X0 >= r.X0 && s.Bounds.X1 <= r.X1 && s.Bounds.Y0 >= r.Y0 && s.Bounds.Y1 <= r.Y1).ToList();
+            bool above = r.Y1 < staff.TopY(r.CenterX) - 0.2 * ss, below = r.Y0 > staff.BottomY(r.CenterX) + 0.2 * ss;
+            if (!above && !below) continue;
+            // close to a note's stem end on that side
+            if (!syms.Any(n => n.Kind is SymbolKind.Note or SymbolKind.Chord && n.Bounds.X0 <= r.X1 + 0.5 * ss && n.Bounds.X1 >= r.X0 - 0.5 * ss
+                               && (above ? Math.Abs(n.Bounds.Y0 - r.Y1) <= 3.5 * ss : Math.Abs(r.Y0 - n.Bounds.Y1) <= 3.5 * ss))) continue;
+            int w = r.Width, h = r.Height;
+            var mask = new byte[w * h];
+            for (int y = 0; y < h; y++)
+                for (int x = 0; x < w; x++)
+                    if (_ns[r.X0 + x, r.Y0 + y]) mask[y * w + x] = 1;
+            var m = _lib.Match(mask, w, h, ss, 0.5, g => g.Kind == SymbolKind.Tuplet || g.Kind == SymbolKind.TimeSignature && g.Name.Length == 8 && char.IsDigit(g.Name[7]));
+            if (Environment.GetEnvironmentVariable("PVOMR_TUPDUMP") == "1") Console.Error.WriteLine($"TUP {r}: {string.Join(" ", m.Take(3).Select(x => $"{x.Template.Name} {x.Score:0.00}"))}");
+            if (m.Count == 0 || m[0].Template.Name[^1] != '3' || m[0].Score < 0.5) continue;
+            t.Kind = SymbolKind.Tuplet; t.Name = "tuplet3"; t.Confidence = Math.Round(m[0].Score, 2); t.Bounds = r;
+            t.Attributes["tuplet"] = "3";
+            t.Attributes["loose"] = "1";
+            foreach (var p in pieces) syms.Remove(p);
+        }
+    }
+
     /// <summary>Tuplet digits are attached to the note group (or run of notes) they sit above or below.</summary>
     private void AttachTuplets(List<MusicSymbol> syms, Staff staff)
     {
@@ -2533,7 +2606,12 @@ public sealed class SymbolAnalyzer
             var group = syms.Where(s => s.Kind == SymbolKind.NoteGroup && cx >= s.Bounds.X0 - 0.5 * ss && cx <= s.Bounds.X1 + 0.5 * ss
                                         && (Math.Abs(t.Bounds.Y1 - s.Bounds.Y0) <= 3.0 * ss || Math.Abs(t.Bounds.Y0 - s.Bounds.Y1) <= 3.0 * ss))
                             .OrderBy(s => Math.Min(Math.Abs(t.Bounds.Y1 - s.Bounds.Y0), Math.Abs(t.Bounds.Y0 - s.Bounds.Y1))).FirstOrDefault();
-            if (group == null) continue;
+            if (group == null)
+            {
+                // over separate notes: the assembler places it where it makes the measure add up
+                if (t.Name == "tuplet3" || t.Attributes.GetValueOrDefault("tuplet") == "3") t.Attributes["loose"] = "1";
+                continue;
+            }
             // fingerings look the same: a tuplet digit sits on the beam side of the group and divides its note count
             string digit = t.Attributes.TryGetValue("tuplet", out var dv) ? dv : t.Name.StartsWith("tuplet") ? t.Name[6..] : "";
             if (!int.TryParse(digit, out int actual) || actual is not (3 or 5 or 6 or 7)) continue;
