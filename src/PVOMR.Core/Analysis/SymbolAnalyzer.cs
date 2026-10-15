@@ -1053,17 +1053,28 @@ public sealed class SymbolAnalyzer
         // (the blob may also have been taken for a double sharp or a digit of unknown value, small blobs of that size)
         var blobs = syms.Where(s => (Fragment(s) || s.Kind == SymbolKind.Accidental && s.Name.Contains("DoubleSharp")
                                      || s.Kind == SymbolKind.TimeSignature && s.Name == "timeSig?" && !s.Attributes.ContainsKey("timezone")) && InStaff(s)
-                                    && s.Bounds.Width >= 0.6 * ss && s.Bounds.Width <= 1.3 * ss && s.Bounds.Height >= 0.35 * ss && s.Bounds.Height <= 1.3 * ss).ToList();
+                                    && s.Bounds.Width >= 0.4 * ss && s.Bounds.Width <= 1.3 * ss && s.Bounds.Height >= 0.35 * ss && s.Bounds.Height <= 1.4 * ss).ToList();
         foreach (var b in blobs)
         {
             if (!syms.Contains(b)) continue;
-            var stroke = syms.FirstOrDefault(s => s != b && Fragment(s) && s.Bounds.Width <= 0.6 * ss && s.Bounds.Height >= 0.6 * ss && s.Bounds.Height <= 1.8 * ss
-                                                  && s.Bounds.Y0 >= b.Bounds.Y1 - 0.25 * ss && s.Bounds.Y0 - b.Bounds.Y1 <= 0.45 * ss
-                                                  && s.Bounds.CenterX >= b.Bounds.CenterX && s.Bounds.X0 <= b.Bounds.X1 + 0.1 * ss);
+            var stroke = b.Bounds.Width < 0.6 * ss ? null
+                : syms.FirstOrDefault(s => s != b && Fragment(s) && s.Bounds.Width <= 0.6 * ss && s.Bounds.Height >= 0.6 * ss && s.Bounds.Height <= 1.8 * ss
+                                           && s.Bounds.Y0 >= b.Bounds.Y1 - 0.35 * ss && s.Bounds.Y0 - b.Bounds.Y1 <= 0.45 * ss
+                                           && s.Bounds.CenterX >= b.Bounds.CenterX && s.Bounds.X0 <= b.Bounds.X1 + 0.1 * ss);
+            // a smaller blob (a dot) with the stroke right beside it, read as an unsure "s"
+            stroke ??= b.Kind == SymbolKind.Dot ? syms.FirstOrDefault(s => s != b && s.Kind == SymbolKind.Dynamic && s.Confidence < 0.7 && s.Bounds.Width <= 0.6 * ss
+                                                     && s.Bounds.Height >= 1.2 * ss && s.Bounds.Height <= 2.0 * ss
+                                                     && s.Bounds.Y0 >= b.Bounds.Y0 && s.Bounds.Y0 <= b.Bounds.Y1 && s.Bounds.X0 >= b.Bounds.X1 - 0.1 * ss && s.Bounds.X0 <= b.Bounds.X1 + 0.3 * ss) : null;
             if (stroke == null) continue;
-            var rest = new MusicSymbol { Kind = SymbolKind.Rest, Name = "rest8th", Duration = "8th", Staff = staff, Confidence = 0.7, Bounds = b.Bounds.Union(stroke.Bounds) };
+            var u = b.Bounds.Union(stroke.Bounds);
+            if (u.Height > 2.4 * ss) continue;
+            var rest = new MusicSymbol { Kind = SymbolKind.Rest, Name = "rest8th", Duration = "8th", Staff = staff, Confidence = 0.7, Bounds = u };
             rest.Attributes["pieces"] = "blob+stroke";
-            syms.Remove(b); syms.Remove(stroke); syms.Add(rest);
+            syms.Remove(b); syms.Remove(stroke);
+            // slivers between them (the cut at the staff line)
+            syms.RemoveAll(s => s.Kind == SymbolKind.Unknown && s.Bounds.Width <= 0.6 * ss && s.Bounds.Height <= 0.3 * ss
+                                && s.Bounds.X0 >= u.X0 && s.Bounds.X1 <= u.X1 && s.Bounds.Y0 >= u.Y0 && s.Bounds.Y1 <= u.Y1);
+            syms.Add(rest);
         }
     }
 

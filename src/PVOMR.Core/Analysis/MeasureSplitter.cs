@@ -192,10 +192,32 @@ public static class MeasureSplitter
                 if (s.Kind == SymbolKind.Brace)
                     return s.Bounds.Height >= 3.4 * ss && s.Bounds.Height <= 5.0 * ss && s.Bounds.Width <= 0.6 * ss
                            && s.Bounds.Y0 <= st.TopY(cx) + 0.5 * ss && s.Bounds.Y1 >= st.BottomY(cx) - 0.5 * ss;
-                return s.Kind is SymbolKind.Unknown or SymbolKind.Clef or SymbolKind.Text && s.Notes.Count == 0 && s.Bounds.Width <= 0.5 * ss
-                       && Math.Abs(s.Bounds.Y0 - st.TopY(cx)) <= 0.4 * ss && Math.Abs(s.Bounds.Y1 - st.BottomY(cx)) <= 0.4 * ss;
+                if (s.Kind is not (SymbolKind.Unknown or SymbolKind.Clef or SymbolKind.Text) || s.Notes.Count > 0 || s.Bounds.Width > 0.5 * ss) return false;
+                double dt = Math.Abs(s.Bounds.Y0 - st.TopY(cx)), db = Math.Abs(s.Bounds.Y1 - st.BottomY(cx));
+                if (dt <= 0.4 * ss && db <= 0.4 * ss) return true;
+                // a line broken near one end: notes on both sides of it in the measure (no stem without its head)
+                if (Math.Max(dt, db) > 1.0 * ss || Math.Min(dt, db) > 0.4 * ss || s.Bounds.Height < 3.0 * ss) return false;
+                var m = st.Measures.FirstOrDefault(m => m.Symbols.Contains(s));
+                bool Sounding(MusicSymbol o) => o.Kind is SymbolKind.Note or SymbolKind.Chord or SymbolKind.NoteGroup or SymbolKind.Rest;
+                return m != null && m.Symbols.Any(o => Sounding(o) && o.Bounds.X1 < s.Bounds.X0 - 0.5 * ss) && m.Symbols.Any(o => Sounding(o) && o.Bounds.X0 > s.Bounds.X1 + 0.5 * ss)
+                       && !m.Symbols.Any(o => Sounding(o) && o.Bounds.X0 <= s.Bounds.X1 + 0.5 * ss && o.Bounds.X1 >= s.Bounds.X0 - 0.5 * ss);
             }
-            var strokes = st.Measures.SelectMany(m => m.Symbols).Where(Candidate).ToList();
+            var all = st.Measures.SelectMany(m => m.Symbols).ToList();
+            var strokes = all.Where(Candidate).ToList();
+            // a line broken in two: a "brace" over part of the staff and a thin piece in line with it, together the full height
+            foreach (var b in all.Where(s => s.Kind == SymbolKind.Brace && !strokes.Contains(s) && s.Bounds.Width <= 0.6 * ss && s.Bounds.Height >= 2.0 * ss).ToList())
+            {
+                double cx = b.Bounds.CenterX;
+                var rest = all.FirstOrDefault(s => s != b && s.Kind is SymbolKind.Text or SymbolKind.Unknown or SymbolKind.Brace && s.Bounds.Width <= 0.6 * ss
+                                                   && Math.Abs(s.Bounds.CenterX - cx) <= 0.3 * ss && (s.Bounds.Y0 >= b.Bounds.Y1 - 0.2 * ss && s.Bounds.Y0 - b.Bounds.Y1 <= 0.6 * ss
+                                                                                                  || b.Bounds.Y0 >= s.Bounds.Y1 - 0.2 * ss && b.Bounds.Y0 - s.Bounds.Y1 <= 0.6 * ss));
+                if (rest == null) continue;
+                var u = b.Bounds.Union(rest.Bounds);
+                if (u.Y0 > st.TopY(cx) + 0.5 * ss || u.Y1 < st.BottomY(cx) - 0.5 * ss || u.Height > 5.0 * ss) continue;
+                b.Bounds = u;
+                foreach (var m in st.Measures) m.Symbols.Remove(rest);
+                strokes.Add(b);
+            }
             foreach (var b in strokes)
             {
                 double cx = b.Bounds.CenterX;
