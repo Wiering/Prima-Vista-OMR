@@ -44,6 +44,7 @@ public sealed class MergeBar
     /// <summary>The source's own measure (for links back to the page: page, x range).</summary>
     public ScoreMeasure? SourceMeasure { get; init; }
     public override string ToString() => $"bar {Number} (p{Page} line {Line}): {Key}";
+    internal MergeBar WithVoices(IEnumerable<List<BarEvent>> voices) { Voices.AddRange(voices); return this; }
 }
 
 /// <summary>A note, chord or rest: sounding pitches (empty for a rest) and the length in whole notes.</summary>

@@ -80,7 +80,7 @@ public static class MergeEdits
         for (int r = 0; r < rows.Count; r++)
         {
             var row = rows[r];
-            if (!reviewed.Contains(r) || row.Chosen <= 0 || row.ChosenBar is not MergeBar c) continue;
+            if (!reviewed.Contains(r) || row.Chosen < 0 || row.Chosen == 0 && row.Overrides.Count == 0 || Merger.EffectiveBar(row) is not MergeBar c) continue;
             if (row.Candidates[0] is not MergeBar a) { run.Skipped.Add($"bar {c.Number}: missing in A"); continue; }
             if (a.Key == c.Key) continue;
             bars++;

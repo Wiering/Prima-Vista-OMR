@@ -30,6 +30,8 @@ public sealed class MergeChoice
     public int Row { get; set; }
     public int Source { get; set; }
     public string Key { get; set; } = "";
+    /// <summary>Pitches corrected in the chosen bar (neither version right).</summary>
+    public List<NoteOverride>? Overrides { get; set; }
 }
 
 public sealed class MergeProject
@@ -60,7 +62,8 @@ public sealed partial class MergeWindow : Window
     private readonly StackPanel _sourcesPanel = new() { Spacing = 4 };
     private readonly ListBox _list = new();
     private readonly Grid _views = new();
-    private readonly List<(PageView view, TextBlock header, TextBlock bar)> _pageViews = new();
+    private sealed record Slot(PageView View, TextBlock Header, TextBlock Bar, Border Border);
+    private readonly List<Slot> _pageViews = new();
     /// <summary>Views that showed a bar already: later bars are only centred, the user's zoom stays.</summary>
     private readonly HashSet<PageView> _zoomed = new();
     private readonly double _dpi;
@@ -69,6 +72,10 @@ public sealed partial class MergeWindow : Window
     private readonly TextBlock _status = new() { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 0, 0) };
     private readonly CheckBox _restsByLength = new() { Content = "Rests by total length", IsChecked = true };
     private readonly CheckBox _onlyOpen = new() { Content = "Only bars to review", IsChecked = true };
+    private readonly TextBlock _progress = new() { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(12, 0, 0, 0), Opacity = 0.8 };
+    private readonly StackPanel _noteEditor = new() { Orientation = Orientation.Horizontal, Spacing = 4, Margin = new Thickness(0, 4, 0, 0) };
+    private readonly TextBlock _noteLabel = new() { VerticalAlignment = VerticalAlignment.Center, TextWrapping = TextWrapping.Wrap };
+    private readonly TextBox _pitchBox = new() { Width = 70 };
     private readonly Button _compare, _export, _toEdits;
     private readonly List<MergeData> _sources = new();
     private List<MergeRow> _rows = new();
@@ -101,12 +108,15 @@ public sealed partial class MergeWindow : Window
         save.Click += async (_, _) => await SaveProjectAsync(ask: _projectPath == null);
         var acceptAll = new Button { Content = "Accept all suggestions" };
         ToolTip.SetTip(acceptAll, "Take the suggested version for every bar not reviewed yet");
-        acceptAll.Click += (_, _) => { for (int i = 0; i < _rows.Count; i++) if (_rows[i].Chosen >= 0) _reviewed.Add(i); FillList(); };
+        acceptAll.Click += (_, _) => AcceptWhere(_ => true);
+        var acceptFitting = new Button { Content = "Accept where only the suggestion adds up" };
+        ToolTip.SetTip(acceptFitting, "Take the suggested version for every open bar where it adds up and the other versions do not");
+        acceptFitting.Click += (_, _) => AcceptWhere(OnlySuggestionFits);
         _restsByLength.IsCheckedChanged += (_, _) => _project.RestsByLength = _restsByLength.IsChecked == true;
         ToolTip.SetTip(_restsByLength, "A dotted quarter rest and a quarter plus an 8th rest count as the same (takes effect at the next Compare)");
-        _onlyOpen.IsCheckedChanged += (_, _) => FillList();
+        _onlyOpen.IsCheckedChanged += (_, _) => FillList(SelectedEntry);
         var bar = new WrapPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(6) };
-        foreach (var c in new Control[] { open, save, add, _compare, _restsByLength, acceptAll, _export, _toEdits, _status }) { c.Margin = new Thickness(0, 0, 6, 4); bar.Children.Add(c); }
+        foreach (var c in new Control[] { open, save, add, _compare, _restsByLength, acceptAll, acceptFitting, _export, _toEdits, _status }) { c.Margin = new Thickness(0, 0, 6, 4); bar.Children.Add(c); }
 
         var sources = new Expander { Header = "Sources (part and staff to take; staff 0 = the whole part)", IsExpanded = true, Content = _sourcesPanel, Margin = new Thickness(6, 0, 6, 4) };
 
@@ -116,7 +126,19 @@ public sealed partial class MergeWindow : Window
         var help = new TextBlock { Text = "Select a difference: the pages show the bar with only the differing notes drawn. Choose the right version (keys 1, 2 …; Enter accepts the suggestion).",
                                    TextWrapping = TextWrapping.Wrap, FontSize = 12, Opacity = 0.75, Margin = new Thickness(0, 0, 0, 4) };
         DockPanel.SetDock(help, Dock.Top); left.Children.Add(help);
-        DockPanel.SetDock(_onlyOpen, Dock.Top); left.Children.Add(_onlyOpen);
+        var openRow = new StackPanel { Orientation = Orientation.Horizontal };
+        openRow.Children.Add(_onlyOpen); openRow.Children.Add(_progress);
+        DockPanel.SetDock(openRow, Dock.Top); left.Children.Add(openRow);
+        // a corrected pitch when neither version is right
+        Button Small(string text, string tip, Action act) { var b = new Button { Content = text, MinWidth = 30 }; ToolTip.SetTip(b, tip); b.Click += (_, _) => act(); return b; }
+        _pitchBox.KeyDown += (_, k) => { if (k.Key == Key.Enter) { UseCorrectedPitch(); k.Handled = true; } };
+        foreach (var c in new Control[] { Small("▼", "a step down", () => NudgePitch(-1, null)), Small("▲", "a step up", () => NudgePitch(1, null)), _pitchBox,
+                                          Small("♭", "flat", () => NudgePitch(0, -1)), Small("♮", "natural", () => NudgePitch(0, 0)), Small("♯", "sharp", () => NudgePitch(0, 1)),
+                                          Small("Use this pitch", "Take the chosen version with this note corrected", UseCorrectedPitch) })
+            _noteEditor.Children.Add(c);
+        var editorPanel = new StackPanel { Margin = new Thickness(0, 6, 0, 0) };
+        editorPanel.Children.Add(_noteLabel); editorPanel.Children.Add(_noteEditor);
+        DockPanel.SetDock(editorPanel, Dock.Bottom); left.Children.Add(editorPanel);
         DockPanel.SetDock(_choiceButtons, Dock.Bottom); _choiceButtons.Margin = new Thickness(0, 6, 0, 0); left.Children.Add(_choiceButtons);
         left.Children.Add(_list);
         var main = new DockPanel();
@@ -199,8 +221,7 @@ public sealed partial class MergeWindow : Window
             ApplyChoices();
             BuildViews();
             BuildEntries();
-            FillList();
-            if (_list.ItemCount > 0) _list.SelectedIndex = 0;
+            FillList(_entries.FirstOrDefault(), nextOpen: true);
             _export.IsEnabled = true;
             _toEdits.IsEnabled = _sources[0].ByNumber.Count > 0;
         }
@@ -220,13 +241,14 @@ public sealed partial class MergeWindow : Window
             var header = new TextBlock { Text = $"{Letter(i)}: {Path.GetFileName(_sources[i].Strand.Source)}", FontWeight = FontWeight.Bold, Margin = new Thickness(4, 0, 0, 2), TextWrapping = TextWrapping.Wrap };
             var barText = new TextBlock { Margin = new Thickness(4, 0, 0, 4), TextWrapping = TextWrapping.Wrap, FontSize = 12 };
             var view = new PageView { ShowFits = false };
+            var border = new Border { Child = view, BorderBrush = Brushes.Gray, BorderThickness = new Thickness(1) };
             var panel = new DockPanel { Margin = new Thickness(i == 0 ? 0 : 4, 0, 0, 0) };
             DockPanel.SetDock(header, Dock.Top); panel.Children.Add(header);
             DockPanel.SetDock(barText, Dock.Top); panel.Children.Add(barText);
-            panel.Children.Add(new Border { Child = view, BorderBrush = Brushes.Gray, BorderThickness = new Thickness(1) });
+            panel.Children.Add(border);
             Grid.SetColumn(panel, i);
             _views.Children.Add(panel);
-            _pageViews.Add((view, header, barText));
+            _pageViews.Add(new Slot(view, header, barText, border));
         }
     }
 
@@ -256,21 +278,38 @@ public sealed partial class MergeWindow : Window
         }
     }
 
-    private void FillList()
+    /// <summary>Fills the list and selects an entry: the preferred one if it is listed, else (with nextOpen) the first open
+    /// one after it.</summary>
+    private void FillList(Entry? preferred = null, bool nextOpen = false)
     {
         var shown = _entries.Where(e => _onlyOpen.IsChecked != true || !_reviewed.Contains(e.Row)).ToList();
-        _list.ItemsSource = shown.Select(e =>
+        var items = shown.Select(e =>
         {
             var row = _rows[e.Row];
-            string state = _reviewed.Contains(e.Row) ? $"✓ {Letter(row.Chosen)}" : $"suggested {Letter(row.Chosen)}";
             var bar = row.Candidates[e.Base] ?? row.Candidates[e.Other];
-            var item = new TextBlock { Text = $"bar {bar?.Number}  {Letter(e.Base)} vs {Letter(e.Other)}  {Describe(e.Diff)}   [{state}]", Tag = e, TextWrapping = TextWrapping.Wrap };
-            if (_reviewed.Contains(e.Row)) item.Opacity = 0.6;
+            bool done = _reviewed.Contains(e.Row);
+            var item = new TextBlock { Text = $"{(done ? $"✓ {Letter(row.Chosen)}  " : "")}bar {bar?.Number}  {Letter(e.Base)} vs {Letter(e.Other)}  {Describe(e.Diff)}", Tag = e, TextWrapping = TextWrapping.Wrap };
+            if (done) item.Opacity = 0.6;
             return item;
         }).ToList();
+        _list.ItemsSource = items;
+        var rowsToReview = _entries.Select(e => e.Row).Distinct().ToList();
+        _progress.Text = $"{rowsToReview.Count(_reviewed.Contains)} / {rowsToReview.Count} bars done";
         int open = Enumerable.Range(0, _rows.Count).Count(i => !_reviewed.Contains(i));
         Status($"{_rows.Count} bars: {_rows.Count(r => r.Status == RowStatus.Unanimous)} the same in every version; {open} to review ({_entries.Count(e => !_reviewed.Contains(e.Row))} differences)");
+        if (preferred == null) return;
+        Entry? target = nextOpen ? null : preferred;
+        if (target == null || !shown.Contains(target))
+        {
+            int from = Math.Max(0, _entries.IndexOf(preferred));
+            target = _entries.Skip(from).Concat(_entries.Take(from)).FirstOrDefault(x => shown.Contains(x) && (!nextOpen || !_reviewed.Contains(x.Row)));
+        }
+        int at = target == null ? -1 : items.FindIndex(t => t.Tag == target);
+        if (at >= 0) { _list.SelectedIndex = at; _list.ScrollIntoView(at); }
+        else if (nextOpen) Status("every bar is reviewed");
     }
+
+    private Entry? SelectedEntry => (_list.SelectedItem as TextBlock)?.Tag as Entry;
 
     private static string Describe(BarDiff d) => d.Kind switch
     {
@@ -284,46 +323,134 @@ public sealed partial class MergeWindow : Window
 
     // ------------------------------------------------------------------ showing a difference
 
+    /// <summary>The page and page measure of a bar of a source (the staff taken from the part; a grand staff: the upper one).</summary>
+    private (PageResult page, Measure measure, List<Measure> measures)? Locate(int s, MergeBar? bar)
+    {
+        var src = _sources[s];
+        if (bar?.SourceMeasure is not ScoreMeasure sm || !src.Measures.TryGetValue(sm, out var measures) || measures.Count == 0) return null;
+        var measure = measures.OrderBy(m => m.Staff.Index).ElementAtOrDefault(src.Strand.Staff is int st0 ? Math.Min(st0 - 1, measures.Count - 1) : 0) ?? measures[0];
+        var page = src.Pages.FirstOrDefault(p => p.Key.Staves.Contains(measure.Staff)).Value;
+        return page == null ? null : (page, measure, measures);
+    }
+
     private void ShowEntry()
     {
-        if (_list.SelectedItem is not TextBlock { Tag: Entry e }) return;
+        if (SelectedEntry is not Entry e) return;
         var row = _rows[e.Row];
         for (int s = 0; s < _sources.Count && s < _pageViews.Count; s++)
         {
-            var (view, header, barText) = _pageViews[s];
+            var slot = _pageViews[s];
+            var view = slot.View;
             var bar = row.Candidates[s];
             var src = _sources[s];
             // the difference in bold: its events on the two sides compared; a third version: what differs from the suggested one
             var third = s != e.Base && s != e.Other && bar != null && row.Candidates[e.Base] is MergeBar b0 ? Comparer.Diff(b0, bar).Select(d => d.EventB) : null;
-            ShowBarText(barText, bar, s == e.Base ? e.Diff.EventA : s == e.Other ? e.Diff.EventB : null, third);
+            ShowBarText(slot.Bar, bar, s == e.Base ? e.Diff.EventA : s == e.Other ? e.Diff.EventB : null, third);
+            // the suggested (or chosen) version: a thick outline; a version that does not add up: a thick red one
+            bool chosen = s == row.Chosen;
+            slot.Border.BorderBrush = bar != null && !bar.Fits ? Brushes.Red : chosen ? new SolidColorBrush(Color.FromRgb(0, 150, 0)) : Brushes.Gray;
+            slot.Border.BorderThickness = new Thickness(bar != null && !bar.Fits || chosen ? 4 : 1);
             string name = $"{Letter(s)}: {Path.GetFileName(src.Strand.Source)}";
-            if (bar?.SourceMeasure is not ScoreMeasure sm || !src.Measures.TryGetValue(sm, out var measures) || measures.Count == 0)
+            view.Labels = null; view.Marker = null;
+            var at = Locate(s, bar);
+            if (at == null)
             {
-                header.Text = name + (bar == null ? "  — bar missing" : "  — no page image (MusicXML)");
+                // a missing bar: the page where it would be, after the bar before it (or before the bar after it)
+                if (bar == null && Neighbour(e.Row, s) is var (nb, after) && Locate(s, nb) is var (np, nm, _))
+                {
+                    slot.Header.Text = $"{name}  — bar missing: shown {(after ? "after" : "before")} its bar {nb.Number} (page {np.PageNumber})";
+                    view.OnlySymbols = Array.Empty<MusicSymbol>();
+                    view.SetPage(np, false);
+                    double x = after ? nm.X1 : nm.X0, ny = (nm.Staff.TopY(x) + nm.Staff.BottomY(x)) / 2;
+                    view.Marker = new Rect((int)(x - nm.Staff.Space), (int)(nm.Staff.TopY(x) - nm.Staff.Space), (int)(x + nm.Staff.Space), (int)(nm.Staff.BottomY(x) + nm.Staff.Space));
+                    Frame(view, nm, x, ny, null);
+                    continue;
+                }
+                slot.Header.Text = name + (bar == null ? "  — bar missing" : "  — no page image (MusicXML)");
                 view.OnlySymbols = null;
                 view.SetPage(null, false);
                 continue;
             }
-            // the staff taken from the part (a grand staff: the upper one for the view)
-            var measure = measures.OrderBy(m => m.Staff.Index).ElementAtOrDefault(src.Strand.Staff is int st0 ? Math.Min(st0 - 1, measures.Count - 1) : 0) ?? measures[0];
-            var page = src.Pages.FirstOrDefault(p => p.Key.Staves.Contains(measure.Staff)).Value;
-            if (page == null) { view.SetPage(null, false); continue; }
-            header.Text = $"{name}  — page {page.PageNumber}, bar {bar.Number}" + (bar.Fits ? "" : " (does not add up)")
-                          + (s == row.Chosen ? (_reviewed.Contains(e.Row) ? "  ✓ chosen" : "  (suggested)") : "");
-            var events = s == e.Base ? e.Diff.EventA : s == e.Other ? e.Diff.EventB : null;
+            var (page, measure, measures) = at.Value;
+            string corrected = chosen && row.Overrides.Count > 0 ? $", corrected: {string.Join(", ", row.Overrides.Select(o => o.Pitch))}" : "";
+            slot.Header.Text = $"{name}  — page {page.PageNumber}, bar {bar!.Number}" + (bar.Fits ? "" : " (does not add up)")
+                               + (chosen ? (_reviewed.Contains(e.Row) ? $"  ✓ chosen{corrected}" : "  (suggested)") : "");
+            var ev = s == e.Base ? e.Diff.EventA : s == e.Other ? e.Diff.EventB : null;
             view.SetPage(page, false);
-            view.OnlySymbols = events == null ? Array.Empty<MusicSymbol>() : SymbolsFor(events, measures);
-            // the bar with some context on each side, the staff with room above and below
-            var staff = measure.Staff;
-            double ss = staff.Space, cx = (measure.X0 + measure.X1) / 2, w = measure.X1 - measure.X0;
-            // the first time zoomed to the bar; after that only centred on the difference (the user's zoom stays)
-            if (_zoomed.Add(view))
-                view.ZoomTo(new Rect((int)(measure.X0 - 0.6 * w), (int)(staff.TopY(cx) - 5 * ss), (int)(measure.X1 + 0.6 * w), (int)(staff.BottomY(cx) + 5 * ss)));
-            else if (view.OnlySymbols is { Count: > 0 } shown)
-                view.CenterOn(shown.Average(o => o.Bounds.CenterX), shown.Average(o => o.Bounds.CenterY));
-            else view.CenterOn(cx, (staff.TopY(cx) + staff.BottomY(cx)) / 2);
+            var found = ev == null ? new List<(MusicSymbol sym, ScoreEvent se)>() : SymbolsFor(ev, measures);
+            view.OnlySymbols = found.Select(f => f.sym).Distinct().ToList();
+            var labels = new Dictionary<MusicSymbol, SymbolLabel>();
+            foreach (var (sym, se) in found) labels.TryAdd(sym, LabelFor(s, bar, ev!, se, e.Diff.Kind));
+            view.Labels = labels;
+            // a note this version lacks: where it would be, at the same fraction of the bar as in the other version
+            var otherEv = s == e.Base ? e.Diff.EventB : s == e.Other ? e.Diff.EventA : null;
+            if (ev == null && otherEv?.Sources.FirstOrDefault() is ScoreEvent ose && Locate(s == e.Base ? e.Other : e.Base, row.Candidates[s == e.Base ? e.Other : e.Base]) is var (_, om, _))
+            {
+                double f = Math.Clamp((ose.X - om.X0) / Math.Max(1.0, om.X1 - om.X0), 0.02, 0.98), x = measure.X0 + f * (measure.X1 - measure.X0);
+                var st = measure.Staff;
+                view.Marker = new Rect((int)(x - 0.8 * st.Space), (int)(st.TopY(x) - st.Space), (int)(x + 0.8 * st.Space), (int)(st.BottomY(x) + st.Space));
+            }
+            double cx = (measure.X0 + measure.X1) / 2;
+            Frame(view, measure, cx, (measure.Staff.TopY(cx) + measure.Staff.BottomY(cx)) / 2, view.OnlySymbols);
         }
         ShowChoiceButtons(e.Row);
+        ShowNoteEditor(e);
+    }
+
+    /// <summary>The first time: zoomed to the bar; after that only centred on the difference (the user's zoom stays).</summary>
+    private void Frame(PageView view, Measure measure, double x, double y, IReadOnlyCollection<MusicSymbol>? shown)
+    {
+        var staff = measure.Staff;
+        double ss = staff.Space, cx = (measure.X0 + measure.X1) / 2, w = measure.X1 - measure.X0;
+        if (_zoomed.Add(view))
+            view.ZoomTo(new Rect((int)(measure.X0 - 0.6 * w), (int)(staff.TopY(cx) - 5 * ss), (int)(measure.X1 + 0.6 * w), (int)(staff.BottomY(cx) + 5 * ss)));
+        else if (shown is { Count: > 0 })
+            view.CenterOn(shown.Average(o => o.Bounds.CenterX), shown.Average(o => o.Bounds.CenterY));
+        else if (view.Marker is Rect mk) view.CenterOn(mk.CenterX, mk.CenterY);
+        else view.CenterOn(x, y);
+    }
+
+    /// <summary>The nearest bar of the source before the row (after: true), else after it.</summary>
+    private (MergeBar bar, bool after)? Neighbour(int rowIndex, int s)
+    {
+        for (int r = rowIndex - 1; r >= 0; r--) if (_rows[r].Candidates[s] is MergeBar b) return (b, true);
+        for (int r = rowIndex + 1; r < _rows.Count; r++) if (_rows[r].Candidates[s] is MergeBar b) return (b, false);
+        return null;
+    }
+
+    /// <summary>The text around a differing symbol: pitch (bold for a pitch difference), length (bold for a length
+    /// difference), and the semitones from the note before and to the note after.</summary>
+    private SymbolLabel LabelFor(int s, MergeBar bar, BarEvent ev, ScoreEvent se, DiffKind kind)
+    {
+        string pitch = se.IsRest ? "rest" : string.Join("+", se.Notes.Select(n => n.Pitch).OrderBy(StrandReader.Midi));
+        string length = (se.Type == "eighth" ? "8th" : se.Type) + new string('.', se.Dots) + (se.TupletActual > 0 ? $" ({se.TupletActual}:{se.TupletNormal})" : "");
+        bool pitchBold = kind is DiffKind.Pitch or DiffKind.Accidental or DiffKind.NoteRest or DiffKind.ExtraNote or DiffKind.MissingNote;
+        bool lengthBold = kind is DiffKind.Duration or DiffKind.NoteRest or DiffKind.ExtraNote or DiffKind.MissingNote;
+        string? before = null, after = null;
+        if (!se.IsRest && se.Notes.Count > 0)
+        {
+            int top = se.Notes.Max(n => StrandReader.Midi(n.Pitch));
+            var (prev, next) = NeighbourNotes(s, bar, ev);
+            if (prev != null) before = Interval(top - prev.Pitches.Max(StrandReader.Midi));
+            if (next != null) after = Interval(next.Pitches.Max(StrandReader.Midi) - top);
+        }
+        return new SymbolLabel(pitch, length, pitchBold, lengthBold, before, after);
+    }
+
+    private static string Interval(int semitones) => semitones > 0 ? $"+{semitones}" : semitones.ToString();
+
+    /// <summary>The notes before and after an event in its voice (rests skipped), looking into the bars around it.</summary>
+    private (BarEvent? prev, BarEvent? next) NeighbourNotes(int s, MergeBar bar, BarEvent ev)
+    {
+        int voice = bar.Voices.FindIndex(v => v.Contains(ev));
+        if (voice < 0) return (null, null);
+        var bars = _sources[s].Strand.Bars;
+        List<BarEvent> VoiceOf(int i) => i < 0 || i >= bars.Count || bars[i].Voices.Count == 0 ? new() : bars[i].Voices[Math.Min(voice, bars[i].Voices.Count - 1)];
+        var line = VoiceOf(bar.Index - 1).Concat(bar.Voices[voice]).Concat(VoiceOf(bar.Index + 1)).ToList();
+        int k = line.IndexOf(ev);
+        var prev = line.Take(k).LastOrDefault(x => !x.IsRest);
+        var next = line.Skip(k + 1).FirstOrDefault(x => !x.IsRest);
+        return (prev, next);
     }
 
     /// <summary>The bar as text, voice by voice, with the events of the difference in bold.</summary>
@@ -351,11 +478,11 @@ public sealed partial class MergeWindow : Window
         tb.Inlines = inlines;
     }
 
-    /// <summary>The recognised symbols (a note of a beamed group on its own) of the events, found by their heads (rests by
-    /// their centre) in the page measures of the bar.</summary>
-    private static List<MusicSymbol> SymbolsFor(BarEvent ev, List<Measure> measures)
+    /// <summary>The recognised symbols (a note of a beamed group on its own) of the event's source events, found by their
+    /// heads (rests by their centre) in the page measures of the bar.</summary>
+    private static List<(MusicSymbol sym, ScoreEvent se)> SymbolsFor(BarEvent ev, List<Measure> measures)
     {
-        var found = new List<MusicSymbol>();
+        var found = new List<(MusicSymbol, ScoreEvent)>();
         var symbols = measures.SelectMany(m => m.Symbols).SelectMany(s => s.Children.Count > 0 ? s.Children.Prepend(s) : new[] { s }).ToList();
         foreach (var se in ev.Sources)
         {
@@ -368,7 +495,7 @@ public sealed partial class MergeWindow : Window
                 hit = symbols.Where(s => s.Kind is SymbolKind.Note or SymbolKind.Chord && s.Notes.Any(h => heads.Any(p => Math.Abs(h.HeadX - p.SourceX) <= 3 && Math.Abs(h.HeadY - p.SourceY) <= 3)))
                              .OrderBy(s => s.Notes.Count).FirstOrDefault();
             }
-            if (hit != null && !found.Contains(hit)) found.Add(hit);
+            if (hit != null) found.Add((hit, se));
         }
         return found;
     }
@@ -391,31 +518,118 @@ public sealed partial class MergeWindow : Window
         _choiceButtons.Children.Add(accept);
     }
 
+    // ------------------------------------------------------------------ correcting a note (neither version right)
+
+    /// <summary>The note the editor corrects: in the chosen version, the event of the selected difference and its first
+    /// head that differs from the other version.</summary>
+    private (int row, int strand, int eventIndex, int head, BarEvent ev)? EditorTarget()
+    {
+        if (SelectedEntry is not Entry e) return null;
+        var row = _rows[e.Row];
+        var ev = row.Chosen == e.Base ? e.Diff.EventA : row.Chosen == e.Other ? e.Diff.EventB : null;
+        var other = row.Chosen == e.Base ? e.Diff.EventB : e.Diff.EventA;
+        if (ev == null || ev.IsRest || row.ChosenBar is not MergeBar bar) return null;
+        int index = bar.Voices.SelectMany(v => v).ToList().FindIndex(x => ReferenceEquals(x, ev));
+        if (index < 0) return null;
+        int head = 0;
+        if (other != null)
+            for (int k = 0; k < ev.Pitches.Count; k++)
+                if (k >= other.Pitches.Count || StrandReader.Midi(ev.Pitches[k]) != StrandReader.Midi(other.Pitches[k])) { head = k; break; }
+        return (e.Row, row.Chosen, index, head, ev);
+    }
+
+    private void ShowNoteEditor(Entry e)
+    {
+        var t = EditorTarget();
+        _noteEditor.IsEnabled = t != null;
+        if (t is not var (r, strand, index, head, ev)) { _noteLabel.Text = "Correct a note: (select a note difference)"; _pitchBox.Text = ""; return; }
+        var o = _rows[r].Overrides.FirstOrDefault(x => x.Event == index && x.Head == head);
+        _noteLabel.Text = $"Neither right? Correct the note in {Letter(strand)}:";
+        _pitchBox.Text = (o?.Pitch ?? ev.Pitches[head]).ToString();
+    }
+
+    private static PitchSpec? ParsePitch(string? text)
+    {
+        var m = System.Text.RegularExpressions.Regex.Match((text ?? "").Trim(), @"^([A-Ga-g])(bb|b|#|x|n)?(-?\d)$");
+        if (!m.Success) return null;
+        int alter = m.Groups[2].Value switch { "#" => 1, "x" => 2, "b" => -1, "bb" => -2, _ => 0 };
+        return new PitchSpec(m.Groups[1].Value.ToUpperInvariant(), alter, int.Parse(m.Groups[3].Value));
+    }
+
+    /// <summary>A step up or down (the accidental the key gives the new note), or an accidental set.</summary>
+    private void NudgePitch(int steps, int? alter)
+    {
+        if (ParsePitch(_pitchBox.Text) is not PitchSpec p || SelectedEntry is not Entry e) return;
+        if (steps != 0)
+        {
+            int d = StrandReader.Diatonic(p) + steps;
+            string letter = "CDEFGAB"[((d % 7) + 7) % 7].ToString();
+            int fifths = _rows[e.Row].ChosenBar?.KeyFifths ?? 0;
+            int keyAlter = fifths > 0 ? ("FCGDAEB".IndexOf(letter[0]) < fifths ? 1 : 0) : fifths < 0 ? ("BEADGCF".IndexOf(letter[0]) < -fifths ? -1 : 0) : 0;
+            p = new PitchSpec(letter, keyAlter, (int)Math.Floor(d / 7.0));
+        }
+        if (alter is int a) p = p with { Alter = a };
+        _pitchBox.Text = p.ToString();
+    }
+
+    private void UseCorrectedPitch()
+    {
+        if (EditorTarget() is not var (r, strand, index, head, ev)) return;
+        if (ParsePitch(_pitchBox.Text) is not PitchSpec p) { Status($"\"{_pitchBox.Text}\" is no pitch (write e.g. F#4, Bb3, E5)"); return; }
+        var row = _rows[r];
+        row.Overrides.RemoveAll(o => o.Event == index && o.Head == head);
+        if (StrandReader.Midi(p) != StrandReader.Midi(ev.Pitches[head]) || p != ev.Pitches[head]) row.Overrides.Add(new NoteOverride(index, head, p));
+        Choose(r, strand, keepOverrides: true);
+    }
+
     private void OnKey(object? sender, KeyEventArgs e)
     {
-        if (_list.SelectedItem is not TextBlock { Tag: Entry entry }) return;
+        if (e.Source is TextBox) return;
+        if (SelectedEntry is not Entry entry) return;
         int pick = e.Key switch { Key.D1 or Key.NumPad1 => 0, Key.D2 or Key.NumPad2 => 1, Key.D3 or Key.NumPad3 => 2, Key.D4 or Key.NumPad4 => 3, Key.Enter => _rows[entry.Row].Chosen, _ => -1 };
         if (pick < 0 || pick >= _rows[entry.Row].Candidates.Length || _rows[entry.Row].Candidates[pick] == null) return;
         Choose(entry.Row, pick);
         e.Handled = true;
     }
 
-    private void Choose(int rowIndex, int strand)
+    private void Choose(int rowIndex, int strand, bool keepOverrides = false)
     {
         var row = _rows[rowIndex];
-        row.Chosen = strand; row.UserChoice = true;
+        // corrections belong to the version they were made in
+        if (!keepOverrides || row.Chosen != strand) row.Overrides.Clear();
+        row.Chosen = strand;
+        Record(rowIndex);
+        FillList(SelectedEntry, nextOpen: true);
+        if (_projectPath != null) _ = SaveProjectAsync(ask: false);
+    }
+
+    /// <summary>Marks a row as reviewed with its current choice (kept in the project).</summary>
+    private void Record(int rowIndex)
+    {
+        var row = _rows[rowIndex];
+        if (row.Chosen < 0) return;
+        row.UserChoice = true;
         _reviewed.Add(rowIndex);
         _project.Choices.RemoveAll(c => c.Row == rowIndex);
-        _project.Choices.Add(new MergeChoice { Row = rowIndex, Source = strand, Key = row.Candidates[strand]!.Key });
-        var current = (_list.SelectedItem as TextBlock)?.Tag as Entry;
-        FillList();
-        // on to the next open difference (after this one, else from the top)
-        int from = current == null ? 0 : Math.Max(0, _entries.IndexOf(current));
-        var next = _entries.Skip(from).Concat(_entries.Take(from)).FirstOrDefault(x => !_reviewed.Contains(x.Row));
-        int at = next == null ? -1 : _list.Items.OfType<TextBlock>().ToList().FindIndex(t => t.Tag == next);
-        if (at >= 0) { _list.SelectedIndex = at; _list.ScrollIntoView(at); }
-        else if (next == null) Status("every bar is reviewed");
+        _project.Choices.Add(new MergeChoice { Row = rowIndex, Source = row.Chosen, Key = row.Candidates[row.Chosen]!.Key, Overrides = row.Overrides.ToList() });
+    }
+
+    /// <summary>Accepts the suggestion of every open row the condition holds for.</summary>
+    private void AcceptWhere(Func<MergeRow, bool> condition)
+    {
+        var current = SelectedEntry;
+        for (int i = 0; i < _rows.Count; i++)
+            if (!_reviewed.Contains(i) && _rows[i].Chosen >= 0 && condition(_rows[i])) Record(i);
+        FillList(current, nextOpen: true);
         if (_projectPath != null) _ = SaveProjectAsync(ask: false);
+    }
+
+    /// <summary>The suggested version adds up and every other version of the bar does not.</summary>
+    private static bool OnlySuggestionFits(MergeRow row)
+    {
+        if (row.ChosenBar is not MergeBar b || !b.Fits) return false;
+        var others = row.Candidates.Where((c, i) => i != row.Chosen && c != null).ToList();
+        return others.Count > 0 && others.All(c => !c!.Fits);
     }
 
     /// <summary>The user's earlier choices, where the row still holds the same bar.</summary>
@@ -423,7 +637,12 @@ public sealed partial class MergeWindow : Window
     {
         foreach (var c in _project.Choices)
             if (c.Row < _rows.Count && c.Source < _rows[c.Row].Candidates.Length && _rows[c.Row].Candidates[c.Source]?.Key == c.Key)
-            { _rows[c.Row].Chosen = c.Source; _rows[c.Row].UserChoice = true; _reviewed.Add(c.Row); }
+            {
+                var row = _rows[c.Row];
+                row.Chosen = c.Source; row.UserChoice = true; _reviewed.Add(c.Row);
+                row.Overrides.Clear();
+                if (c.Overrides != null) row.Overrides.AddRange(c.Overrides);
+            }
     }
 
     // ------------------------------------------------------------------ files

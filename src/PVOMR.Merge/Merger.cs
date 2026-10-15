@@ -16,6 +16,10 @@ public enum RowStatus
     Flagged,
 }
 
+/// <summary>A pitch set by the user for a head of the chosen version: the event (counted over all voices) and the head
+/// (counted from the lowest).</summary>
+public sealed record NoteOverride(int Event, int Head, PitchSpec Pitch);
+
 /// <summary>A bar of the music with its version from every strand (null where a strand lacks it) and the choice.</summary>
 public sealed class MergeRow
 {
@@ -25,6 +29,8 @@ public sealed class MergeRow
     /// <summary>The choice was made by the user (kept over automatic choices).</summary>
     public bool UserChoice { get; set; }
     public MergeBar? ChosenBar => Chosen >= 0 ? Candidates[Chosen] : null;
+    /// <summary>Pitches corrected by the user in the chosen version (when neither version is right).</summary>
+    public List<NoteOverride> Overrides { get; } = new();
 }
 
 /// <summary>
@@ -91,6 +97,58 @@ public static class Merger
         }
     }
 
+    /// <summary>The chosen bar with the user's pitch corrections (the chosen bar itself when there are none).</summary>
+    public static MergeBar? EffectiveBar(MergeRow row) => EffectiveBar(row, out _);
+
+    private static MergeBar? EffectiveBar(MergeRow row, out Dictionary<ScoreEvent, ScoreEvent> replaced)
+    {
+        replaced = new();
+        var bar = row.ChosenBar;
+        if (bar == null || row.Overrides.Count == 0) return bar;
+        var voices = new List<List<BarEvent>>();
+        int index = 0;
+        foreach (var voice in bar.Voices)
+        {
+            var events = new List<BarEvent>();
+            foreach (var ev in voice)
+            {
+                var mine = row.Overrides.Where(o => o.Event == index).ToList();
+                index++;
+                if (mine.Count == 0 || ev.IsRest || ev.Sources.Count == 0) { events.Add(ev); continue; }
+                var pitches = ev.Pitches.ToArray();
+                var src = ev.Sources[0];
+                var clone = Copy(src, src.Staff);
+                clone.Notes.Clear();
+                clone.Notes.AddRange(src.Notes);
+                foreach (var o in mine.Where(o => o.Head >= 0 && o.Head < pitches.Length))
+                {
+                    var old = pitches[o.Head];
+                    int k = clone.Notes.FindIndex(n => n.Pitch == old);
+                    if (k >= 0)
+                    {
+                        var n = clone.Notes[k];
+                        clone.Notes[k] = new ScoreNote
+                        {
+                            Pitch = o.Pitch, TieStart = n.TieStart, TieStop = n.TieStop, SourceX = n.SourceX, SourceY = n.SourceY,
+                            AccidentalName = o.Pitch.Alter == old.Alter && o.Pitch.Step == old.Step ? n.AccidentalName
+                                           : o.Pitch.Alter switch { 1 => "sharp", -1 => "flat", 2 => "double-sharp", -2 => "flat-flat", _ => "natural" },
+                        };
+                    }
+                    pitches[o.Head] = o.Pitch;
+                }
+                replaced[src] = clone;
+                events.Add(new BarEvent(pitches.OrderBy(StrandReader.Midi).ToArray(), ev.Length, ev.TieToNext) { Sources = new[] { clone } });
+            }
+            voices.Add(events);
+        }
+        return new MergeBar
+        {
+            Index = bar.Index, Number = bar.Number, Page = bar.Page, Line = bar.Line, KeyFifths = bar.KeyFifths, Time = bar.Time, TimeSpec = bar.TimeSpec,
+            Clefs = bar.Clefs, Expected = bar.Expected, Pickup = bar.Pickup, Fits = bar.Fits, SourceMeasure = bar.SourceMeasure,
+            Key = string.Join(" | ", voices.Select(v => string.Join(" ", v))),
+        }.WithVoices(voices);
+    }
+
     /// <summary>The merged music as a score with one part: the chosen bars, with key, time and clef stated where they change.</summary>
     public static Score BuildScore(List<MergeRow> rows, IReadOnlyList<Strand> strands, string? title = null)
     {
@@ -101,7 +159,7 @@ public static class Merger
         int number = 0;
         foreach (var row in rows)
         {
-            var bar = row.ChosenBar;
+            var bar = EffectiveBar(row, out var replaced);
             if (bar?.SourceMeasure is not ScoreMeasure src) continue;
             var strand = strands[row.Chosen];
             var m = new ScoreMeasure
@@ -113,8 +171,11 @@ public static class Merger
             if (bar.TimeSpec != null && bar.TimeSpec != time) { m.Time = bar.TimeSpec; time = bar.TimeSpec; }
             for (int c = 0; c < staves; c++)
                 if (bar.Clefs[c] != null && bar.Clefs[c] != clefs[c]) { m.Clefs[c] = bar.Clefs[c]; clefs[c] = bar.Clefs[c]; }
-            foreach (var e in src.Events.Where(e => strand.Staff == null || e.Staff == strand.Staff))
-                m.Events.Add(strand.Staff == null ? e : Restaffed(e));
+            foreach (var e0 in src.Events.Where(e => strand.Staff == null || e.Staff == strand.Staff))
+            {
+                var e = replaced.GetValueOrDefault(e0, e0);
+                m.Events.Add(strand.Staff == null ? e : Copy(e, 1));
+            }
             foreach (var d in src.Directions.Where(d => strand.Staff == null || d.Staff == strand.Staff)) m.Directions.Add(d);
             part.Measures.Add(m);
         }
@@ -122,12 +183,12 @@ public static class Merger
         return score;
     }
 
-    /// <summary>A copy of the event on staff 1 (a staff taken out of a part becomes a part of its own).</summary>
-    private static ScoreEvent Restaffed(ScoreEvent e)
+    /// <summary>A copy of the event on the given staff (a staff taken out of a part becomes staff 1 of a part of its own).</summary>
+    private static ScoreEvent Copy(ScoreEvent e, int staff)
     {
         var c = new ScoreEvent
         {
-            IsRest = e.IsRest, MeasureRest = e.MeasureRest, Voice = e.Voice, Staff = 1, GroupId = e.GroupId, Duration = e.Duration, Type = e.Type,
+            IsRest = e.IsRest, MeasureRest = e.MeasureRest, Voice = e.Voice, Staff = staff, GroupId = e.GroupId, Duration = e.Duration, Type = e.Type,
             Dots = e.Dots, StemUp = e.StemUp, Beams = e.Beams, Fermata = e.Fermata, TremoloMarks = e.TremoloMarks, TremoloType = e.TremoloType,
             Grace = e.Grace, GraceSlash = e.GraceSlash, TupletActual = e.TupletActual, TupletNormal = e.TupletNormal,
             TupletStart = e.TupletStart, TupletStop = e.TupletStop, X = e.X, Y = e.Y, Confidence = e.Confidence,

@@ -67,6 +67,10 @@ public sealed class PageView : Control
     /// <summary>When set, only these recognised symbols are drawn (framed), nothing else: the merge view shows just the
     /// notes that differ between versions.</summary>
     public IReadOnlyCollection<MusicSymbol>? OnlySymbols { get; set; }
+    /// <summary>With OnlySymbols: the text around each symbol (pitch above, length below, intervals on either side).</summary>
+    public IReadOnlyDictionary<MusicSymbol, SymbolLabel>? Labels { get; set; }
+    /// <summary>With OnlySymbols: where a note missing in this version would be (image coordinates).</summary>
+    public PVOMR.Core.Model.Rect? Marker { get; set; }
     public Staff? SelectedStaff => _selectedStaff;
     public Barline? SelectedBarline => _selectedBarline;
     public double Zoom => _zoom;
@@ -328,8 +332,16 @@ public sealed class PageView : Control
             var tf = new Typeface("Inter");
             foreach (var s in OnlySymbols)
             {
-                DrawSymbol(context, s, (float)(s.Staff?.Space ?? a.StaffSpace), tf, thin);
+                float sp = (float)(s.Staff?.Space ?? a.StaffSpace);
+                DrawSymbol(context, s, sp, tf, thin, labels: Labels == null);
                 DrawSelection(context, s.Bounds, thin);
+                if (Labels != null && Labels.TryGetValue(s, out var label)) DrawLabel(context, s.Bounds, label, sp);
+            }
+            if (Marker is PVOMR.Core.Model.Rect mk)
+            {
+                var pen = new Pen(new SolidColorBrush(Color.FromRgb(230, 0, 0)), 3 * thin, new DashStyle(new double[] { 3, 2 }, 0));
+                context.DrawRectangle(new SolidColorBrush(Color.FromArgb(40, 255, 0, 0)), pen, new Avalonia.Rect(mk.X0, mk.Y0, mk.Width, mk.Height));
+                OutlinedText(context, "missing here?", new Point(mk.CenterX, mk.Y0 - 4), a.StaffSpace * 0.75, true, Color.FromRgb(220, 0, 0), centre: true, above: true);
             }
             return;
         }
@@ -396,6 +408,38 @@ public sealed class PageView : Control
         }
     }
 
+    /// <summary>The pitch above the symbol, its length below and the intervals from the note before and to the note after
+    /// left and right, in text with a white outline (readable over ink).</summary>
+    private static void DrawLabel(DrawingContext context, PVOMR.Core.Model.Rect r, SymbolLabel l, double ss)
+    {
+        double size = Math.Max(6, ss * 0.8), gap = 4 + ss * 0.15;
+        var normal = Color.FromRgb(150, 0, 110); var strong = Color.FromRgb(220, 0, 0);
+        if (l.Pitch.Length > 0) OutlinedText(context, l.Pitch, new Point(r.CenterX, r.Y0 - gap), size, l.PitchBold, l.PitchBold ? strong : normal, centre: true, above: true);
+        if (l.Duration.Length > 0) OutlinedText(context, l.Duration, new Point(r.CenterX, r.Y1 + gap), size, l.DurationBold, l.DurationBold ? strong : normal, centre: true);
+        double mid = r.CenterY - size * 0.65;
+        if (l.Before != null) OutlinedText(context, l.Before, new Point(r.X0 - gap, mid), size * 0.9, false, Color.FromRgb(0, 90, 200), right: true);
+        if (l.After != null) OutlinedText(context, l.After, new Point(r.X1 + gap, mid), size * 0.9, false, Color.FromRgb(0, 90, 200));
+    }
+
+    private static void OutlinedText(DrawingContext context, string text, Point at, double size, bool bold, Color color, bool centre = false, bool above = false, bool right = false)
+    {
+        var tf = new Typeface("Inter", FontStyle.Normal, bold ? FontWeight.Bold : FontWeight.Normal);
+        var ft = new FormattedText(text, CultureInfo.InvariantCulture, FlowDirection.LeftToRight, tf, size, new SolidColorBrush(color));
+        double x = centre ? at.X - ft.Width / 2 : right ? at.X - ft.Width : at.X;
+        double y = above ? at.Y - ft.Height : at.Y;
+        var geometry = ft.BuildGeometry(new Point(x, y));
+        if (geometry == null) { context.DrawText(ft, new Point(x, y)); return; }
+        context.DrawGeometry(null, new Pen(Brushes.White, size * 0.28, lineJoin: PenLineJoin.Round), geometry);
+        context.DrawGeometry(new SolidColorBrush(color), null, geometry);
+    }
+
+    /// <summary>A symbol's length as written: "half." for a dotted half.</summary>
+    public static string DurationLabel(MusicSymbol s)
+    {
+        int dots = s.Dots > 0 ? s.Dots : s.Notes.Select(n => n.Dots).DefaultIfEmpty(0).Max();
+        return (s.Duration ?? "") + new string('.', dots);
+    }
+
     private void DrawSelection(DrawingContext context, PVOMR.Core.Model.Rect r, double thin)
     {
         var pen = new Pen(new SolidColorBrush(Color.FromArgb(230, 255, 140, 0)), 3 * thin);
@@ -423,8 +467,9 @@ public sealed class PageView : Control
         return b;
     }
 
-    private void DrawSymbol(DrawingContext context, MusicSymbol s, float ss, Typeface typeface, double thin)
+    private void DrawSymbol(DrawingContext context, MusicSymbol s, float ss, Typeface typeface, double thin, bool labels = true)
     {
+        bool showLabels = ShowLabels && labels;
         var r = s.Bounds;
         var color = ColorFor(s.Kind);
         if (ShowBoxes)
@@ -450,15 +495,15 @@ public sealed class PageView : Control
             foreach (var (n, dur) in notes)
             {
                 if (ShowBoxes) context.DrawEllipse(HeadBrush(dur), null, new Point(n.Head.CenterX + 0.5, n.Head.CenterY + 0.5), n.Head.Width / 2.0 + 0.5, n.Head.Height / 2.0 + 0.5);
-                if (ShowLabels && n.Pitch != null)
+                if (showLabels && n.Pitch != null)
                 {
                     var ft = new FormattedText(n.Pitch, CultureInfo.InvariantCulture, FlowDirection.LeftToRight, typeface, Math.Max(5, ss * 0.6), textBrush);
                     context.DrawText(ft, new Point(n.Head.X1 + 2, n.Head.Y0 - ss * 0.2));
                 }
             }
-            if (ShowLabels)
+            if (showLabels)
             {
-                string label = s.Kind == SymbolKind.NoteGroup ? (s.Attributes.TryGetValue("tuplet", out var t) ? $"group tuplet {t.Split('@')[0]}" : "group") : s.Duration ?? "";
+                string label = s.Kind == SymbolKind.NoteGroup ? (s.Attributes.TryGetValue("tuplet", out var t) ? $"group tuplet {t.Split('@')[0]}" : "group") : DurationLabel(s);
                 if (label.Length > 0)
                 {
                     var ft = new FormattedText(label, CultureInfo.InvariantCulture, FlowDirection.LeftToRight, typeface, Math.Max(5, ss * 0.6), textBrush);
@@ -466,11 +511,11 @@ public sealed class PageView : Control
                 }
             }
         }
-        else if (ShowLabels)
+        else if (showLabels)
         {
             string label = s.Kind switch
             {
-                SymbolKind.Rest => $"rest {s.Duration}",
+                SymbolKind.Rest => $"rest {DurationLabel(s)}",
                 SymbolKind.Unknown => "?",
                 SymbolKind.Text => "txt",
                 SymbolKind.Clef => s.Attributes.GetValueOrDefault("clef", "clef"),
@@ -503,3 +548,6 @@ public sealed class PageView : Control
         return bmp;
     }
 }
+
+/// <summary>Text shown around a symbol in the merge view; the differing part in bold.</summary>
+public sealed record SymbolLabel(string Pitch, string Duration, bool PitchBold, bool DurationBold, string? Before, string? After);
