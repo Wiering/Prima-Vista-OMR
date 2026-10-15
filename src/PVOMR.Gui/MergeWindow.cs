@@ -99,7 +99,7 @@ public sealed partial class MergeWindow : Window
         _compare.Click += async (_, _) => await CompareAsync();
         _export = new Button { Content = "Export merged MusicXML…", IsEnabled = false };
         _export.Click += async (_, _) => await ExportAsync();
-        _toEdits = new Button { Content = "Save choices as edits of A", IsEnabled = false, IsVisible = saveEdits != null };
+        _toEdits = new Button { Content = "Save choices as edits of A and exit",IsEnabled = false, IsVisible = saveEdits != null };
         ToolTip.SetTip(_toEdits, "The bars where another version was chosen become corrections of A; back to editing A in the main window");
         _toEdits.Click += (_, _) => SaveAsEdits();
         var open = new Button { Content = "Open project…" };
@@ -126,8 +126,9 @@ public sealed partial class MergeWindow : Window
         var help = new TextBlock { Text = "Select a difference: the pages show the bar with only the differing notes drawn. Choose the right version (keys 1, 2 …; Enter accepts the suggestion).",
                                    TextWrapping = TextWrapping.Wrap, FontSize = 12, Opacity = 0.75, Margin = new Thickness(0, 0, 0, 4) };
         DockPanel.SetDock(help, Dock.Top); left.Children.Add(help);
-        var openRow = new StackPanel { Orientation = Orientation.Horizontal };
-        openRow.Children.Add(_onlyOpen); openRow.Children.Add(_progress);
+        var openRow = new DockPanel();
+        DockPanel.SetDock(_progress, Dock.Right); openRow.Children.Add(_progress);
+        openRow.Children.Add(_onlyOpen);
         DockPanel.SetDock(openRow, Dock.Top); left.Children.Add(openRow);
         // a corrected pitch when neither version is right
         Button Small(string text, string tip, Action act) { var b = new Button { Content = text, MinWidth = 30 }; ToolTip.SetTip(b, tip); b.Click += (_, _) => act(); return b; }
@@ -294,7 +295,7 @@ public sealed partial class MergeWindow : Window
         }).ToList();
         _list.ItemsSource = items;
         var rowsToReview = _entries.Select(e => e.Row).Distinct().ToList();
-        _progress.Text = $"{rowsToReview.Count(_reviewed.Contains)} / {rowsToReview.Count} bars done";
+        _progress.Text = $"{rowsToReview.Count(_reviewed.Contains)} / {rowsToReview.Count} done";
         int open = Enumerable.Range(0, _rows.Count).Count(i => !_reviewed.Contains(i));
         Status($"{_rows.Count} bars: {_rows.Count(r => r.Status == RowStatus.Unanimous)} the same in every version; {open} to review ({_entries.Count(e => !_reviewed.Contains(e.Row))} differences)");
         if (preferred == null) return;
@@ -426,7 +427,7 @@ public sealed partial class MergeWindow : Window
     private SymbolLabel LabelFor(int s, MergeBar bar, BarEvent ev, ScoreEvent se, DiffKind kind)
     {
         string pitch = se.IsRest ? "rest" : string.Join("+", se.Notes.Select(n => n.Pitch).OrderBy(StrandReader.Midi));
-        string length = (se.Type == "eighth" ? "8th" : se.Type) + new string('.', se.Dots) + (se.TupletActual > 0 ? $" ({se.TupletActual}:{se.TupletNormal})" : "");
+        string length = (se.Type == "eighth" ? "8th" : se.Type) + PageView.DotsText(se.Dots) + (se.TupletActual > 0 ? $" ({se.TupletActual}:{se.TupletNormal})" : "");
         bool pitchBold = kind is DiffKind.Pitch or DiffKind.Accidental or DiffKind.NoteRest or DiffKind.ExtraNote or DiffKind.MissingNote;
         bool lengthBold = kind is DiffKind.Duration or DiffKind.NoteRest or DiffKind.ExtraNote or DiffKind.MissingNote;
         string? before = null, after = null;

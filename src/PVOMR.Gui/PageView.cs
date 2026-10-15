@@ -433,12 +433,15 @@ public sealed class PageView : Control
         context.DrawGeometry(new SolidColorBrush(color), null, geometry);
     }
 
-    /// <summary>A symbol's length as written: "half." for a dotted half.</summary>
+    /// <summary>A symbol's length as written: "half dot" for a dotted half.</summary>
     public static string DurationLabel(MusicSymbol s)
     {
         int dots = s.Dots > 0 ? s.Dots : s.Notes.Select(n => n.Dots).DefaultIfEmpty(0).Max();
-        return (s.Duration ?? "") + new string('.', dots);
+        return (s.Duration ?? "") + DotsText(dots);
     }
+
+    /// <summary>" dot" for a dotted value, " double dot" for a double-dotted one.</summary>
+    public static string DotsText(int dots) => dots switch { <= 0 => "", 1 => " dot", 2 => " double dot", _ => $" {dots} dots" };
 
     private void DrawSelection(DrawingContext context, PVOMR.Core.Model.Rect r, double thin)
     {
