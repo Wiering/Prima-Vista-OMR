@@ -370,7 +370,9 @@ public static class MusicAssembler
 
         if (syms.Any(s => s.Kind == SymbolKind.KeySignature) || (firstInSystem && staff.KeyFifths != (ctx.Key ?? 0)))
         {
-            int fifths = staff.KeyFifths;
+            // the key printed in this measure (a change of key inside the staff); the staff's own value is its last key
+            int fifths = syms.FirstOrDefault(s => s.Kind == SymbolKind.KeySignature && s.Attributes.ContainsKey("fifths")) is { } ks
+                         && int.TryParse(ks.Attributes["fifths"], out int f) ? f : staff.KeyFifths;
             if (fifths != (ctx.Key ?? int.MinValue) && staffNo == 1) { sm.KeyFifths = fifths; }
             ctx.Key = fifths;
         }

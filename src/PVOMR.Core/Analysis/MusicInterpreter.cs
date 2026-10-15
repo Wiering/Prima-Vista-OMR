@@ -128,7 +128,8 @@ public static class MusicInterpreter
                 var staff = sys.Staves[k];
                 int own = staff.KeyFifths;
                 if (own == target || staff.ForcedKey != null) continue;
-                bool fix = HasKeySignature(staff) ? Math.Sign(own) == Math.Sign(target) && Math.Abs(own) < Math.Abs(target)
+                // a reading other systems share is a key of its own (a change of key down the page), not a loss
+                bool fix = HasKeySignature(staff) ? Math.Sign(own) == Math.Sign(target) && Math.Abs(own) < Math.Abs(target) && readings.Count(r => r == own) < 2
                                                   : sys.Index > 0;   // no signature of its own: inherited an incomplete reading
                 if (!fix) continue;
                 Staff? prev = sys.Index > 0 && page.Systems[sys.Index - 1].Staves.Count == count ? page.Systems[sys.Index - 1].Staves[k] : null;
@@ -196,13 +197,13 @@ public static class MusicInterpreter
                 bool plausible = true;
                 var steps = leadingAccidentals.Select(a => a.Step ?? int.MinValue).ToList();
                 if (steps.Any(s => s == int.MinValue)) plausible = false;
-                if (plausible && mi == 0 || plausible && ordered.Any(c => c.Kind == SymbolKind.Clef))
+                if (plausible && (mi == 0 || ordered.Any(c => c.Kind == SymbolKind.Clef) || leadingAccidentals.Any(a => a.Attributes.ContainsKey("keychange"))))
                 {
                     int n = leadingAccidentals.Count;
                     if (!(forcedOverrides && forcedKey != null) && staff.ForcedKey == null)
                         fifths = leadingAccidentals[0].Name == "accidentalSharp" ? n : leadingAccidentals[0].Name == "accidentalFlat" ? -n : 0;
                     keyFromThisStaff = true;
-                    foreach (var a in leadingAccidentals) { a.Kind = SymbolKind.KeySignature; a.Attributes["key"] = KeyName(fifths); }
+                    foreach (var a in leadingAccidentals) { a.Kind = SymbolKind.KeySignature; a.Attributes["key"] = KeyName(fifths); a.Attributes["fifths"] = fifths.ToString(); }
                 }
             }
             // 3. time signature

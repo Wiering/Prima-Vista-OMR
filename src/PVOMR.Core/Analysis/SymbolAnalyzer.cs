@@ -207,6 +207,7 @@ public sealed class SymbolAnalyzer
                 if (!syms.Any(s => s.Kind == SymbolKind.Clef)) DetectClefByTemplate(comps, staff, syms, consumed);
                 DetectKeySignature(comps, staff, syms, consumed);
                 DetectTimeSignature(comps, staff, syms, consumed);
+                DetectKeyChanges(comps, staff, syms, consumed);
                 DetectTimeChanges(comps, staff, syms, consumed);
             }
             var classified = new List<(MusicSymbol sym, Component comp)>();
@@ -237,12 +238,24 @@ public sealed class SymbolAnalyzer
             AccidentalsInUnknowns(syms, staff);
             TrillsAboveStaff(syms, staff);
             DropNotesWithoutHeads(syms);
+            // nothing is written left of the staff lines but the brace or bracket, whose tip can look like a head on a stem
+            syms.RemoveAll(s => s.Kind is SymbolKind.Note or SymbolKind.Chord && s.Notes.Count > 0 && s.Notes.All(n => n.HeadX < staff.Left));
             ResolveLoneBeamlets(syms, staff);
             FlagFragments(syms, staff);
             HeadsAfterAccidentals(syms, staff);
+            HeadsOnLooseStems(syms, staff);
+            DigitsReadAsHeads(syms, staff);
+            // a note clear of the staff stands on ledger lines, the first one a space off the staff; without it the
+            // "note" is handwriting or text (a chord with heads that far out on its own is a stemless one)
+            syms.RemoveAll(s => (s.Kind == SymbolKind.Note || s.Kind == SymbolKind.Chord && s.StemUp == null) && s.Notes.Count > 0
+                                && s.Notes.All(n => (n.Step < -1 || n.Step > 9)
+                                                    && !HasLedgerLine(n.HeadX, staff.BottomY(n.HeadX) - (n.Step > 9 ? 10 : -2) * staff.Space / 2, staff.Space)));
             EighthRestsFromPieces(syms, staff);
             QuarterRestsFromPieces(syms, staff);
+            QuarterRestsByShape(syms, staff);
             SixteenthRestsFromPieces(syms, staff);
+            AccidentalsReadAsHalfNotes(syms, staff);
+            StackedWholeNotes(syms, staff);
             AttachDotsAndAccidentals(syms, staff);
             DropRestsInAccidentals(syms, staff);
             TiesReadAsHeads(syms, staff);
@@ -701,12 +714,57 @@ public sealed class SymbolAnalyzer
         if (clef == null) return;
         string? clefKind = ClefKindName(clef);
         if (clefKind == null) return;
+        var (accepted, kind) = KeyRunAt(ClefRightEdge(clef, staff), clefKind, staff);
+        AddKeySymbols(comps, staff, syms, consumed, accepted, kind, change: false);
+    }
+
+    /// <summary>
+    /// A change of key inside a system: a run of at least two sharps or flats at the key signature places right after
+    /// a double (or final, thick, repeat-start) bar line, found like the key signature at the system start.
+    /// </summary>
+    private void DetectKeyChanges(List<Component> comps, Staff staff, List<MusicSymbol> syms, HashSet<Component> consumed)
+    {
+        if (_lib == null) return;
+        var clef = syms.FirstOrDefault(s => s.Kind == SymbolKind.Clef);
+        string? clefKind = clef == null ? null : ClefKindName(clef);
+        if (clefKind == null) return;
+        double ss = staff.Space;
+        foreach (var bar in staff.Barlines.Where(b => b.Kind is BarlineKind.Double or BarlineKind.Final or BarlineKind.Thick or BarlineKind.RepeatStart or BarlineKind.RepeatBoth
+                                                      && b.X1 < staff.Right - 2 * ss))
+        {
+            int xStart = bar.X1;
+            foreach (var t in comps.Where(c => c.X0 > xStart && c.X0 <= xStart + 0.8 * ss && c.Width <= 0.6 * ss && c.Height >= 3.5 * ss).OrderBy(c => c.X0)) xStart = Math.Max(xStart, t.X1);
+            var (accepted, kind) = KeyRunAt(xStart, clefKind, staff);
+            if (KeyDump) Console.Error.WriteLine($"key change staff {staff.Index + 1} after bar {bar.X0}: {accepted.Count} {kind}");
+            if (accepted.Count < 2) continue;
+            AddKeySymbols(comps, staff, syms, consumed, accepted, kind, change: true);
+        }
+    }
+
+    private void AddKeySymbols(List<Component> comps, Staff staff, List<MusicSymbol> syms, HashSet<Component> consumed, List<Placement> accepted, string? kind, bool change)
+    {
+        if (accepted.Count == 0) return;
+        foreach (var pl in accepted)
+        {
+            var rect = new Rect(pl.X, pl.Y, pl.X + pl.W - 1, pl.Y + pl.H - 1);
+            var sym = new MusicSymbol { Kind = SymbolKind.Accidental, Name = kind!, Staff = staff, Confidence = Math.Round(pl.Score, 2), Bounds = rect };
+            sym.Attributes["keyzone"] = "1";
+            if (change) sym.Attributes["keychange"] = "1";
+            var fake = new Component { X0 = rect.X0, Y0 = rect.Y0, X1 = rect.X1, Y1 = rect.Y1, PixelCount = pl.W * pl.H / 3 };
+            PostProcessTemplate(sym, fake, staff, false);
+            syms.Add(sym);
+            ConsumeInside(comps, rect, consumed);
+        }
+    }
+
+    /// <summary>The key signature run starting right of x: each next accidental at the place the clef gives it.</summary>
+    private (List<Placement> accepted, string? kind) KeyRunAt(int lastX1, string clefKind, Staff staff)
+    {
         double ss = staff.Space;
         const double Threshold = 0.66;
         int dyRange = Math.Max(1, (int)Math.Round(0.15 * ss));
         string? kind = null;
         var accepted = new List<Placement>();
-        int lastX1 = ClefRightEdge(clef, staff);
         for (int n = 0; n < 7; n++)
         {
             int xFrom = lastX1 + (n == 0 ? (int)Math.Round(0.05 * ss) : -(int)Math.Round(0.1 * ss));
@@ -718,6 +776,13 @@ public sealed class SymbolAnalyzer
                 if (step == null) break;
                 double yOrigin = staff.BottomY(lastX1 + 0.5 * ss) - step.Value * ss / 2;
                 var pl = BestPlacement(k, staff, yOrigin, xFrom, xTo, dyRange);
+                // some engravers set a low accidental an octave up, inside the staff (the A sharp on the top line of a
+                // bass staff): the better of the two
+                if (step.Value <= 2 && n > 0)
+                {
+                    var up = BestPlacement(k, staff, yOrigin - 3.5 * ss, xFrom, xTo, dyRange);
+                    if (up != null && (pl == null || up.Score > pl.Score)) pl = up;
+                }
                 if (pl != null && (best == null || pl.Score > best.Score)) { best = pl; bestKind = k; }
                 if (KeyScan && k == (kind ?? "accidentalFlat"))
                     Console.Error.WriteLine($"keyscan staff@{staff.Left},{staff.TopY(staff.Left):0} x{xFrom}..{xTo}: " + string.Join(" ", Enumerable.Range(xFrom, xTo - xFrom + 1).Select(x => (BestPlacement(k, staff, yOrigin, x, x, dyRange)?.Score ?? 0).ToString("0.00"))));
@@ -738,17 +803,7 @@ public sealed class SymbolAnalyzer
             if (!ok) break;
             kind = bestKind; accepted.Add(best!); lastX1 = best.X + best.W - 1;
         }
-        if (accepted.Count == 0) return;
-        foreach (var pl in accepted)
-        {
-            var rect = new Rect(pl.X, pl.Y, pl.X + pl.W - 1, pl.Y + pl.H - 1);
-            var sym = new MusicSymbol { Kind = SymbolKind.Accidental, Name = kind!, Staff = staff, Confidence = Math.Round(pl.Score, 2), Bounds = rect };
-            sym.Attributes["keyzone"] = "1";
-            var fake = new Component { X0 = rect.X0, Y0 = rect.Y0, X1 = rect.X1, Y1 = rect.Y1, PixelCount = pl.W * pl.H / 3 };
-            PostProcessTemplate(sym, fake, staff, false);
-            syms.Add(sym);
-            ConsumeInside(comps, rect, consumed);
-        }
+        return (accepted, kind);
     }
 
     /// <summary>
@@ -787,13 +842,20 @@ public sealed class SymbolAnalyzer
             // the thick line of a double bar may be left as a separate stroke: start after it
             int xStart = bar.X1;
             foreach (var t in comps.Where(c => c.X0 > xStart && c.X0 <= xStart + 0.8 * ss && c.Width <= 0.6 * ss && c.Height >= 3.5 * ss).OrderBy(c => c.X0)) xStart = Math.Max(xStart, t.X1);
+            // a change of key comes first
+            var keyChange = syms.Where(k => k.Attributes.ContainsKey("keychange") && k.Bounds.X0 > bar.X1 && k.Bounds.X0 < bar.X1 + 8 * ss).ToList();
+            if (keyChange.Count > 0) xStart = Math.Max(xStart, keyChange.Max(k => k.Bounds.X1));
             var near = comps.Where(c => !consumed.Contains(c) && c.X0 > xStart && c.X0 < xStart + 1.5 * ss && c.Width >= 0.6 * ss && c.Width <= 2.4 * ss
                                         && c.CenterY > staff.TopY(c.CenterX) && c.CenterY < staff.BottomY(c.CenterX)).ToList();
             // one staff-high piece (touching digits) or two stacked digit-sized pieces
             bool tall = near.Any(c => c.Height >= 3.2 * ss && c.Height <= 4.6 * ss);
             bool stacked = near.Any(a => a.Height >= 1.4 * ss && a.Height <= 2.4 * ss && near.Any(b => b != a && b.Y0 > a.CenterY + ss && b.Height >= 1.4 * ss && b.Height <= 2.4 * ss && Math.Abs(b.CenterX - a.CenterX) < 0.8 * ss));
-            if (!tall && !stacked) continue;
-            var sym = TimeSignatureAt(xStart, staff, afterBar: true);
+            // or a C (common or cut time, its left half may break off) around the middle line, often after a change of key
+            bool common = near.Any(c => c.Height >= 1.8 * ss && c.Height <= 3.2 * ss && c.Width >= 0.5 * ss && Math.Abs(c.CenterY - staff.Lines[2].YAt(c.CenterX)) <= 0.5 * ss);
+            if (!tall && !stacked && !common) continue;
+            // right after a change of key a C is expected: no note head beside an accidental to tell it from (the open-C
+            // test), and a worn one is enough
+            var sym = keyChange.Count > 0 ? TimeSignatureAt(xStart, staff, afterBar: false, commonMin: 0.65) : TimeSignatureAt(xStart, staff, afterBar: true);
             if (KeyDump) Console.Error.WriteLine($"time change staff {staff.Index + 1} after bar {bar.X0}: {(sym == null ? "none" : sym.Attributes.GetValueOrDefault("stack") ?? sym.Name)}");
             if (sym == null) continue;
             sym.Attributes["timezone"] = "1";
@@ -802,7 +864,7 @@ public sealed class SymbolAnalyzer
         }
     }
 
-    private MusicSymbol? TimeSignatureAt(int xStart, Staff staff, bool afterBar = false)
+    private MusicSymbol? TimeSignatureAt(int xStart, Staff staff, bool afterBar = false, double commonMin = 0.85)
     {
         double ss = staff.Space;
         const double Threshold = 0.66;
@@ -862,7 +924,7 @@ public sealed class SymbolAnalyzer
             sym = new MusicSymbol { Kind = SymbolKind.TimeSignature, Name = "timeSigStack", Staff = staff, Confidence = Math.Round(digitScore, 2), Bounds = rect };
             sym.Attributes["stack"] = $"{bu.T.Name[7..]}/{bl.T.Name[7..]}";
         }
-        else if (commonScore >= 0.85)
+        else if (commonScore >= commonMin)
         {
             var rect = new Rect(bc!.X, bc.Y, bc.X + bc.W - 1, bc.Y + bc.H - 1);
             sym = new MusicSymbol { Kind = SymbolKind.TimeSignature, Name = bc.T.Name, Staff = staff, Confidence = Math.Round(commonScore, 2), Bounds = rect };
@@ -990,20 +1052,22 @@ public sealed class SymbolAnalyzer
     }
 
     /// <summary>
-    /// A quarter rest cut by a staff line: the zigzag above (read as text) and the hook below it (a fragment, or a C
-    /// outside the time signature zone), together a quarter rest's size.
+    /// A quarter rest cut by a staff line: the zigzag above (read as text or a "1") and the hook below it (a fragment,
+    /// an articulation, or a C outside the time signature zone), together a quarter rest's size.
     /// </summary>
     private static void QuarterRestsFromPieces(List<MusicSymbol> syms, Staff staff)
     {
         double ss = staff.Space;
         bool InStaff(MusicSymbol s) => s.Bounds.CenterY > staff.TopY(s.Bounds.CenterX) && s.Bounds.CenterY < staff.BottomY(s.Bounds.CenterX);
         bool Fragment(MusicSymbol s) => s.Kind is SymbolKind.Text or SymbolKind.Unknown or SymbolKind.Dot || TinyDynamic(s, staff);
-        var tops = syms.Where(s => Fragment(s) && InStaff(s) && s.Bounds.Width >= 0.4 * ss && s.Bounds.Width <= 1.1 * ss && s.Bounds.Height >= 1.4 * ss && s.Bounds.Height <= 2.4 * ss).ToList();
+        // outside the time signature zone the zigzag also reads as a "1" and the hook as a C or an articulation
+        bool LooseDigit(MusicSymbol s) => s.Kind == SymbolKind.TimeSignature && !s.Attributes.ContainsKey("timezone");
+        var tops = syms.Where(s => (Fragment(s) || LooseDigit(s)) && InStaff(s) && s.Bounds.Width >= 0.4 * ss && s.Bounds.Width <= 1.1 * ss && s.Bounds.Height >= 1.4 * ss && s.Bounds.Height <= 2.4 * ss).ToList();
         foreach (var t in tops)
         {
             if (!syms.Contains(t)) continue;
-            var hook = syms.FirstOrDefault(s => s != t && (Fragment(s) || s.Kind == SymbolKind.TimeSignature && !s.Attributes.ContainsKey("timezone"))
-                                                && s.Bounds.Width <= 0.8 * ss && s.Bounds.Height >= 0.4 * ss && s.Bounds.Height <= 1.3 * ss
+            var hook = syms.FirstOrDefault(s => s != t && (Fragment(s) || LooseDigit(s) || s.Kind == SymbolKind.Articulation)
+                                                && s.Bounds.Width <= 1.0 * ss && s.Bounds.Height >= 0.4 * ss && s.Bounds.Height <= 1.3 * ss
                                                 && s.Bounds.Y0 >= t.Bounds.Y1 - 0.5 * ss && s.Bounds.Y0 <= t.Bounds.Y1 + 0.2 * ss
                                                 && s.Bounds.X1 >= t.Bounds.X0 && s.Bounds.X0 <= t.Bounds.CenterX);
             if (hook == null) continue;
@@ -1012,6 +1076,32 @@ public sealed class SymbolAnalyzer
             var rest = new MusicSymbol { Kind = SymbolKind.Rest, Name = "restQuarter", Duration = "quarter", Staff = staff, Confidence = 0.7, Bounds = u };
             rest.Attributes["pieces"] = "zigzag+hook";
             syms.Remove(t); syms.Remove(hook); syms.Add(rest);
+        }
+    }
+
+    /// <summary>
+    /// A worn quarter rest the classifier gave up on (read as text, or as an unsure "p"): one piece of a quarter rest's size around the
+    /// middle of the staff whose ink matches the quarter rest template.
+    /// </summary>
+    private void QuarterRestsByShape(List<MusicSymbol> syms, Staff staff)
+    {
+        if (_lib == null) return;
+        double ss = staff.Space;
+        foreach (var t in syms.Where(s => (s.Kind is SymbolKind.Text or SymbolKind.Unknown || s.Kind == SymbolKind.Dynamic && s.Confidence < 0.8) && s.Bounds.Width >= 0.6 * ss && s.Bounds.Width <= 1.2 * ss
+                                          && s.Bounds.Height >= 2.0 * ss && s.Bounds.Height <= 3.0 * ss).ToList())
+        {
+            var r = t.Bounds;
+            if (Math.Abs(r.CenterY - staff.Lines[2].YAt(r.CenterX)) > 0.6 * ss) continue;
+            int w = r.Width, h = r.Height;
+            var mask = new byte[w * h];
+            for (int y = 0; y < h; y++)
+                for (int x = 0; x < w; x++)
+                    if (_ns[r.X0 + x, r.Y0 + y]) mask[y * w + x] = 1;
+            var m = _lib.Match(mask, w, h, ss, 0.4, g => g.Kind == SymbolKind.Rest);
+            // a clear winner: the 8th and 16th rests match a worn quarter rest half as well
+            if (m.Count == 0 || m[0].Template.Name != "restQuarter" || m[0].Score < 0.6 || m.Count > 1 && m[1].Score > m[0].Score - 0.1) continue;
+            t.Kind = SymbolKind.Rest; t.Name = "restQuarter"; t.Duration = "quarter"; t.Confidence = Math.Round(m[0].Score, 2);
+            t.Attributes["rest"] = "by shape";
         }
     }
 
@@ -2213,7 +2303,17 @@ public sealed class SymbolAnalyzer
         var stems = h <= 20 ? FindStems(c, staff) : new List<Stem>();
         if (stems.Count > 0)
         {
+            int stemCount = stems.Count;   // the analysis drops stems without heads from the list
             var noteSym = AnalyzeNoteGroup(c, staff, stems);
+            // touching heads of a chord can hold vertical runs that pass for short stems beside the real one and keep
+            // the heads from it: again without stems lying within the reach of a longer stem beside them
+            if (noteSym == null && stemCount > 1)
+            {
+                var fresh = FindStems(c, staff);
+                var kept = fresh.Where(t => !fresh.Any(o => o != t && o.Bottom - o.Top > t.Bottom - t.Top && Math.Abs(o.X0 - t.X0) <= 1.5 * ss
+                                                           && o.Top <= t.Top && o.Bottom >= t.Bottom)).ToList();
+                if (kept.Count < fresh.Count && kept.Count > 0) noteSym = AnalyzeNoteGroup(c, staff, kept);
+            }
             if (noteSym != null) return noteSym;
         }
 
@@ -3320,6 +3420,97 @@ public sealed class SymbolAnalyzer
         }
     }
 
+    /// <summary>
+    /// A stem that broke off its black head (also lower down, the head keeping a piece of it), the head left in a piece
+    /// of other ink (a ledger line, a slur end, a smudge) that was read as text: where the head verifier sees a black
+    /// head up to 2 ss beyond the stem's end, inside such a piece, the piece is that note (a quarter; a flagged stem is
+    /// too wide to be taken for a loose one). The head sits in the middle of the positions the verifier accepts.
+    /// </summary>
+    private void HeadsOnLooseStems(List<MusicSymbol> syms, Staff staff)
+    {
+        if (_heads == null) return;
+        double ss = staff.Space;
+        int iBlack = _heads.LabelIndex("head_black"), iHalf = _heads.LabelIndex("head_half");
+        var heads = syms.Where(s => s.Kind is SymbolKind.Note or SymbolKind.Chord or SymbolKind.NoteGroup).SelectMany(s => s.Notes.Concat(s.Children.SelectMany(c => c.Notes))).ToList();
+        var stems = syms.Where(s => s.Kind is SymbolKind.Text or SymbolKind.Unknown && s.Bounds.Width <= 0.35 * ss && s.Bounds.Height >= 1.8 * ss && s.Bounds.Height <= 4.5 * ss).ToList();
+        foreach (var st in stems)
+        {
+            (double p, double cx, double cy, bool up, MusicSymbol piece)? best = null;
+            var hits = new List<(double cy, bool up, MusicSymbol piece)>();
+            foreach (bool up in new[] { false, true })
+            {
+                // a stem down hangs from the head's left edge, a stem up rises from its right edge
+                double cx = up ? st.Bounds.X1 - 0.55 * ss : st.Bounds.X0 + 0.55 * ss;
+                double end = up ? st.Bounds.Y1 : st.Bounds.Y0;
+                for (double dy = -2.0; dy <= 1.0001; dy += 0.25)
+                {
+                    double cy = end + (up ? -dy : dy) * ss;
+                    if (up ? cy < end - 0.3 * ss : cy > end + 0.3 * ss) continue;
+                    var piece = syms.FirstOrDefault(s => s != st && s.Kind is SymbolKind.Text or SymbolKind.Unknown && s.Bounds.Contains((int)Math.Round(cx), (int)Math.Round(cy))
+                                                         && s.Bounds.Width >= 0.8 * ss && s.Bounds.Width <= 2.6 * ss && s.Bounds.Height <= 2.6 * ss);
+                    if (piece == null || heads.Any(h => Math.Abs(h.HeadX - cx) < 0.8 * ss && Math.Abs(h.HeadY - cy) < 0.8 * ss)) continue;
+                    var probs = _heads.ClassifyGrids(new List<float[]> { Eval.CropExtractor.WindowGrid(_ns, cx, cy, ss) }, (float)Eval.CropExtractor.HeadWindow, (float)Eval.CropExtractor.HeadWindow);
+                    double pb = iBlack >= 0 ? probs[0][iBlack] : 0, ph = iHalf >= 0 ? probs[0][iHalf] : 0;
+                    if (pb < 0.8 || pb <= ph) continue;
+                    hits.Add((cy, up, piece));
+                    if (best == null || pb > best.Value.p) best = (pb, cx, cy, up, piece);
+                }
+            }
+            if (best is not var (bp, bx, by, bup, bpiece)) continue;
+            var same = hits.Where(h => h.up == bup && h.piece == bpiece).Select(h => h.cy).ToList();
+            by = (same.Min() + same.Max()) / 2;
+            var head = new Rect((int)Math.Round(bx - 0.6 * ss), (int)Math.Round(by - 0.45 * ss), (int)Math.Round(bx + 0.6 * ss), (int)Math.Round(by + 0.45 * ss));
+            var note = new Note { Head = head, HeadType = "black", Confidence = bp, Step = (int)Math.Round(staff.StepAt(bx, by)) };
+            bpiece.Kind = SymbolKind.Note; bpiece.Name = "note"; bpiece.Duration = "quarter"; bpiece.StemUp = bup; bpiece.Confidence = Math.Round(bp, 2);
+            bpiece.Notes.Clear(); bpiece.Notes.Add(note);
+            bpiece.Attributes["stemx"] = $"{st.Bounds.X0},{st.Bounds.X1},{(bup ? st.Bounds.Y0 : st.Bounds.Y1)}";
+            bpiece.Attributes["stem"] = "reattached";
+            bpiece.Bounds = bpiece.Bounds.Union(st.Bounds);
+            syms.Remove(st);
+            heads.Add(note);
+        }
+    }
+
+    /// <summary>
+    /// The upper digit of a time signature (a round "2" or "3") read as a stemless head: a lone digit in the lower
+    /// half of the staff with such a "note" right on top of it is read again as one stacked signature, the ink of both
+    /// split at the middle line and each half matched against the digit templates (touching digits share pieces).
+    /// </summary>
+    private void DigitsReadAsHeads(List<MusicSymbol> syms, Staff staff)
+    {
+        if (_lib == null) return;
+        double ss = staff.Space;
+        foreach (var low in syms.Where(s => s.Kind == SymbolKind.TimeSignature && s.Name.Length == 8 && s.Name.StartsWith("timeSig") && char.IsDigit(s.Name[7])).ToList())
+        {
+            var lb = low.Bounds;
+            double mid = staff.Lines[2].YAt(lb.CenterX);
+            if (lb.CenterY <= mid || syms.Any(s => s != low && s.Kind == SymbolKind.TimeSignature && s.Bounds.CenterY < mid && s.Bounds.X1 > lb.X0 && s.Bounds.X0 < lb.X1)) continue;
+            var head = syms.FirstOrDefault(s => s.Kind == SymbolKind.Note && s.StemUp == null && s.Notes.Count == 1 && s.Bounds.CenterY < mid
+                                                && s.Bounds.Y1 <= lb.Y0 + 0.4 * ss && s.Bounds.Y1 >= lb.Y0 - 0.6 * ss
+                                                && Math.Min(s.Bounds.X1, lb.X1) - Math.Max(s.Bounds.X0, lb.X0) >= 0.6 * Math.Min(s.Bounds.Width, lb.Width));
+            if (head == null) continue;
+            var r = head.Bounds.Union(lb);
+            int split = (int)Math.Round(mid) - r.Y0;
+            string? Digit(int y0, int y1)
+            {
+                int x0 = int.MaxValue, x1 = -1, yy0 = int.MaxValue, yy1 = -1;
+                for (int y = y0; y < y1; y++) for (int x = r.X0; x <= r.X1; x++) if (_ns[x, r.Y0 + y]) { x0 = Math.Min(x0, x); x1 = Math.Max(x1, x); yy0 = Math.Min(yy0, y); yy1 = Math.Max(yy1, y); }
+                if (x1 < 0 || yy1 - yy0 < 0.8 * ss) return null;
+                int sw = x1 - x0 + 1, sh = yy1 - yy0 + 1;
+                var sub = new byte[sw * sh];
+                for (int y = yy0; y <= yy1; y++) for (int x = x0; x <= x1; x++) if (_ns[x, r.Y0 + y]) sub[(y - yy0) * sw + (x - x0)] = 1;
+                var mm = _lib.Match(sub, sw, sh, ss, 0.4, t => t.Kind == SymbolKind.TimeSignature && t.Name.Length == 8);
+                return mm.Count > 0 && mm[0].Score >= 0.6 ? mm[0].Template.Name[7..] : null;
+            }
+            string? upper = Digit(0, split), lower = Digit(split, r.Height);
+            if (upper == null || lower == null) continue;
+            low.Name = "timeSigStack"; low.Bounds = r; low.Confidence = 0.7;
+            low.Attributes["stack"] = $"{upper}/{lower}";
+            low.Attributes["digit"] = "upper read as a head";
+            syms.Remove(head);
+        }
+    }
+
     /// <summary>Turns a piece into a whole note when the head verifier calls it hollow with at least the given probability.</summary>
     private Note? MakeWholeNote(MusicSymbol piece, Staff staff, double minP, int iBlack, int iHalf)
     {
@@ -3575,6 +3766,8 @@ public sealed class SymbolAnalyzer
         int Count(double reach)
         {
         int best = 0;
+        int outW = Math.Max(2, (int)Math.Round(0.3 * ss));
+        bool Wide(int x, int y0, int y1) => x >= c.X0 && x <= c.X1 && Enumerable.Range(y0, y1 - y0 + 1).Any(y => _cm.Labels[y * _cm.Width + x] == label);
         foreach (double off in new[] { 0.25, 0.45, 0.7, -0.25, -0.45, -0.7 })
         {
             int dx = (int)Math.Round(off * ss);
@@ -3592,7 +3785,8 @@ public sealed class SymbolAnalyzer
                 if (on) { if (run == 0) runTop = y; run++; }
                 else
                 {
-                    if (run >= minBand) bands++;
+                    // a beam or flag runs sideways: a smudge or sliver beside the stem has no ink 0.3 ss further out
+                    if (run >= minBand && Wide(x + Math.Sign(dx) * outW, runTop, runTop + run - 1)) bands++;
                     run = 0;
                 }
             }
@@ -3637,6 +3831,56 @@ public sealed class SymbolAnalyzer
         }
     }
 
+    /// <summary>Stemless whole notes one above the other (within half a space across) are one chord.</summary>
+    private static void StackedWholeNotes(List<MusicSymbol> syms, Staff staff)
+    {
+        double ss = staff.Space;
+        var wholes = syms.Where(s => s.Kind is SymbolKind.Note or SymbolKind.Chord && s.StemUp == null && s.Notes.Count > 0 && s.Notes.All(n => n.HeadType == "whole"))
+                         .OrderBy(s => s.Notes[0].HeadX).ToList();
+        foreach (var w in wholes)
+        {
+            if (!syms.Contains(w)) continue;
+            foreach (var o in wholes.Where(o => o != w && syms.Contains(o) && Math.Abs(o.Notes[0].HeadX - w.Notes[0].HeadX) <= 0.5 * ss
+                                                && o.Notes.All(n => w.Notes.All(m => m.Step != n.Step))).ToList())
+            {
+                w.Notes.AddRange(o.Notes);
+                w.Bounds = w.Bounds.Union(o.Bounds);
+                syms.Remove(o);
+            }
+            if (w.Notes.Count > 1) { w.Kind = SymbolKind.Chord; w.Name = "chord"; w.Notes.Sort((a, b) => b.Step.CompareTo(a.Step)); }
+        }
+    }
+
+    /// <summary>
+    /// A natural or sharp whose box reads as a hollow head on a short stem (often where a slur touches it): a "half note"
+    /// a short one (under 3.2 ss tall) right before another head at about its height is matched against the accidentals and
+    /// becomes the best one, or goes when none fits.
+    /// </summary>
+    private void AccidentalsReadAsHalfNotes(List<MusicSymbol> syms, Staff staff)
+    {
+        double ss = staff.Space;
+        var heads = syms.Where(s => s.Kind is SymbolKind.Note or SymbolKind.Chord or SymbolKind.NoteGroup).SelectMany(s => s.Notes.Concat(s.Children.SelectMany(c => c.Notes))).ToList();
+        foreach (var h in syms.Where(s => s.Kind == SymbolKind.Note && s.Notes.Count == 1 && s.Notes[0].HeadType == "half" && s.StemUp != null && s.Bounds.Height < 3.2 * ss).ToList())
+        {
+            var n = h.Notes[0];
+            if (!heads.Any(o => o != n && o.Head.X0 > n.HeadX && o.Head.X0 - n.Head.X1 <= 1.4 * ss && Math.Abs(o.HeadY - n.HeadY) <= 1.0 * ss)) continue;
+            var r = h.Bounds;
+            int w = r.Width, hh = r.Height;
+            var mask = new byte[w * hh];
+            for (int y = 0; y < hh; y++)
+                for (int x = 0; x < w; x++)
+                    if (_ns[r.X0 + x, r.Y0 + y]) mask[y * w + x] = 1;
+            var m = _lib?.Match(mask, w, hh, ss, 0.4, t => t.Kind == SymbolKind.Accidental);
+            if (m != null && m.Count > 0 && m[0].Score >= 0.5)
+            {
+                h.Kind = SymbolKind.Accidental; h.Name = m[0].Template.Name; h.Confidence = Math.Round(m[0].Score, 2);
+                h.Notes.Clear(); h.StemUp = null; h.Duration = null; h.Flags = 0;
+                h.Attributes["accidental"] = "read as a half note";
+            }
+            else syms.Remove(h);
+        }
+    }
+
     private void AttachDotsAndAccidentals(List<MusicSymbol> syms, Staff staff)
     {
         double ss = staff.Space;
@@ -3645,6 +3889,33 @@ public sealed class SymbolAnalyzer
                         .SelectMany(s => s.Kind == SymbolKind.NoteGroup && s.Children.Count > 0
                                          ? s.Children.SelectMany(c => c.Notes.Select(n => (sym: c, note: n)))
                                          : s.Notes.Select(n => (sym: s, note: n))).ToList();
+        // a heavy augmentation dot (up to 0.75 ss, too big for the dot test) is often read as a text glyph: a solid
+        // round blob close right of a head at head height, with no other note in between, is that dot
+        foreach (var t in syms.Where(s => s.Kind is SymbolKind.Text or SymbolKind.Unknown && (!s.Attributes.TryGetValue("glyphs", out var gl) || gl == "1")).ToList())
+        {
+            var b = t.Bounds;
+            double w = b.Width / ss, h = b.Height / ss;
+            if (w < 0.4 || w > 0.75 || h < 0.4 || h > 0.75 || Math.Abs(w - h) > 0.2) continue;
+            double step = staff.StepAt(b.CenterX, b.CenterY);
+            if (step >= -0.5 && step <= 8.5 && ((int)Math.Round(step)) % 2 == 0 && Math.Abs(step - Math.Round(step)) <= 0.4) continue;   // dots sit in spaces
+            int ink = 0;
+            for (int y = b.Y0; y <= b.Y1; y++)
+                for (int x = b.X0; x <= b.X1; x++)
+                    if (_cm.Labels[y * _cm.Width + x] != 0) ink++;
+            if (ink < 0.65 * b.Width * b.Height) continue;
+            bool beside = notes.Any(p => b.CenterX > p.note.Head.X1 && b.X0 - p.note.Head.X1 <= 0.8 * ss && Math.Abs(b.CenterY - p.note.HeadY) <= 0.75 * ss
+                                         && !notes.Any(q => q.note.Head.X0 > p.note.Head.X1 && q.note.Head.X0 < b.CenterX));
+            if (beside) { t.Kind = SymbolKind.Dot; t.Name = "dot"; t.Confidence = 0.6; }
+        }
+        // the dot of a dotted rest standing on a staff line keeps only a sliver when the line is removed
+        foreach (var r in syms.Where(s => s.Kind == SymbolKind.Rest && s.Dots == 0 && s.Duration is "quarter" or "8th" or "16th" or "half").ToList())
+        {
+            var sliver = syms.FirstOrDefault(s => s.Kind == SymbolKind.Unknown && s.Bounds.Width >= 0.2 * ss && s.Bounds.Width <= 0.55 * ss && s.Bounds.Height <= 0.55 * ss
+                                                  && s.Bounds.CenterX > r.Bounds.X1 && s.Bounds.CenterX < r.Bounds.X1 + 1.4 * ss
+                                                  && s.Bounds.CenterY >= r.Bounds.Y0 - 0.3 * ss && s.Bounds.CenterY <= r.Bounds.Y1 + 0.3 * ss
+                                                  && !notes.Any(p => p.note.HeadX > r.Bounds.X1 && p.note.Head.X0 < s.Bounds.CenterX));
+            if (sliver != null) { r.Dots = 1; r.Attributes["dot"] = "sliver on a line"; syms.Remove(sliver); }
+        }
         var dots = syms.Where(s => s.Kind == SymbolKind.Dot).OrderBy(s => s.Bounds.X0).ToList();
         var dotOf = new Dictionary<Note, MusicSymbol>();
         var accidentalBoxes = syms.Where(s => s.Kind is SymbolKind.Accidental or SymbolKind.KeySignature).Select(s => s.Bounds).ToList();
@@ -3680,7 +3951,7 @@ public sealed class SymbolAnalyzer
             }
             // a dotted rest: the dot right of the rest, within its height (a dotted quarter or 8th rest)
             var rest = syms.Where(r => r.Kind == SymbolKind.Rest && r.Dots == 0 && r.Duration is "quarter" or "8th" or "16th" or "half"
-                                       && d.Bounds.CenterX > r.Bounds.X1 && d.Bounds.CenterX < r.Bounds.X1 + 1.0 * ss
+                                       && d.Bounds.CenterX > r.Bounds.X1 && d.Bounds.CenterX < r.Bounds.X1 + 1.4 * ss
                                        && d.Bounds.CenterY >= r.Bounds.Y0 - 0.3 * ss && d.Bounds.CenterY <= r.Bounds.Y0 + 0.6 * r.Bounds.Height)
                            .OrderBy(r => d.Bounds.CenterX - r.Bounds.X1).FirstOrDefault();
             if (rest != null && !notes.Any(p => p.note.HeadX > rest.Bounds.X1 && p.note.Head.X0 < d.Bounds.CenterX))
