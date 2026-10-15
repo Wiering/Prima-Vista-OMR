@@ -4028,8 +4028,9 @@ public sealed class SymbolAnalyzer
             for (int y = 0; y < hh; y++)
                 for (int x = 0; x < w; x++)
                     if (_ns[r.X0 + x, r.Y0 + y]) mask[y * w + x] = 1;
+            // an x is open; a solid blob there is a heavy dot (of the note before it)
+            if (mask.Count(v => v != 0) > 0.6 * w * hh) continue;
             var m = _lib.Match(mask, w, hh, ss, 0.4, g => g.Kind == SymbolKind.Accidental);
-            if (Environment.GetEnvironmentVariable("PVOMR_DSDUMP") == "1") Console.Error.WriteLine($"DS {r}: {string.Join(" ", m.Take(3).Select(x => $"{x.Template.Name} {x.Score:0.00}"))}");
             if (m.Count == 0 || m[0].Template.Name != "accidentalDoubleSharp" || m[0].Score < 0.55) continue;
             t.Kind = SymbolKind.Accidental; t.Name = "accidentalDoubleSharp"; t.Confidence = Math.Round(m[0].Score, 2);
             t.Step = (int)Math.Round(staff.StepAt(r.CenterX, r.CenterY));
@@ -4066,12 +4067,15 @@ public sealed class SymbolAnalyzer
         }
     }
 
-    /// <summary>A horizontal ink run of 1.5 spaces or more starting within 0.4 spaces right of the box, at its rows.</summary>
-    private bool TieRightOf(Rect b, double ss)
+    /// <summary>A thin horizontal ink run (a tie, not a beam or head) of 1.5 spaces or more starting within 0.4 spaces
+    /// right of the box, at its rows, outside the notes.</summary>
+    private bool TieRightOf(Rect b, double ss, List<MusicSymbol> syms)
     {
+        // (ink inside a note or beamed group, its beam or the next head, is no tie)
+        var notes = syms.Where(s => s.Kind is SymbolKind.Note or SymbolKind.Chord or SymbolKind.NoteGroup).Select(s => s.Bounds).ToList();
         for (int y = b.Y0; y <= b.Y1; y++)
             for (int x = b.X1 + 1; x <= b.X1 + (int)Math.Round(0.4 * ss); x++)
-                if (x < _ns.Width && _ns[x, y] && _ns.HorizontalRunAt(x, y, out _) >= 1.5 * ss) return true;
+                if (x < _ns.Width && _ns[x, y] && !notes.Any(r => r.Contains(x, y)) && _ns.HorizontalRunAt(x, y, out _) >= 1.5 * ss && _ns.VerticalRunAt(x, y, out _) <= 0.45 * ss) return true;
         return false;
     }
 
@@ -4101,11 +4105,13 @@ public sealed class SymbolAnalyzer
                                          && !notes.Any(q => q.note.Head.X0 > p.note.Head.X1 && q.note.Head.X0 < b.CenterX));
             if (beside) { t.Kind = SymbolKind.Dot; t.Name = "dot"; t.Confidence = 0.6; }
         }
-        // the dot of a dotted rest standing on a staff line keeps only a sliver when the line is removed
+        // the dot of a dotted rest standing on a staff line keeps only a sliver when the line is removed (clear of the
+        // rest: a speck touching it is noise)
         foreach (var r in syms.Where(s => s.Kind == SymbolKind.Rest && s.Dots == 0 && s.Duration is "quarter" or "8th" or "16th" or "half").ToList())
         {
             var sliver = syms.FirstOrDefault(s => s.Kind == SymbolKind.Unknown && s.Bounds.Width >= 0.2 * ss && s.Bounds.Width <= 0.55 * ss && s.Bounds.Height <= 0.55 * ss
-                                                  && s.Bounds.CenterX > r.Bounds.X1 && s.Bounds.CenterX < r.Bounds.X1 + 1.4 * ss
+                                                  && s.Bounds.X0 >= r.Bounds.X1 + 0.4 * ss && s.Bounds.CenterX < r.Bounds.X1 + 1.4 * ss
+                                                  && Math.Abs(staff.StepAt(s.Bounds.CenterX, s.Bounds.CenterY) / 2 - Math.Round(staff.StepAt(s.Bounds.CenterX, s.Bounds.CenterY) / 2)) <= 0.2
                                                   && s.Bounds.CenterY >= r.Bounds.Y0 - 0.3 * ss && s.Bounds.CenterY <= r.Bounds.Y1 + 0.3 * ss
                                                   && !notes.Any(p => p.note.HeadX > r.Bounds.X1 && p.note.Head.X0 < s.Bounds.CenterX));
             if (sliver != null) { r.Dots = 1; r.Attributes["dot"] = "sliver on a line"; syms.Remove(sliver); }
@@ -4122,7 +4128,7 @@ public sealed class SymbolAnalyzer
             double aspect = d.Bounds.Width / (double)Math.Max(1, d.Bounds.Height);
             if (aspect < 0.45 || aspect > 2.2) continue;
             // the broken-off tip of a tie: the tie's long body starts right after it
-            if (TieRightOf(d.Bounds, ss)) { syms.Remove(d); continue; }
+            if (TieRightOf(d.Bounds, ss, syms)) { syms.Remove(d); continue; }
             // augmentation dot: right of a head, roughly at head height (in a space); one per head, nearest in height,
             // and a second dot only when it lies beside the first (double dot), not above or below it
             // some engravers set the dot well clear of the head: further out only when no other note stands in between
