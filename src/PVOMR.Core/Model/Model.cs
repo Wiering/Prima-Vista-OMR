@@ -142,6 +142,8 @@ public sealed class Note
     public int Dots { get; set; }
     public int Accidental { get; set; } = int.MinValue;
     public string? AccidentalName { get; set; }
+    /// <summary>The accidental was read with doubt (an unsure classification, or put together from strokes or pieces).</summary>
+    public bool AccidentalUnsure { get; set; }
     public int LedgerLines { get; set; }
     /// <summary>Head detector confidence (1 when not available).</summary>
     public double Confidence { get; set; } = 1;

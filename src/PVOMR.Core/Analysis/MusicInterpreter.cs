@@ -128,8 +128,12 @@ public static class MusicInterpreter
                 var staff = sys.Staves[k];
                 int own = staff.KeyFifths;
                 if (own == target || staff.ForcedKey != null) continue;
-                // a reading other systems share is a key of its own (a change of key down the page), not a loss
-                bool fix = HasKeySignature(staff) ? Math.Sign(own) == Math.Sign(target) && Math.Abs(own) < Math.Abs(target) && readings.Count(r => r == own) < 2
+                // a reading other systems share is a key of its own (a change of key down the page), not a loss; a lone
+                // accidental of the other kind where most systems agree on the key (a flat touching the clef missed, the
+                // next one matched as a sharp) is a misreading
+                int ownCount = readings.Count(r => r == own), targetCount = readings.Count(r => r == target);
+                bool fix = HasKeySignature(staff) ? Math.Sign(own) == Math.Sign(target) && Math.Abs(own) < Math.Abs(target) && ownCount < 2
+                                                    || Math.Abs(own) == 1 && Math.Sign(own) == -Math.Sign(target) && targetCount >= 3 && targetCount >= 2 * ownCount
                                                   : sys.Index > 0;   // no signature of its own: inherited an incomplete reading
                 if (!fix) continue;
                 Staff? prev = sys.Index > 0 && page.Systems[sys.Index - 1].Staves.Count == count ? page.Systems[sys.Index - 1].Staves[k] : null;
@@ -311,6 +315,10 @@ public static class MusicInterpreter
         if (idx < 0 || idx > 7 * 10) return $"step{n.Step}";
         int octave = idx / 7; string letter = Letters[idx % 7];
         int alter;
+        // a sharp on a note the key flattens (E# in B flat) or a flat on one it sharpens is a natural read wrongly: the
+        // two signs look alike in old prints, and such spellings hardly occur
+        // (only for an accidental read with doubt: a clearly printed E# stays one)
+        if (n.AccidentalUnsure && n.Accidental != int.MinValue && n.Accidental * KeyAlter(letter, fifths) == -1) { n.Accidental = 0; n.AccidentalName = "accidentalNatural"; }
         if (n.Accidental != int.MinValue) { alter = n.Accidental; measureAccidentals[n.Step] = alter; }
         else if (measureAccidentals.TryGetValue(n.Step, out var a)) alter = a;
         else alter = KeyAlter(letter, fifths);

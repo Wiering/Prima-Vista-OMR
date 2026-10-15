@@ -44,6 +44,9 @@ public static class BarlineDetector
             {
                 if (c.Width > 0.8 * ss) { if (BarDump) Console.Error.WriteLine($"bar staff {si + 1} x{c.X0}-{c.X1}: too wide"); continue; }
                 int xc = (int)Math.Round(c.Xc);
+                // the thick line of a final bar at the staff's end, a thin line just left of it
+                bool finalThick = c.X1 >= staff.Right - 1.0 * ss && c.Width >= 0.3 * ss && cands.Any(o => o != c && o.X1 < c.X0 && c.X0 - o.X1 <= 1.0 * ss && o.Width < c.Width);
+                if (finalThick) { if (BarDump) Console.Error.WriteLine($"bar staff {si + 1} x{c.X0}-{c.X1}: final thick line"); c.Thick = true; accepted.Add(c); continue; }
                 if (!IsThinAlongRun(noStaff, bin, staff, c, xc)) { if (BarDump) Console.Error.WriteLine($"bar staff {si + 1} x{c.X0}-{c.X1}: not thin along run"); continue; }
                 if (!ComponentIsThin(cm, staff, c, xc, staves)) { if (BarDump) Console.Error.WriteLine($"bar staff {si + 1} x{c.X0}-{c.X1}: component not thin"); continue; }
                 if (BarDump) Console.Error.WriteLine($"bar staff {si + 1} x{c.X0}-{c.X1}: accepted");

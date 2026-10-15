@@ -220,6 +220,10 @@ public sealed class SymbolAnalyzer
             classified.RemoveAll(p => _consumed.Contains(p.comp));
             MergeAndRematch(classified, staff);
             syms.AddRange(classified.Select(p => p.sym));
+            // a clef change is at least a space wide: a narrow "clef" inside the staff is a flat or natural (left to the
+            // accidental passes); at the start a clef may be found by its thick stroke alone
+            // (the solid thick bar of a C clef is mostly ink; a flat or natural is not)
+            foreach (var c in syms.Where(s => s.Kind == SymbolKind.Clef && s.Bounds.Width < 0.8 * staff.Space && s.Bounds.X0 > staff.Left + 4 * staff.Space && InkFill(s.Bounds) < 0.7)) { c.Kind = SymbolKind.Unknown; c.Name = "unknown"; }
             MergeText(syms, staff);
             MergeDynamics(syms, staff);
             GroupDottedLines(syms, staff);
@@ -757,7 +761,16 @@ public sealed class SymbolAnalyzer
         if (clef == null) return;
         string? clefKind = ClefKindName(clef);
         if (clefKind == null) return;
-        var (accepted, kind) = KeyRunAt(ClefRightEdge(clef, staff), clefKind, staff);
+        int edge = ClefRightEdge(clef, staff);
+        var (accepted, kind) = KeyRunAt(edge, clefKind, staff);
+        // one sharp may be the second flat of a key whose first flat touches the clef (inside its box): flats from a
+        // little inside the clef, when at least two of them are found, win
+        if (accepted.Count == 1 && kind == "accidentalSharp")
+        {
+            var (flats, fk) = KeyRunAt(edge - (int)Math.Round(0.8 * staff.Space), clefKind, staff, "accidentalFlat", insideClef: true);
+            // (the "sharp" is then the second flat itself)
+            if (flats.Count >= 2 && flats.All(f => f.Score >= 0.8) && Math.Abs(flats[1].X - accepted[0].X) <= 0.5 * staff.Space) { accepted = flats; kind = fk; }
+        }
         AddKeySymbols(comps, staff, syms, consumed, accepted, kind, change: false);
     }
 
@@ -801,12 +814,12 @@ public sealed class SymbolAnalyzer
     }
 
     /// <summary>The key signature run starting right of x: each next accidental at the place the clef gives it.</summary>
-    private (List<Placement> accepted, string? kind) KeyRunAt(int lastX1, string clefKind, Staff staff)
+    private (List<Placement> accepted, string? kind) KeyRunAt(int lastX1, string clefKind, Staff staff, string? onlyKind = null, bool insideClef = false)
     {
         double ss = staff.Space;
         const double Threshold = 0.66;
         int dyRange = Math.Max(1, (int)Math.Round(0.15 * ss));
-        string? kind = null;
+        string? kind = onlyKind;
         var accepted = new List<Placement>();
         for (int n = 0; n < 7; n++)
         {
@@ -835,7 +848,8 @@ public sealed class SymbolAnalyzer
             bool ok = best != null && best.Score >= thr;
             // a time-signature digit explains the ink clearly better: the key signature ended before it
             double digit = ok ? BestTimeGlyphScore(staff, best!.X + best.W / 2, dyRange) : 0;
-            if (ok && digit > best!.Score + 0.03) ok = false;
+            // (no time signature stands inside the clef: a first accidental touching it is not weighed against digits)
+            if (ok && digit > best!.Score + 0.03 && !(insideClef && n == 0)) ok = false;
             // accidentals of a key signature are evenly spaced
             if (ok && accepted.Count >= 2)
             {
@@ -982,6 +996,46 @@ public sealed class SymbolAnalyzer
             }
         }
         if (KeyDump) Console.Error.WriteLine($"timezone staff@{staff.Left},{staff.TopY(staff.Left):0} digits {bu?.T.Name}/{bl?.T.Name} {bu?.Score:0.00}/{bl?.Score:0.00} common {bc?.T.Name} {commonScore:0.00}");
+        // a two-digit numerator (10 to 16, as in 12/8): a 1 with a second digit beside it, the lower digit centred under
+        // the pair; it wins when all three fit clearly better than a single upper digit does
+        {
+            var b1 = BestPlacement("timeSig1", staff, yUpper, cxFrom - (int)Math.Round(0.4 * ss), cxTo, dyRange, centred: true);
+            if (b1 != null && b1.Score >= 0.7)
+            {
+                Placement? b2 = null;
+                foreach (var u in new[] { "timeSig0", "timeSig2", "timeSig5", "timeSig6" })   // (no 11: a thin 3 reads as two 1s)
+                {
+                    var pl = BestPlacement(u, staff, yUpper, b1.X + b1.W - (int)Math.Round(0.15 * ss), b1.X + b1.W + (int)Math.Round(0.45 * ss), dyRange);
+                    if (pl != null && (b2 == null || pl.Score > b2.Score)) b2 = pl;
+                }
+                // two digits side by side are clearly wider than one (the strokes of a 3 also take a 1 and another 1)
+                if (b2 != null && b2.Score >= 0.7 && b2.X + b2.W / 2 >= b1.X + b1.W && (bu == null || b2.X + b2.W - b1.X >= 1.4 * bu.W))
+                {
+                    int pcx = (b1.X + b2.X + b2.W) / 2, span = Math.Max(1, (int)Math.Round(0.3 * ss));
+                    Placement? tl = null;
+                    foreach (var l in new[] { "timeSig2", "timeSig4", "timeSig8" })
+                    {
+                        var pl = BestPlacement(l, staff, yLower, pcx - span, pcx + span, dyRange, centred: true);
+                        if (pl != null && (tl == null || pl.Score > tl.Score)) tl = pl;
+                    }
+                    double two = tl == null ? 0 : (b1.Score + b2.Score + tl.Score) / 3;
+                    // one digit centred on the pair that fits about as well is what is printed (a 3 also takes a 1 and a 5)
+                    double single = new[] { "timeSig2", "timeSig3", "timeSig4", "timeSig5", "timeSig6", "timeSig7", "timeSig8", "timeSig9" }
+                        .Select(u => BestPlacement(u, staff, yUpper, pcx - span, pcx + span, dyRange, centred: true)?.Score ?? 0).Max();
+                    if (single >= Math.Min(b1.Score, b2.Score) - 0.03) two = 0;
+                    int lineHalf = (int)Math.Ceiling(staff.LineThickness / 2) + 1;
+                    bool stem = tl != null && (HasStemThrough(b1.X, b2.X + b2.W - b1.X, b1.Y - lineHalf - 1, ss, -1) || HasStemThrough(tl.X, tl.W, tl.Y + tl.H + lineHalf + 1, ss, +1));
+                    if (KeyDump) Console.Error.WriteLine($"   two-digit 1{b2.T.Name[7..]}/{tl?.T.Name[7..]} {b1.Score:0.00} {b2.Score:0.00} {tl?.Score:0.00} stem {stem}");
+                    if (tl != null && tl.Score >= 0.75 && two >= 0.82 && two > digitScore + 0.02 && two > commonScore && !stem)
+                    {
+                        var rect = new Rect(Math.Min(b1.X, tl.X), b1.Y, Math.Max(b2.X + b2.W, tl.X + tl.W) - 1, tl.Y + tl.H - 1);
+                        var two2 = new MusicSymbol { Kind = SymbolKind.TimeSignature, Name = "timeSigStack", Staff = staff, Confidence = Math.Round(two, 2), Bounds = rect };
+                        two2.Attributes["stack"] = $"1{b2.T.Name[7..]}/{tl.T.Name[7..]}";
+                        return two2;
+                    }
+                }
+            }
+        }
         MusicSymbol? sym;
         if (digitScore >= 0.85 && bu!.Score >= 0.78 && bl!.Score >= 0.78 && digitScore >= commonScore)
         {
@@ -1608,11 +1662,15 @@ public sealed class SymbolAnalyzer
                 if (lab.Length == 0 || nm.Contains("Double")) continue;
                 pr = new GlyphClassifier.Prediction { Label = lab, Probability = (float)mt[0].Score };
             }
+            // an old-style natural reads as a sharp: its left stroke stands clearly higher than its right one at both
+            // ends (a sharp's strokes are about level); measured on all the ink there
+            if (pr.Label == "acc_sharp" && NaturalStrokes(ix0, iy0, ix1, iy1, ss)) pr = new GlyphClassifier.Prediction { Label = "acc_natural", Probability = pr.Probability };
             // the accidental's centre must be at the head's height (flats sit a little higher)
             double acy = pr.Label == "acc_flat" ? sBot - 0.5 * ss : (sTop + sBot) / 2.0;
             if (Math.Abs(acy - h.HeadY) > 0.6 * ss) continue;
             h.Accidental = pr.Label switch { "acc_sharp" => 1, "acc_flat" => -1, _ => 0 };
             h.AccidentalName = pr.Label switch { "acc_sharp" => "accidentalSharp", "acc_flat" => "accidentalFlat", _ => "accidentalNatural" };
+            h.AccidentalUnsure = pr.Probability < 0.75;
             // a piece that was nothing but the accidental is used up
             foreach (var p in over.Where(p => p.Kind != SymbolKind.Slur && p.Bounds.X0 >= wx0 - 2 && p.Bounds.X1 <= wx1 + 2).ToList()) { syms.Remove(p); pieces.Remove(p); }
         }
@@ -3077,7 +3135,9 @@ public sealed class SymbolAnalyzer
             double yTop = Math.Min(a.Top, b.Top), yBot = Math.Max(a.Bottom, b.Bottom);
             var head = target.Heads.FirstOrDefault(h => h.HeadY >= yTop - 0.3 * ss && h.HeadY <= yBot + 0.3 * ss && h.Accidental == int.MinValue);
             if (head == null) continue;
-            bool sharp = overlap >= 0.6;
+            // a natural's left stroke stands higher than its right one at both ends; a sharp's strokes are about level
+            bool offset = b.Top - a.Top >= 0.35 * ss && b.Bottom - a.Bottom >= 0.35 * ss;
+            bool sharp = overlap >= 0.6 && !offset;
             head.Accidental = sharp ? 1 : 0;
             head.AccidentalName = sharp ? "accidentalSharp" : "accidentalNatural";
             if (target.Flags > majority) target.Flags = majority;
@@ -4090,6 +4150,33 @@ public sealed class SymbolAnalyzer
         return false;
     }
 
+    /// <summary>The leftmost and rightmost long vertical strokes in the box: the left one starts and ends a third of a
+    /// space or more higher than the right one (a natural).</summary>
+    private bool NaturalStrokes(int x0, int y0, int x1, int y1, double ss)
+    {
+        var cols = new List<(int x, int top, int bot)>();
+        for (int x = x0; x <= x1; x++)
+        {
+            int run = 0, best = 0, end = 0;
+            for (int y = y0; y <= y1; y++) { if (_ns[x, y]) { run++; if (run > best) { best = run; end = y; } } else run = 0; }
+            if (best >= 1.2 * ss) cols.Add((x, end - best + 1, end));
+        }
+        if (cols.Count < 2 || cols[^1].x - cols[0].x < 0.3 * ss) return false;
+        var left = cols.Where(c => c.x <= cols[0].x + 2).ToList();
+        var right = cols.Where(c => c.x >= cols[^1].x - 2).ToList();
+        double lt = left.Average(c => c.top), lb = left.Average(c => c.bot), rt = right.Average(c => c.top), rb = right.Average(c => c.bot);
+        return rt - lt >= 0.35 * ss && rb - lb >= 0.35 * ss;
+    }
+
+    private double InkFill(Rect r)
+    {
+        int ink = 0;
+        for (int y = r.Y0; y <= r.Y1; y++)
+            for (int x = r.X0; x <= r.X1; x++)
+                if (_ns[x, y]) ink++;
+        return ink / (double)(r.Width * r.Height);
+    }
+
     private void AttachDotsAndAccidentals(List<MusicSymbol> syms, Staff staff)
     {
         double ss = staff.Space;
@@ -4198,6 +4285,28 @@ public sealed class SymbolAnalyzer
             if (cand.note == null || notes.Any(p => p.note != cand.note && p.note.HeadX > cand.note.HeadX + 0.3 * ss && p.note.Head.X0 < f.Bounds.CenterX)) continue;
             cand.sym.Attributes["dotcand"] = "1";
         }
+        // a natural or sharp in pieces next to its head (one stroke left alone, the other merged into a stem): a thin
+        // stroke of an accidental's height just left of a head without an accidental, the ink between them matched
+        foreach (var u in syms.Where(s => s.Kind is SymbolKind.Unknown or SymbolKind.Text && s.Bounds.Width <= 0.6 * ss && s.Bounds.Height >= 2.0 * ss && s.Bounds.Height <= 3.4 * ss).ToList())
+        {
+            var hp = notes.Where(p => p.note.Accidental == int.MinValue && p.note.Head.X0 > u.Bounds.X1 && p.note.Head.X0 - u.Bounds.X1 <= 0.9 * ss
+                                      && p.note.HeadY > u.Bounds.Y0 && p.note.HeadY < u.Bounds.Y1).OrderBy(p => p.note.Head.X0).FirstOrDefault();
+            if (hp.note == null || _lib == null) continue;
+            var r = new Rect(u.Bounds.X0, u.Bounds.Y0, hp.note.Head.X0 - 1, u.Bounds.Y1);
+            int w = r.Width, hh = r.Height;
+            if (w < 0.6 * ss || w > 1.5 * ss) continue;
+            var mask = new byte[w * hh];
+            for (int y = 0; y < hh; y++) for (int x = 0; x < w; x++) if (_ns[r.X0 + x, r.Y0 + y]) mask[y * w + x] = 1;
+            var m = _lib.Match(mask, w, hh, ss, 0.4, t => t.Kind == SymbolKind.Accidental && !t.Name.Contains("Double"));
+            if (m.Count == 0 || m[0].Score < 0.65) continue;
+            string name = m[0].Template.Name;
+            if (name == "accidentalSharp" && NaturalStrokes(r.X0, r.Y0, r.X1, r.Y1, ss)) name = "accidentalNatural";
+            hp.note.AccidentalName = name;
+            hp.note.Accidental = name switch { "accidentalSharp" => 1, "accidentalFlat" => -1, _ => 0 };
+            hp.note.AccidentalUnsure = true;
+            syms.Remove(u);
+            syms.RemoveAll(d => d.Kind == SymbolKind.Dot && d.Bounds.X0 >= r.X0 && d.Bounds.X1 <= r.X1 && d.Bounds.Y0 >= r.Y0 && d.Bounds.Y1 <= r.Y1);
+        }
         var accs = syms.Where(s => s.Kind == SymbolKind.Accidental).ToList();
         foreach (var a in accs)
         {
@@ -4206,7 +4315,10 @@ public sealed class SymbolAnalyzer
                             .OrderBy(p => p.note.Head.X0 - a.Bounds.X1).FirstOrDefault();
             if (cand.note != null)
             {
+                // an old-style natural classified as a sharp: its strokes are offset (see NaturalStrokes)
+                if (a.Name == "accidentalSharp" && NaturalStrokes(a.Bounds.X0, a.Bounds.Y0, a.Bounds.X1, a.Bounds.Y1, ss)) a.Name = "accidentalNatural";
                 cand.note.AccidentalName = a.Name;
+                cand.note.AccidentalUnsure = a.Confidence < 0.75;
                 cand.note.Accidental = a.Name switch { "accidentalSharp" => 1, "accidentalFlat" => -1, "accidentalNatural" => 0, "accidentalDoubleSharp" => 2, "accidentalDoubleFlat" => -2, _ => int.MinValue };
                 syms.Remove(a);
             }

@@ -20,6 +20,9 @@ public static class MusicXmlReader
             foreach (var mEl in partEl.Elements("measure"))
             {
                 var m = new ScoreMeasure { Number = int.TryParse(mEl.Attribute("number")?.Value, out int n) ? n : part.Measures.Count + 1, Implicit = mEl.Attribute("implicit")?.Value == "yes" };
+                var print = mEl.Element("print");
+                if (print?.Attribute("new-page")?.Value == "yes") m.NewPage = true;
+                else if (print?.Attribute("new-system")?.Value == "yes") m.NewSystem = true;
                 var attr = mEl.Element("attributes");
                 if (attr != null)
                 {
