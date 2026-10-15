@@ -63,7 +63,9 @@ public partial class MainWindow : Window
         };
         KeyDown += OnKey;
         ExportButton.Click += async (_, _) => await ExportAsync();
-        MergeButton.Click += (_, _) => new MergeWindow(() => _engine ??= new RecognitionEngine()).Show(this);
+        // the open score becomes version A; its choices can come back as corrections of it
+        MergeButton.Click += (_, _) => new MergeWindow(() => _engine ??= new RecognitionEngine(), _file, (double)(DpiBox.Value ?? 300),
+                                                       _file == null ? null : (edits, summary) => _ = TakeMergeEditsAsync(edits, summary)).Show(this);
         FitButton.Click += (_, _) => View.FitPage();
         FitWidthButton.Click += (_, _) => View.FitWidth();
         Zoom100Button.Click += (_, _) => View.SetZoom(1);
@@ -377,6 +379,17 @@ public partial class MainWindow : Window
         }
         if (e.Kind == null && e.Duration == null && e.Dots == null && e.Stem == null && e.Time == null) { Status("nothing changed"); return; }
         Edit(e, s);
+    }
+
+    /// <summary>Corrections made in the merge window: recorded, and the pages recognised again with them.</summary>
+    private async Task TakeMergeEditsAsync(List<(int page, SymbolEdit edit)> edits, string summary)
+    {
+        if (_store == null || _file == null) return;
+        foreach (var (page, e) in edits) _store.Record(page, e);
+        _pages.Clear();
+        await AnalyzeAsync(_page, force: true);
+        Activate();
+        Status(summary);
     }
 
     /// <summary>After any edit: recompute the interpretation of the page and refresh everything.</summary>

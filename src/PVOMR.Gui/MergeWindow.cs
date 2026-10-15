@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Controls.Documents;
 using Avalonia.Input;
 using Avalonia.Layout;
 using Avalonia.Media;
@@ -46,17 +47,9 @@ public sealed class MergeProject
 /// a real difference between the editions are told apart at a glance. The user confirms the right version per bar; the
 /// merged music is exported as MusicXML.
 /// </summary>
-public sealed class MergeWindow : Window
+public sealed partial class MergeWindow : Window
 {
     private static readonly JsonSerializerOptions JsonOpts = new() { WriteIndented = true };
-
-    /// <summary>A source as loaded: its strand, and for a PDF the recognised pages and the page measures of every bar.</summary>
-    private sealed class Loaded
-    {
-        public Strand Strand = null!;
-        public Dictionary<PageAnalysis, PageResult> Pages = new();
-        public Dictionary<ScoreMeasure, List<Measure>> Measures = new();
-    }
 
     /// <summary>One entry of the list: a difference in a row between the suggested version (Base) and another.</summary>
     private sealed record Entry(int Row, int Base, int Other, BarDiff Diff);
@@ -67,20 +60,29 @@ public sealed class MergeWindow : Window
     private readonly StackPanel _sourcesPanel = new() { Spacing = 4 };
     private readonly ListBox _list = new();
     private readonly Grid _views = new();
-    private readonly List<(PageView view, TextBlock header)> _pageViews = new();
+    private readonly List<(PageView view, TextBlock header, TextBlock bar)> _pageViews = new();
+    /// <summary>Views that showed a bar already: later bars are only centred, the user's zoom stays.</summary>
+    private readonly HashSet<PageView> _zoomed = new();
+    private readonly double _dpi;
+    private readonly Action<List<(int page, SymbolEdit edit)>, string>? _saveEdits;
     private readonly WrapPanel _choiceButtons = new() { Orientation = Orientation.Horizontal };
     private readonly TextBlock _status = new() { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 0, 0) };
     private readonly CheckBox _restsByLength = new() { Content = "Rests by total length", IsChecked = true };
     private readonly CheckBox _onlyOpen = new() { Content = "Only bars to review", IsChecked = true };
-    private readonly Button _compare, _export;
-    private readonly List<Loaded> _sources = new();
+    private readonly Button _compare, _export, _toEdits;
+    private readonly List<MergeData> _sources = new();
     private List<MergeRow> _rows = new();
     private readonly HashSet<int> _reviewed = new();
     private List<Entry> _entries = new();
 
-    public MergeWindow(Func<RecognitionEngine> engine)
+    /// <param name="openFile">The score being edited in the main window: it becomes source A.</param>
+    /// <param name="saveEdits">Takes the choices as corrections of source A (to the main window, which records them).</param>
+    public MergeWindow(Func<RecognitionEngine> engine, string? openFile = null, double dpi = 300, Action<List<(int page, SymbolEdit edit)>, string>? saveEdits = null)
     {
         _engine = engine;
+        _dpi = dpi;
+        _saveEdits = saveEdits;
+        if (openFile != null) _project.Sources.Add(new MergeSource { File = openFile });
         Title = "PVOMR – merge versions";
         Width = 1600; Height = 950;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
@@ -90,6 +92,9 @@ public sealed class MergeWindow : Window
         _compare.Click += async (_, _) => await CompareAsync();
         _export = new Button { Content = "Export merged MusicXML…", IsEnabled = false };
         _export.Click += async (_, _) => await ExportAsync();
+        _toEdits = new Button { Content = "Save choices as edits of A", IsEnabled = false, IsVisible = saveEdits != null };
+        ToolTip.SetTip(_toEdits, "The bars where another version was chosen become corrections of A; back to editing A in the main window");
+        _toEdits.Click += (_, _) => SaveAsEdits();
         var open = new Button { Content = "Open project…" };
         open.Click += async (_, _) => await OpenProjectAsync();
         var save = new Button { Content = "Save project…" };
@@ -101,7 +106,7 @@ public sealed class MergeWindow : Window
         ToolTip.SetTip(_restsByLength, "A dotted quarter rest and a quarter plus an 8th rest count as the same (takes effect at the next Compare)");
         _onlyOpen.IsCheckedChanged += (_, _) => FillList();
         var bar = new WrapPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(6) };
-        foreach (var c in new Control[] { open, save, add, _compare, _restsByLength, acceptAll, _export, _status }) { c.Margin = new Thickness(0, 0, 6, 4); bar.Children.Add(c); }
+        foreach (var c in new Control[] { open, save, add, _compare, _restsByLength, acceptAll, _export, _toEdits, _status }) { c.Margin = new Thickness(0, 0, 6, 4); bar.Children.Add(c); }
 
         var sources = new Expander { Header = "Sources (part and staff to take; staff 0 = the whole part)", IsExpanded = true, Content = _sourcesPanel, Margin = new Thickness(6, 0, 6, 4) };
 
@@ -185,10 +190,7 @@ public sealed class MergeWindow : Window
             _sources.Clear();
             foreach (var src in _project.Sources)
             {
-                var loaded = new Loaded();
-                Score score = src.File.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase) ? await RecogniseAsync(src.File, loaded) : MusicXmlReader.Read(src.File);
-                loaded.Strand = StrandReader.FromScore(score, src.File, src.Part - 1, src.Staff == 0 ? null : src.Staff, _project.RestsByLength);
-                _sources.Add(loaded);
+                _sources.Add(await MergeData.LoadAsync(_engine, src, _dpi, _project.RestsByLength, Status));
             }
             _rows = Merger.Align(_sources.Select(s => s.Strand).ToList());
             Merger.Choose(_rows);
@@ -200,40 +202,10 @@ public sealed class MergeWindow : Window
             FillList();
             if (_list.ItemCount > 0) _list.SelectedIndex = 0;
             _export.IsEnabled = true;
+            _toEdits.IsEnabled = _sources[0].ByNumber.Count > 0;
         }
         catch (Exception ex) { Status($"failed: {ex.Message}"); }
         finally { _compare.IsEnabled = true; }
-    }
-
-    /// <summary>Recognises every page of a PDF (with its stored corrections) and assembles the score; keeps the pages
-    /// (their image and recognition, not the working images) and the page measures of every bar.</summary>
-    private async Task<Score> RecogniseAsync(string file, Loaded loaded)
-    {
-        int count = RecognitionEngine.PageCount(file);
-        var store = CorrectionStore.Load(file);
-        var byNumber = new Dictionary<int, PageResult>();
-        var analyses = new List<PageAnalysis>();
-        for (int p = 1; p <= count; p++)
-        {
-            Status($"{Path.GetFileName(file)}: recognising page {p} of {count}…");
-            byNumber.TryGetValue(PageOrder.Previous(file, p), out var previous);
-            int page = p;
-            var result = await Task.Run(() => _engine().Analyze(file, page, 300, previous));
-            if (store.ApplyAll(result) > 0) RecognitionEngine.Reinterpret(result, previous);
-            // kept light: the page image and the recognition
-            var light = new PageResult { PageNumber = p, Analysis = result.Analysis, Context = new AnalysisContext { Gray = result.Context.Gray } };
-            byNumber[p] = light;
-            loaded.Pages[result.Analysis] = light;
-            analyses.Add(result.Analysis);
-        }
-        var map = new Dictionary<Measure, ScoreMeasure>();
-        var score = MusicAssembler.Build(analyses, new MusicAssembler.Options { Title = Path.GetFileNameWithoutExtension(file), MeasureMap = map });
-        foreach (var (measure, sm) in map)
-        {
-            if (!loaded.Measures.TryGetValue(sm, out var list)) loaded.Measures[sm] = list = new();
-            list.Add(measure);
-        }
-        return score;
     }
 
     private void BuildViews()
@@ -241,17 +213,20 @@ public sealed class MergeWindow : Window
         _views.Children.Clear();
         _views.ColumnDefinitions.Clear();
         _pageViews.Clear();
+        _zoomed.Clear();
         for (int i = 0; i < _sources.Count; i++)
         {
             _views.ColumnDefinitions.Add(new ColumnDefinition(GridLength.Star));
             var header = new TextBlock { Text = $"{Letter(i)}: {Path.GetFileName(_sources[i].Strand.Source)}", FontWeight = FontWeight.Bold, Margin = new Thickness(4, 0, 0, 2), TextWrapping = TextWrapping.Wrap };
+            var barText = new TextBlock { Margin = new Thickness(4, 0, 0, 4), TextWrapping = TextWrapping.Wrap, FontSize = 12 };
             var view = new PageView { ShowFits = false };
             var panel = new DockPanel { Margin = new Thickness(i == 0 ? 0 : 4, 0, 0, 0) };
             DockPanel.SetDock(header, Dock.Top); panel.Children.Add(header);
+            DockPanel.SetDock(barText, Dock.Top); panel.Children.Add(barText);
             panel.Children.Add(new Border { Child = view, BorderBrush = Brushes.Gray, BorderThickness = new Thickness(1) });
             Grid.SetColumn(panel, i);
             _views.Children.Add(panel);
-            _pageViews.Add((view, header));
+            _pageViews.Add((view, header, barText));
         }
     }
 
@@ -315,9 +290,12 @@ public sealed class MergeWindow : Window
         var row = _rows[e.Row];
         for (int s = 0; s < _sources.Count && s < _pageViews.Count; s++)
         {
-            var (view, header) = _pageViews[s];
+            var (view, header, barText) = _pageViews[s];
             var bar = row.Candidates[s];
             var src = _sources[s];
+            // the difference in bold: its events on the two sides compared; a third version: what differs from the suggested one
+            var third = s != e.Base && s != e.Other && bar != null && row.Candidates[e.Base] is MergeBar b0 ? Comparer.Diff(b0, bar).Select(d => d.EventB) : null;
+            ShowBarText(barText, bar, s == e.Base ? e.Diff.EventA : s == e.Other ? e.Diff.EventB : null, third);
             string name = $"{Letter(s)}: {Path.GetFileName(src.Strand.Source)}";
             if (bar?.SourceMeasure is not ScoreMeasure sm || !src.Measures.TryGetValue(sm, out var measures) || measures.Count == 0)
             {
@@ -338,9 +316,39 @@ public sealed class MergeWindow : Window
             // the bar with some context on each side, the staff with room above and below
             var staff = measure.Staff;
             double ss = staff.Space, cx = (measure.X0 + measure.X1) / 2, w = measure.X1 - measure.X0;
-            view.ZoomTo(new Rect((int)(measure.X0 - 0.6 * w), (int)(staff.TopY(cx) - 5 * ss), (int)(measure.X1 + 0.6 * w), (int)(staff.BottomY(cx) + 5 * ss)));
+            // the first time zoomed to the bar; after that only centred on the difference (the user's zoom stays)
+            if (_zoomed.Add(view))
+                view.ZoomTo(new Rect((int)(measure.X0 - 0.6 * w), (int)(staff.TopY(cx) - 5 * ss), (int)(measure.X1 + 0.6 * w), (int)(staff.BottomY(cx) + 5 * ss)));
+            else if (view.OnlySymbols is { Count: > 0 } shown)
+                view.CenterOn(shown.Average(o => o.Bounds.CenterX), shown.Average(o => o.Bounds.CenterY));
+            else view.CenterOn(cx, (staff.TopY(cx) + staff.BottomY(cx)) / 2);
         }
         ShowChoiceButtons(e.Row);
+    }
+
+    /// <summary>The bar as text, voice by voice, with the events of the difference in bold.</summary>
+    private static void ShowBarText(TextBlock tb, MergeBar? bar, BarEvent? marked, IEnumerable<BarEvent?>? alsoMarked)
+    {
+        var inlines = new InlineCollection();
+        if (bar != null)
+        {
+            var bold = new HashSet<BarEvent>();
+            if (marked != null) bold.Add(marked);
+            if (alsoMarked != null) foreach (var m in alsoMarked) if (m != null) bold.Add(m);
+            for (int v = 0; v < bar.Voices.Count; v++)
+            {
+                if (v > 0) inlines.Add(new Run("  |  "));
+                for (int k = 0; k < bar.Voices[v].Count; k++)
+                {
+                    var ev = bar.Voices[v][k];
+                    if (k > 0) inlines.Add(new Run(" "));
+                    var run = new Run(ev.ToString());
+                    if (bold.Contains(ev)) { run.FontWeight = FontWeight.Bold; run.Foreground = Brushes.OrangeRed; }
+                    inlines.Add(run);
+                }
+            }
+        }
+        tb.Inlines = inlines;
     }
 
     /// <summary>The recognised symbols (a note of a beamed group on its own) of the events, found by their heads (rests by
@@ -399,10 +407,14 @@ public sealed class MergeWindow : Window
         _reviewed.Add(rowIndex);
         _project.Choices.RemoveAll(c => c.Row == rowIndex);
         _project.Choices.Add(new MergeChoice { Row = rowIndex, Source = strand, Key = row.Candidates[strand]!.Key });
-        int at = _list.SelectedIndex;
+        var current = (_list.SelectedItem as TextBlock)?.Tag as Entry;
         FillList();
-        // on to the next open difference
-        if (_list.ItemCount > 0) _list.SelectedIndex = Math.Clamp(at, 0, _list.ItemCount - 1);
+        // on to the next open difference (after this one, else from the top)
+        int from = current == null ? 0 : Math.Max(0, _entries.IndexOf(current));
+        var next = _entries.Skip(from).Concat(_entries.Take(from)).FirstOrDefault(x => !_reviewed.Contains(x.Row));
+        int at = next == null ? -1 : _list.Items.OfType<TextBlock>().ToList().FindIndex(t => t.Tag == next);
+        if (at >= 0) { _list.SelectedIndex = at; _list.ScrollIntoView(at); }
+        else if (next == null) Status("every bar is reviewed");
         if (_projectPath != null) _ = SaveProjectAsync(ask: false);
     }
 

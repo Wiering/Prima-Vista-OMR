@@ -79,8 +79,9 @@ public sealed class PageView : Control
 
     public void SetPage(PageResult? page, bool fit)
     {
+        // the same page again (another bar on it): the image is kept
+        if (page == null || page != _page || _bitmap == null) _bitmap = page == null ? null : ToBitmap(page.Context.Gray);
         _page = page;
-        _bitmap = page == null ? null : ToBitmap(page.Context.Gray);
         _analysis = page?.Analysis;
         _selected = null; _selectedStaff = null; _selectedBarline = null;
         if (fit) FitPage();
@@ -132,6 +133,14 @@ public sealed class PageView : Control
         if (_bitmap == null || Bounds.Width <= 0 || Bounds.Height <= 0) return;
         _zoom = Math.Min(Bounds.Width / Math.Max(1, r.Width), Bounds.Height / Math.Max(1, r.Height)) * 0.95;
         _offset = new Point(Bounds.Width / 2 - r.CenterX * _zoom, Bounds.Height / 2 - r.CenterY * _zoom);
+        InvalidateVisual();
+    }
+
+    /// <summary>Scrolls so that the point (image coordinates) is in the middle of the view; the zoom stays.</summary>
+    public void CenterOn(double x, double y)
+    {
+        if (_bitmap == null) return;
+        _offset = new Point(Bounds.Width / 2 - x * _zoom, Bounds.Height / 2 - y * _zoom);
         InvalidateVisual();
     }
 

@@ -33,7 +33,7 @@ public sealed class StaffOverride
 /// </summary>
 public sealed class SymbolEdit
 {
-    /// <summary>delete | set | head | removeHead | add | move; bar lines: addBar | deleteBar | setBar (X0..X1 = the line, Kind = its kind)</summary>
+    /// <summary>delete | set | head | removeHead | accidental | add | move; bar lines: addBar | deleteBar | setBar (X0..X1 = the line, Kind = its kind)</summary>
     public string Op { get; set; } = "";
     /// <summary>Staff index on the page, -1 for symbols outside the staves.</summary>
     public int Staff { get; set; } = -1;
@@ -47,6 +47,8 @@ public sealed class SymbolEdit
     public int? Dots { get; set; }
     public int? Head { get; set; }
     public int? Step { get; set; }
+    /// <summary>accidental: the alteration printed before the head (null: none).</summary>
+    public int? Alter { get; set; }
     public int? Dx { get; set; }
     public int? Dy { get; set; }
     /// <summary>set: makes the symbol a time signature with this value ("3/8", "C", "C|").</summary>
@@ -280,6 +282,17 @@ public sealed class CorrectionStore
                 var heads = Heads(s);
                 if (e.Head is not int i || i < 0 || i >= heads.Count || e.Step == null) return false;
                 heads[i].Step = e.Step.Value;
+                s.Attributes["corrected"] = "1";
+                return true;
+            }
+            case "accidental":
+            {
+                var heads = Heads(s);
+                if (e.Head is not int i || i < 0 || i >= heads.Count) return false;
+                var n = heads[i];
+                n.Accidental = e.Alter ?? int.MinValue;
+                n.AccidentalName = e.Alter switch { 1 => "accidentalSharp", -1 => "accidentalFlat", 0 => "accidentalNatural", 2 => "accidentalDoubleSharp", -2 => "accidentalDoubleFlat", _ => null };
+                n.AccidentalUnsure = false;
                 s.Attributes["corrected"] = "1";
                 return true;
             }
