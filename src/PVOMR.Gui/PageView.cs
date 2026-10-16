@@ -20,6 +20,11 @@ public enum ViewMode { Select, AddNote, AddRest, AddBarline, Move }
 public sealed class PageView : Control
 {
     private WriteableBitmap? _bitmap;
+    /// <summary>The page image and copies of it at half, quarter … size (each pixel the mean of four), made when needed:
+    /// drawn small, the page is reduced from the nearest copy, so thin lines stay grey instead of falling between
+    /// the samples.</summary>
+    private GrayImage? _gray;
+    private readonly List<WriteableBitmap> _reduced = new();
     private PageAnalysis? _analysis;
     private PageResult? _page;
     private ViewMode _mode = ViewMode.Select;
@@ -84,7 +89,7 @@ public sealed class PageView : Control
     public void SetPage(PageResult? page, bool fit)
     {
         // the same page again (another bar on it): the image is kept
-        if (page == null || page != _page || _bitmap == null) _bitmap = page == null ? null : ToBitmap(page.Context.Gray);
+        if (page == null || page != _page || _bitmap == null) { _bitmap = page == null ? null : ToBitmap(page.Context.Gray); _gray = page?.Context.Gray; _reduced.Clear(); _reducedGray.Clear(); }
         _page = page;
         _analysis = page?.Analysis;
         _selected = null; _selectedStaff = null; _selectedBarline = null;
@@ -96,7 +101,7 @@ public sealed class PageView : Control
     public void SetPreview(GrayImage image)
     {
         _page = null; _analysis = null;
-        _bitmap = ToBitmap(image);
+        _bitmap = ToBitmap(image); _gray = image; _reduced.Clear(); _reducedGray.Clear();
         _selected = null; _selectedStaff = null; _selectedBarline = null;
         FitPage();
         InvalidateVisual();
@@ -305,9 +310,11 @@ public sealed class PageView : Control
             var full = new Avalonia.Rect(0, 0, _bitmap.PixelSize.Width, _bitmap.PixelSize.Height);
             // zoomed in: pixels as they are (nearest neighbour), so that the ink the recogniser saw can be judged;
             // zoomed out: smooth scaling
+            // (well below full size: from a reduced copy, see _reduced)
             var mode = _zoom >= 1 ? Avalonia.Media.Imaging.BitmapInterpolationMode.None : Avalonia.Media.Imaging.BitmapInterpolationMode.HighQuality;
+            var img = _zoom < 0.75 ? Reduced((int)Math.Floor(Math.Log2(1 / _zoom))) ?? _bitmap : _bitmap;
             using (context.PushRenderOptions(new RenderOptions { BitmapInterpolationMode = mode }))
-                context.DrawImage(_bitmap, full, full);
+                context.DrawImage(img, new Avalonia.Rect(0, 0, img.PixelSize.Width, img.PixelSize.Height), full);
             if (_analysis != null) DrawOverlay(context);
         }
     }
@@ -531,6 +538,32 @@ public sealed class PageView : Control
             context.DrawText(ft, new Point(r.X0, r.Y0 - ss * 0.9));
         }
     }
+
+    /// <summary>The page at 1/2^level of its size (null for level 0 or without an image).</summary>
+    private WriteableBitmap? Reduced(int level)
+    {
+        if (_gray == null || level <= 0) return null;
+        level = Math.Min(level, 4);
+        for (int k = 0; k < level; k++)
+        {
+            if (k < _reduced.Count) continue;
+            var src = k == 0 ? _gray : _reducedGray[k - 1];
+            int w = Math.Max(1, src.Width / 2), h = Math.Max(1, src.Height / 2);
+            var half = new GrayImage(w, h);
+            for (int y = 0; y < h; y++)
+                for (int x = 0; x < w; x++)
+                {
+                    int i = 2 * y * src.Width + 2 * x;
+                    int sum = src.Data[i] + src.Data[Math.Min(i + 1, src.Data.Length - 1)] + src.Data[Math.Min(i + src.Width, src.Data.Length - 1)] + src.Data[Math.Min(i + src.Width + 1, src.Data.Length - 1)];
+                    half.Data[y * w + x] = (byte)(sum / 4);
+                }
+            _reducedGray.Add(half);
+            _reduced.Add(ToBitmap(half));
+        }
+        return _reduced[level - 1];
+    }
+
+    private readonly List<GrayImage> _reducedGray = new();
 
     private static WriteableBitmap ToBitmap(GrayImage g)
     {
