@@ -168,6 +168,8 @@ public sealed class ScoreEvent
     public bool DotCandidate { get; set; }
     /// <summary>A black head without stem (stem and flag broke away): an 8th instead of a quarter when that fits.</summary>
     public bool StemlessBlack { get; set; }
+    /// <summary>A "half" note whose head is mostly ink (a black head with white flecks): a quarter when that makes the measure fit.</summary>
+    public bool HollowDoubt { get; set; }
     /// <summary>Alternative note value for a dotted beamed pair read alike (applied when it makes the measure fit).</summary>
     public string? AltType { get; set; }
     public ScoreEvent? AltPair { get; set; }

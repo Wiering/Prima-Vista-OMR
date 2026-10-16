@@ -37,9 +37,27 @@ public sealed class PageAnalyzer
 
         // 1. binarize (coarse) + deskew; 2. staves (repeated once with the staff slope as the precise skew)
         string binDesc = "";
+        BinaryImage? lastRaw = null;
         BinaryImage Bin(GrayImage g, double d)
         {
             var b = Binarizer.Binarize(g, _opt.Binarization, SauvolaWindow(d), out binDesc);
+            // a worn or poorly scanned print: staff lines broken into dashes, white specks in heads and stems. A
+            // closing (ink grown by a pixel and shrunk back) fills such gaps; clean prints are left as they are (it
+            // can close the opening of a C time signature, read on the unclosed image). Noisy: the closing would add much ink (3.5%; clean
+            // prints gain 1-3%, at the edges of their strokes)
+            {
+                int forced = int.TryParse(Environment.GetEnvironmentVariable("PVOMR_CLOSE"), out int cr) ? cr : -1;
+                if (forced != 0)
+                {
+                    var closed = Morphology.Close(b, 1);
+                    long inkB = 0, inkC = 0;
+                    for (int i = 0; i < b.Data.Length; i++) { inkB += b.Data[i]; inkC += closed.Data[i]; }
+                    double added = (inkC - inkB) / (double)Math.Max(1, inkB);
+                    if (Environment.GetEnvironmentVariable("PVOMR_CLOSEDUMP") == "1") Console.WriteLine($"CLOSE page {pageNumber}: closing adds {100 * added:0.0}%");
+                    if (forced > 0 || added >= 0.035) { lastRaw = b; b = closed; binDesc += $", noisy ({100 * added:0.0}% filled by closing)"; }
+                    else lastRaw = null;
+                }
+            }
             string cleaned = BorderCleaner.Clean(b);
             if (cleaned.Length > 0) binDesc += ", " + cleaned;
             return b;
@@ -167,7 +185,7 @@ public sealed class PageAnalyzer
         }
 
         // 4. symbols
-        var symbolAnalyzer = new SymbolAnalyzer(_glyphs, bin0, noStaff, comps, result, _opt, _classifier, _headVerifier);
+        var symbolAnalyzer = new SymbolAnalyzer(_glyphs, bin0, noStaff, comps, result, _opt, _classifier, _headVerifier, lastRaw);
         symbolAnalyzer.Run();
         MeasureSplitter.SplitMissedBarlines(result);
         MeasureSplitter.RemoveBarlinesInClefs(result);

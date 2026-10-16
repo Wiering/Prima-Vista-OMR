@@ -361,6 +361,7 @@ public static class BarlineDetector
                 bool bottom = !atTop;
                 int hx0 = bottom ? (int)(c.X0 - 0.9 * ss) : c.X1 + 1 + (int)(0.05 * ss), hx1 = bottom ? c.X0 - 1 - (int)(0.05 * ss) : (int)(c.X1 + 0.9 * ss);
                 int hy0 = (int)(yEnd - 0.6 * ss), hy1 = (int)(yEnd + 0.6 * ss), head = 0, gap = int.MaxValue;
+                int bx0 = int.MaxValue, bx1 = -1, by0 = int.MaxValue, by1 = -1;
                 // past a line end moved back to its own ink, the letter beyond is no head: a head reaches into the staff
                 if (yEnd != runEnd) { if (atTop) hy0 = (int)(yEnd - 0.25 * ss); else hy1 = (int)(yEnd + 0.25 * ss); }
                 for (int y = Math.Max(0, hy0); y <= Math.Min(cm.Height - 1, hy1); y++)
@@ -371,12 +372,15 @@ public static class BarlineDetector
                         var other = cm.At(x, y);
                         if (other != null && (other.Height > 1.6 * ss || other.Width > 2.0 * ss)) continue;   // no bar line, no tie
                         head++;
+                        bx0 = Math.Min(bx0, x); bx1 = Math.Max(bx1, x); by0 = Math.Min(by0, y); by1 = Math.Max(by1, y);
                         gap = Math.Min(gap, bottom ? c.X0 - 1 - x : x - c.X1 - 1);
                     }
                 // the head touches its stem; a sign printed after the bar line (an ornament, a small number) stands clear of it
                 bool touching = gap <= Math.Max(2, 0.15 * ss) + 0.05 * ss;
-                if (BarDump) Console.Error.WriteLine($"   head beside {(bottom ? "bottom" : "top")} end: {head} px (limit {0.04 * ss * ss:0}), gap {(gap == int.MaxValue ? "-" : gap.ToString())}");
-                if (head >= 0.04 * ss * ss && touching) return false;
+                if (BarDump) Console.Error.WriteLine($"   head beside {(bottom ? "bottom" : "top")} end: {head} px (limit {0.04 * ss * ss:0}), gap {(gap == int.MaxValue ? "-" : gap.ToString())}, extent {bx1 - bx0 + 1}x{by1 - by0 + 1}");
+                // (and has a head's extent: bits of a slur ending at the line and a dot are smaller)
+                bool headSized = bx1 - bx0 + 1 >= 0.55 * ss && by1 - by0 + 1 >= 0.45 * ss;
+                if (head >= 0.04 * ss * ss && touching && headSized) return false;
                 continue;
             }
             int fy0 = (int)(yEnd - 0.7 * ss), fy1 = (int)(yEnd + 0.7 * ss);

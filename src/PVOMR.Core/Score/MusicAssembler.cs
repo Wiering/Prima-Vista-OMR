@@ -493,8 +493,21 @@ public static class MusicAssembler
         // a loose triplet "3" (over separate notes, no beam or bracket): in a voice too long for the measure, the run of
         // notes centred under it whose third is exactly the surplus becomes the triplet
         if (ctx.Time != null)
-            foreach (var t in m.Symbols.Where(s => s.Kind == SymbolKind.Tuplet && s.Attributes.ContainsKey("loose")))
+        {
+            var loose = m.Symbols.Where(s => s.Kind == SymbolKind.Tuplet && s.Attributes.ContainsKey("loose")).ToList();
+            // several triplets in a row over the whole measure (a "3" over each, some perhaps not read): a voice exactly
+            // half as long again as the measure, with no tuplet yet, is triplets throughout
+            if (loose.Count > 0)
+                foreach (var voice in sm.Events.Where(e => e.Staff == staffNo && !e.Grace).GroupBy(e => e.Voice))
+                {
+                    var evs = voice.ToList();
+                    if (evs.Count >= 3 && evs.All(e => e.TupletActual == 0 && e.Duration % 3 == 0) && 2 * evs.Sum(e => e.Duration) == 3 * ctx.Time.Length
+                        && evs.Any(e => loose.Any(t => Math.Abs(e.X - t.Bounds.CenterX) <= 2.5 * ss)))
+                        foreach (var e in evs) { e.Duration = e.Duration * 2 / 3; e.TupletActual = 3; e.TupletNormal = 2; }
+                }
+            foreach (var t in loose)
                 LooseTriplet(sm, staffNo, t, ctx.Time.Length, ss);
+        }
 
         // validation against the time signature
         if (ctx.Time != null) Validate(sm, ctx.Time, staffNo);
@@ -600,15 +613,16 @@ public static class MusicAssembler
                 // a stemless black head (its stem and flag broke away) read as a quarter: an 8th when exactly that
                 // makes the voice fit
                 // (also a quarter with a possible hairline flag); one of them, or all of them
-                var cands = evs.Where(e => e.StemlessBlack && e.Type == "quarter" && e.Dots == 0).ToList();
+                // (also a "half" note whose head is mostly ink: a speckled black head)
+                var cands = evs.Where(e => e.StemlessBlack && e.Type == "quarter" && e.Dots == 0 || e.HollowDoubt && e.Type == "half" && e.Dots == 0 && e.TupletActual == 0).ToList();
                 var take = cands.FirstOrDefault(e => sum - e.Duration / 2 == expected) is { } one ? new List<ScoreEvent> { one }
                          : cands.Count > 1 && sum - cands.Sum(e => e.Duration / 2) == expected ? cands : null;
                 if (take != null)
                 {
-                    foreach (var e in take) { e.Type = "eighth"; e.Duration /= 2; }
+                    foreach (var e in take) { e.Type = e.Type == "half" ? "quarter" : "eighth"; e.Duration /= 2; }
                     sum = evs.Sum(e => e.Duration);
                     sm.Fit.Sums[^1] = (staffNo, voice.Key, sum);
-                    sm.Warnings.Add($"staff {staffNo} voice {voice.Key}: {take.Count} quarter(s) without a clear flag taken as 8ths to fit {time}");
+                    sm.Warnings.Add($"staff {staffNo} voice {voice.Key}: {take.Count} note(s) without a clear flag or with a flecked head taken as half as long to fit {time}");
                 }
             }
             if (sum == expected) continue;
@@ -696,6 +710,7 @@ public static class MusicAssembler
         if (!asserted && (s.StemUp == null || s.Notes.Any(n => n.Step > 18 || n.Step < -10))) ev.Uncertain = true;
         if (!asserted && s.StemUp == null && s.Notes.Count > 0 && s.Notes.All(n => n.HeadType == "black")) ev.StemlessBlack = true;
         if (!asserted && s.Attributes.ContainsKey("flagcand")) ev.StemlessBlack = true;   // a hairline flag may make it an 8th
+        if (!asserted && s.Attributes.ContainsKey("hollowdoubt")) ev.HollowDoubt = true;
         if (s.Attributes.TryGetValue("articulation", out var art) && art == "staccato") ev.Articulations.Add("staccato");
         if (s.Attributes.ContainsKey("dotcand") && ev.Dots == 0 && !ev.IsRest) ev.DotCandidate = true;
         // small notes: grace-note candidates, settled by the measure length in Validate
@@ -902,6 +917,39 @@ public static class MusicAssembler
 
     private static void AssignVoices(List<ScoreEvent> events, Staff staff, int staffNo, int? expected = null)
     {
+        // the same note read twice (one symbol found by two passes): once
+        for (int i = events.Count - 1; i >= 1; i--)
+        {
+            var e = events[i];
+            if (e.IsRest || e.Notes.Count == 0) continue;
+            if (events.Take(i).Any(o => !o.IsRest && Math.Abs(o.X - e.X) <= 2 && o.StemUp == e.StemUp && o.Duration == e.Duration
+                                        && o.Notes.Select(n => n.Pitch).SequenceEqual(e.Notes.Select(n => n.Pitch)))) events.RemoveAt(i);
+        }
+        // two notes struck together with their own stems, one up and one down, of the same length: a chord when that
+        // makes the measure add up as one voice (two voices would both have to hold the rests that follow)
+        if (expected is int len && events.Count > 1)
+        {
+            double ss0 = staff.Space;
+            // (the up-stem one may begin a beamed group; a down-stem "quarter" with a possible flag is an 8th beside an 8th)
+            var upNotes = events.Where(e => !e.IsRest && e.StemUp == true && e.TupletActual == 0).ToList();
+            bool Same(ScoreEvent d, ScoreEvent u) => d.Duration == u.Duration || d.StemlessBlack && d.Type == "quarter" && d.Dots == 0 && 2 * u.Duration == d.Duration;
+            // (a double stop: the heads right above each other, at most a fourth apart)
+            static int Diat(ScoreNote n) => n.Pitch.Octave * 7 + "CDEFGAB".IndexOf(n.Pitch.Step[0]);
+            bool Close(ScoreEvent d, ScoreEvent u) => d.Notes.Count > 0 && u.Notes.Count > 0
+                && Math.Abs(d.Notes.Max(Diat) - u.Notes.Min(Diat)) <= 3 || Math.Abs(u.Notes.Min(Diat) - d.Notes.Max(Diat)) <= 3;
+            var pairs = upNotes.Select(u => (u, d: events.FirstOrDefault(d => !d.IsRest && d.StemUp == false && d.GroupId == 0 && d.TupletActual == 0
+                                                                     && Math.Abs(d.X - u.X) < 0.4 * ss0 && Same(d, u) && Close(d, u))))
+                           .Where(p => p.d != null).ToList();
+            // (also when no other note of the measure has its stem down: one voice, whatever the time signature read
+            // so far says, which a later check may still correct)
+            bool otherDown = events.Any(e => !e.IsRest && e.StemUp == false && !pairs.Any(p => p.d == e));
+            if (pairs.Count > 0 && (events.Sum(e => e.Duration) - pairs.Sum(p => p.d!.Duration) == len || !otherDown))
+                foreach (var (u, d) in pairs)
+                {
+                    u.Notes.AddRange(d!.Notes);
+                    events.Remove(d);
+                }
+        }
         var notes = events.Where(e => !e.IsRest && e.StemUp.HasValue).ToList();
         bool twoVoices = false;
         double ss = staff.Space;
