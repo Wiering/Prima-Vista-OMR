@@ -4444,7 +4444,7 @@ public sealed class SymbolAnalyzer
                 for (int x = b.X0; x <= b.X1; x++)
                     if (_cm.Labels[y * _cm.Width + x] != 0) ink++;
             if (ink < 0.65 * b.Width * b.Height) continue;
-            bool beside = notes.Any(p => b.CenterX > p.note.Head.X1 && b.X0 - p.note.Head.X1 <= 0.8 * ss && Math.Abs(b.CenterY - p.note.HeadY) <= 0.75 * ss
+            bool beside = notes.Any(p => b.CenterX > p.note.Head.X1 && b.X0 - p.note.Head.X1 <= 1.2 * ss && Math.Abs(b.CenterY - p.note.HeadY) <= 0.75 * ss
                                          && !notes.Any(q => q.note.Head.X0 > p.note.Head.X1 && q.note.Head.X0 < b.CenterX));
             if (beside) { t.Kind = SymbolKind.Dot; t.Name = "dot"; t.Confidence = 0.6; }
         }
@@ -4455,7 +4455,7 @@ public sealed class SymbolAnalyzer
             var sliver = syms.FirstOrDefault(s => s.Kind == SymbolKind.Unknown && s.Bounds.Width >= 0.2 * ss && s.Bounds.Width <= 0.55 * ss && s.Bounds.Height <= 0.55 * ss
                                                   && s.Bounds.X0 >= r.Bounds.X1 + 0.4 * ss && s.Bounds.CenterX < r.Bounds.X1 + 1.4 * ss
                                                   && Math.Abs(staff.StepAt(s.Bounds.CenterX, s.Bounds.CenterY) / 2 - Math.Round(staff.StepAt(s.Bounds.CenterX, s.Bounds.CenterY) / 2)) <= 0.2
-                                                  && s.Bounds.CenterY >= r.Bounds.Y0 - 0.3 * ss && s.Bounds.CenterY <= r.Bounds.Y1 + 0.3 * ss
+                                                  && s.Bounds.CenterY >= r.Bounds.Y0 - 0.6 * ss && s.Bounds.CenterY <= r.Bounds.Y1 + 0.3 * ss
                                                   && !notes.Any(p => p.note.HeadX > r.Bounds.X1 && p.note.Head.X0 < s.Bounds.CenterX));
             if (sliver != null) { r.Dots = 1; r.Attributes["dot"] = "sliver on a line"; syms.Remove(sliver); }
         }
