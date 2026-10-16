@@ -54,6 +54,13 @@ if (args.Length > 0 && args[0] == "gen") return EvalCommands.Gen(args);
 if (args.Length > 0 && args[0] == "compare") return CompareCommand.Run(args);
 if (args.Length > 0 && args[0] == "merge") return MergeCommand.Run(args);
 if (args.Length > 0 && args[0] == "crops") return EvalCommands.Crops(args);
+// pvomr render <pdf> <page> <out.png> [dpi]: the page image as recognition sees it before deskewing
+if (args.Length >= 4 && args[0] == "render")
+{
+    var img = PageSource.RenderPdfPage(args[1], int.Parse(args[2]), args.Length > 4 ? double.Parse(args[4]) : 300);
+    ImageIO.SavePng(ImageIO.ToBitmap(img), args[3]);
+    return 0;
+}
 if (args.Length > 0 && args[0] == "eval")
 {
     var evalLog = new List<string>();

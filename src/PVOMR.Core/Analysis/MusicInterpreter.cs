@@ -317,8 +317,8 @@ public static class MusicInterpreter
         int alter;
         // a sharp on a note the key flattens (E# in B flat) or a flat on one it sharpens is a natural read wrongly: the
         // two signs look alike in old prints, and such spellings hardly occur
-        // (only for an accidental read with doubt: a clearly printed E# stays one)
-        if (n.AccidentalUnsure && n.Accidental != int.MinValue && n.Accidental * KeyAlter(letter, fifths) == -1) { n.Accidental = 0; n.AccidentalName = "accidentalNatural"; }
+        // (checked against a second edition: this holds even for signs the classifier is sure of)
+        if (n.Accidental != int.MinValue && n.Accidental * KeyAlter(letter, fifths) == -1) { n.Accidental = 0; n.AccidentalName = "accidentalNatural"; }
         if (n.Accidental != int.MinValue) { alter = n.Accidental; measureAccidentals[n.Step] = alter; }
         else if (measureAccidentals.TryGetValue(n.Step, out var a)) alter = a;
         else alter = KeyAlter(letter, fifths);

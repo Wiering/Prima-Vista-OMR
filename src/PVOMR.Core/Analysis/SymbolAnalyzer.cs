@@ -265,6 +265,7 @@ public sealed class SymbolAnalyzer
             AccidentalsReadAsHalfNotes(syms, staff);
             StackedWholeNotes(syms, staff);
             AttachDotsAndAccidentals(syms, staff);
+            AccidentalsInInk(syms, staff);
             DropRestsInAccidentals(syms, staff);
             // a "half or whole rest" on or close beside a note head (1.2 ss) is a piece of a tie or ledger line at the chord
             {
@@ -4166,6 +4167,162 @@ public sealed class SymbolAnalyzer
         var right = cols.Where(c => c.x >= cols[^1].x - 2).ToList();
         double lt = left.Average(c => c.top), lb = left.Average(c => c.bot), rt = right.Average(c => c.top), rb = right.Average(c => c.bot);
         return rt - lt >= 0.35 * ss && rb - lb >= 0.35 * ss;
+    }
+
+    private static readonly bool AccInkDump = Environment.GetEnvironmentVariable("PVOMR_ACCINK") == "1";
+    private static readonly double[] Slopes = { 0, 0.2, -0.2, 0.4, -0.4, 0.6, -0.6 };
+    private static readonly (int page, int staff, int x)? AccInkAt =
+        Environment.GetEnvironmentVariable("PVOMR_ACCINK_AT") is string at && at.Split(',') is { Length: 3 } p ? (int.Parse(p[0]), int.Parse(p[1]), int.Parse(p[2])) : null;
+
+    /// <summary>
+    /// An accidental joined to other ink (a beam it touches, the ledger line through a flat, a slur) is no symbol of its
+    /// own and is not found by the passes above. For each head still without an accidental, the ink left of it is taken
+    /// as it is, without the long strokes of other symbols: stems (vertical runs longer than an accidental) and beams,
+    /// ledger lines and slurs (horizontal runs longer than an accidental is wide), and without other heads. What is left
+    /// must have an accidental's vertical stroke at the head's height; the glyph classifier, sure of it, decides.
+    /// </summary>
+    private void AccidentalsInInk(List<MusicSymbol> syms, Staff staff)
+    {
+        if (_clf == null) return;
+        double ss = staff.Space;
+        var heads = syms.Where(s => s.Kind is SymbolKind.Note or SymbolKind.Chord or SymbolKind.NoteGroup)
+                        .SelectMany(s => s.Notes.Concat(s.Children.SelectMany(c => c.Notes))).Distinct().ToList();
+        // ink that belongs to other symbols: heads, and signs already read (accidentals, key, clef, time, rests, numbers)
+        var taken = heads.Select(n => n.Head)
+                         .Concat(syms.Where(s => s.Kind is SymbolKind.Accidental or SymbolKind.KeySignature or SymbolKind.Clef or SymbolKind.TimeSignature
+                                                  or SymbolKind.Rest or SymbolKind.Number or SymbolKind.Dynamic).Select(s => s.Bounds)).ToList();
+        int maxV = (int)Math.Round(3.3 * ss), maxH = (int)Math.Round(1.5 * ss);
+        foreach (var h in heads.Where(n => n.Accidental == int.MinValue))
+        {
+            int wx0 = (int)Math.Round(h.Head.X0 - 1.7 * ss), wx1 = h.Head.X0 - 2;
+            int wy0 = (int)Math.Round(h.HeadY - 2.0 * ss), wy1 = (int)Math.Round(h.HeadY + 2.0 * ss);
+            int w = wx1 - wx0 + 1, hh = wy1 - wy0 + 1;
+            if (w < 0.6 * ss || wx0 < 0 || wy0 < 0 || wx1 >= _ns.Width || wy1 >= _ns.Height) continue;
+            var mask = new byte[w * hh];
+            int ink = 0;
+            for (int y = wy0; y <= wy1; y++)
+                for (int x = wx0; x <= wx1; x++)
+                {
+                    if (!_ns[x, y]) continue;
+                    if (taken.Any(r => x >= r.X0 - 1 && x <= r.X1 + 1 && y >= r.Y0 - 1 && y <= r.Y1 + 1)) continue;
+                    mask[(y - wy0) * w + (x - wx0)] = 1; ink++;
+                }
+            if (ink < 0.5 * ss * ss) continue;
+            // long strokes of other symbols, measured around the window: first the horizontal ones (beams, ledger lines,
+            // slurs), then the vertical ones on what is left (stems; an accidental touching a beam is no longer than itself)
+            // (beams slope: the run is measured along a few slopes, the longest counts)
+            int ex0 = wx0 - maxH - 1, ey0 = wy0 - maxV - 1, ew = w + 2 * maxH + 2, eh = hh + 2 * maxV + 2;
+            var hLong = new bool[ew * eh];
+            for (int y = 0; y < eh; y++)
+                for (int x = maxH + 1; x < maxH + 1 + w; x++)
+                {
+                    int px = ex0 + x, py = ey0 + y;
+                    if (!_ns[px, py]) continue;
+                    foreach (double slope in Slopes)
+                    {
+                        int len = 1;
+                        for (int d = 1; d <= maxH && _ns[px + d, py + (int)Math.Round(slope * d)]; d++) len++;
+                        for (int d = 1; d <= maxH && _ns[px - d, py - (int)Math.Round(slope * d)]; d++) len++;
+                        if (len > maxH) { hLong[y * ew + x] = true; break; }
+                    }
+                }
+            var vLong = new bool[ew * eh];
+            for (int x = 0; x < ew; x++)
+                for (int y = 0; y < eh;)
+                {
+                    bool On(int yy) => _ns[ex0 + x, ey0 + yy] && !hLong[yy * ew + x];
+                    if (!On(y)) { y++; continue; }
+                    int s0 = y; while (y < eh && On(y)) y++;
+                    if (y - s0 > maxV || s0 == 0 || y == eh) for (int k = s0; k < y; k++) vLong[k * ew + x] = true;
+                }
+            var keep = new byte[w * hh];
+            for (int y = 0; y < hh; y++)
+                for (int x = 0; x < w; x++)
+                {
+                    int e = (y + wy0 - ey0) * ew + (x + wx0 - ex0);
+                    if (mask[y * w + x] != 0 && !hLong[e] && !vLong[e]) keep[y * w + x] = 1;
+                }
+            // a ledger line or beam edge crossing an accidental's stroke leaves a gap: bridged where ink continues on both sides
+            int gap = (int)Math.Round(0.35 * ss);
+            for (int x = 0; x < w; x++)
+                for (int y = 1; y < hh - 1; y++)
+                {
+                    if (keep[y * w + x] != 0 || mask[y * w + x] == 0) continue;
+                    bool above = false, below = false;
+                    for (int d = 1; d <= gap && !above; d++) above = y - d >= 0 && keep[(y - d) * w + x] != 0;
+                    for (int d = 1; d <= gap && !below; d++) below = y + d < hh && keep[(y + d) * w + x] != 0;
+                    if (above && below) keep[y * w + x] = 2;
+                }
+            for (int i = 0; i < keep.Length; i++) if (keep[i] == 2) keep[i] = 1;
+            if (AccInkAt is var (ap, ast, ax) && ap == _page.PageNumber && ast == staff.Index + 1 && Math.Abs(h.HeadX - ax) < 80)
+            {
+                Console.WriteLine($"ACCINK window page {ap} staff {ast} head x={h.HeadX:0} y={h.HeadY:0} ({w}x{hh}; # kept, + removed ink)");
+                for (int y = 0; y < hh; y++) { var sb = new System.Text.StringBuilder(); for (int x = 0; x < w; x++) sb.Append(keep[y * w + x] != 0 ? '#' : mask[y * w + x] != 0 ? '+' : '.'); Console.WriteLine(sb.ToString()); }
+            }
+            // the accidental's vertical strokes (each accidental has one at least 1.2 spaces long), near the head's height
+            int sx0 = int.MaxValue, sx1 = -1, sTop = int.MaxValue, sBot = -1;
+            for (int x = 0; x < w; x++)
+            {
+                int run = 0, best = 0, bestEnd = 0;
+                for (int y = 0; y < hh; y++) { if (keep[y * w + x] != 0) { run++; if (run > best) { best = run; bestEnd = y; } } else run = 0; }
+                if (best >= 1.2 * ss && best <= 3.2 * ss) { sx0 = Math.Min(sx0, x); sx1 = Math.Max(sx1, x); sTop = Math.Min(sTop, bestEnd - best + 1); sBot = Math.Max(sBot, bestEnd); }
+            }
+            if (sx1 < 0) continue;
+            int cx0 = Math.Max(0, (int)Math.Round(sx0 - 0.4 * ss)), cx1 = Math.Min(w - 1, (int)Math.Round(sx1 + 0.55 * ss));
+            int cy0 = Math.Max(0, (int)Math.Round(sTop - 0.2 * ss)), cy1 = Math.Min(hh - 1, (int)Math.Round(sBot + 0.2 * ss));
+            // tight around the ink there
+            {
+                int ix0 = int.MaxValue, ix1 = -1, iy0 = int.MaxValue, iy1 = -1;
+                for (int y = cy0; y <= cy1; y++)
+                    for (int x = cx0; x <= cx1; x++)
+                        if (keep[y * w + x] != 0) { ix0 = Math.Min(ix0, x); ix1 = Math.Max(ix1, x); iy0 = Math.Min(iy0, y); iy1 = Math.Max(iy1, y); }
+                if (ix1 < 0) continue;
+                cx0 = ix0; cx1 = ix1; cy0 = iy0; cy1 = iy1;
+            }
+            int cw = cx1 - cx0 + 1, ch = cy1 - cy0 + 1;
+            if (cw < 0.3 * ss || cw > 1.5 * ss || ch < 1.3 * ss) continue;
+            var crop = new byte[cw * ch];
+            for (int y = 0; y < ch; y++)
+                for (int x = 0; x < cw; x++)
+                    crop[y * cw + x] = keep[(y + cy0) * w + x + cx0];
+            var pr = _clf.Classify(crop, cw, ch, ss);
+            // the same place with the ink of beams and ledger lines left in (only stems taken out): taking those away
+            // can bite into the accidental too; the surer accidental reading of the two counts
+            {
+                var crop2 = new byte[cw * ch];
+                for (int y = 0; y < ch; y++)
+                    for (int x = 0; x < cw; x++)
+                    {
+                        int my = y + cy0, mx = x + cx0, e = (my + wy0 - ey0) * ew + (mx + wx0 - ex0);
+                        if (mask[my * w + mx] != 0 && !vLong[e]) crop2[y * cw + x] = 1;
+                    }
+                var pr2 = _clf.Classify(crop2, cw, ch, ss);
+                double Acc(GlyphClassifier.Prediction p) => p.Label.StartsWith("acc_") ? p.Probability : 0;
+                if (Acc(pr2) > Acc(pr)) { pr = pr2; crop = crop2; }
+            }
+            double top = wy0 + sTop, bot = wy0 + sBot;
+            double acy = pr.Label == "acc_flat" ? bot - 0.5 * ss : (top + bot) / 2.0;
+            bool ok = pr.Label.StartsWith("acc_") && pr.Probability >= 0.6 && Math.Abs(acy - h.HeadY) <= 0.6 * ss;
+            if (AccInkAt is var (ap2, ast2, ax2) && ap2 == _page.PageNumber && ast2 == staff.Index + 1 && Math.Abs(h.HeadX - ax2) < 80 && _lib != null)
+            {
+                var mt = _lib.Match(crop, cw, ch, ss, 0.3, t => t.Kind == SymbolKind.Accidental);
+                Console.WriteLine($"ACCINK crop head x={h.HeadX:0}: cnn {pr.Label} {pr.Probability:0.00}; templates " + string.Join(", ", mt.Take(3).Select(m => $"{m.Template.Name} {m.Score:0.00}")));
+                for (int y = 0; y < ch; y++) { var sb = new System.Text.StringBuilder(); for (int x = 0; x < cw; x++) sb.Append(crop[y * cw + x] != 0 ? '#' : '.'); Console.WriteLine(sb.ToString()); }
+            }
+            if (AccInkDump)
+            {
+                Console.WriteLine($"ACCINK staff {staff.Index + 1} head x={h.HeadX:0} y={h.HeadY:0} step {h.Step}: {pr.Label} {pr.Probability:0.00} centre {acy - h.HeadY:+0;-0}px {(ok ? "TAKEN" : "")}");
+                var sb = new System.Text.StringBuilder();
+                for (int y = 0; y < ch; y++) { for (int x = 0; x < cw; x++) sb.Append(crop[y * cw + x] != 0 ? '#' : '.'); sb.Append('\n'); }
+                Console.Write(sb.ToString());
+            }
+            if (!ok) continue;
+            string label = pr.Label;
+            if (label == "acc_sharp" && NaturalStrokes(wx0 + cx0, wy0 + cy0, wx0 + cx1, wy0 + cy1, ss)) label = "acc_natural";
+            h.Accidental = label switch { "acc_sharp" => 1, "acc_flat" => -1, _ => 0 };
+            h.AccidentalName = label switch { "acc_sharp" => "accidentalSharp", "acc_flat" => "accidentalFlat", _ => "accidentalNatural" };
+            h.AccidentalUnsure = pr.Probability < 0.9;
+        }
     }
 
     private double InkFill(Rect r)
