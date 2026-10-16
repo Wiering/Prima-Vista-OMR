@@ -65,6 +65,13 @@ public partial class MainWindow : Window
         _player.MeasureChanged += m => Dispatcher.UIThread.Post(() =>
             Status(m < 0 ? "playback stopped" : $"playing measure {(_score != null && _score.Parts.Count > 0 && m < _score.Parts[0].Measures.Count ? _score.Parts[0].Measures[m].Number.ToString() : (m + 1).ToString())}"));
         Closed += (_, _) => _player.Dispose();
+        // at the end of what was recognised when playback started: on with the pages recognised since, if any
+        _player.ReachedEnd += end => Dispatcher.UIThread.Post(() =>
+        {
+            ComputeFits();
+            if (_score != null && _score.Parts.Count > 0 && _score.Parts.Max(p => p.Measures.Count) > end)
+                _player.Play(_score, end, 0, (double)(TempoBox.Value ?? 100));
+        });
         // the open score becomes version A; its choices can come back as corrections of it
         MergeButton.Click += (_, _) => new MergeWindow(() => _engine ??= new RecognitionEngine(), _file, (double)(DpiBox.Value ?? 300),
                                                        _file == null ? null : (edits, summary) => _ = TakeMergeEditsAsync(edits, summary)).Show(this);

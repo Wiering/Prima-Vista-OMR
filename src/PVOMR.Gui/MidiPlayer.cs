@@ -24,6 +24,9 @@ public sealed class MidiPlayer : IDisposable
     /// <summary>The measure (its index in the first part) now sounding; -1 when playback stops.</summary>
     public event Action<int>? MeasureChanged;
 
+    /// <summary>The music played to its end (not stopped): the index of the measure after the last one played.</summary>
+    public event Action<int>? ReachedEnd;
+
     private readonly record struct Message(double Ms, int Data, int Measure);
 
     /// <summary>Starts playing from measure index <paramref name="fromMeasure"/>, skipping what comes before
@@ -33,6 +36,7 @@ public sealed class MidiPlayer : IDisposable
         Stop();
         var messages = Schedule(score, fromMeasure, fromOffset, quarterPerMinute);
         if (messages.Count == 0) return;
+        int end = score.Parts.Max(p => p.Measures.Count);
         if (_out == IntPtr.Zero && midiOutOpen(out _out, -1, IntPtr.Zero, IntPtr.Zero, 0) != 0) { _out = IntPtr.Zero; return; }
         var cts = new CancellationTokenSource();
         _cts = cts;
@@ -53,9 +57,11 @@ public sealed class MidiPlayer : IDisposable
                 if (m.Measure != measure) { measure = m.Measure; MeasureChanged?.Invoke(measure); }
                 midiOutShortMsg(_out, m.Data);
             }
+            bool natural = !cts.IsCancellationRequested;
             midiOutReset(_out);
             if (_cts == cts) _cts = null;
             MeasureChanged?.Invoke(-1);
+            if (natural) ReachedEnd?.Invoke(end);
         });
     }
 
