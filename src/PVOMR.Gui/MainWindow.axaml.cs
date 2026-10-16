@@ -69,7 +69,7 @@ public partial class MainWindow : Window
             var onPages = sounding == null ? new List<Measure>() : _measureMap.Where(kv => sounding.Contains(kv.Value)).Select(kv => kv.Key).ToList();
             int? page = onPages.Select(pm => _pages.Where(p => p.Value.Analysis.Staves.Contains(pm.Staff)).Select(p => (int?)p.Key).FirstOrDefault())
                                .FirstOrDefault(p => p != null);
-            string number = _playing != null && _playing.Parts.Count > 0 && m < _playing.Parts[0].Measures.Count ? _playing.Parts[0].Measures[m].Number.ToString() : (m + 1).ToString();
+            string number = m >= 0 && _playing != null && _playing.Parts.Count > 0 && m < _playing.Parts[0].Measures.Count ? _playing.Parts[0].Measures[m].Number.ToString() : (m + 1).ToString();
             Status(m < 0 ? "playback stopped" : page is int pg ? $"playing page {pg}, measure {number}" : $"playing measure {number}");
             // tinted only where they are on the page shown
             var shown = _current?.Analysis.Staves;

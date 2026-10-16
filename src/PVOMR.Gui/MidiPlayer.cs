@@ -98,10 +98,13 @@ public sealed class MidiPlayer : IDisposable
         {
             measureStart[i] = start;
             int length = 0;
+            // (a part resting through another part's upbeat: its bar rest is as long as the upbeat)
+            bool upbeat = score.Parts.Any(p => i < p.Measures.Count && p.Measures[i].Implicit);
             foreach (var p in score.Parts)
             {
                 if (i >= p.Measures.Count) continue;
                 var m = p.Measures[i];
+                if (upbeat && !m.Implicit && m.Events.All(e => e.IsRest)) continue;
                 foreach (var v in m.Events.Where(e => !e.Grace).GroupBy(e => e.Voice)) length = Math.Max(length, v.Sum(e => e.Duration));
                 // (an upbeat, or the part of a measure before or after a repeat sign, lasts as long as its notes)
                 if (m.Fit.Expected is int exp && !m.Implicit) length = Math.Max(length, exp);
