@@ -60,6 +60,11 @@ public partial class MainWindow : Window
         };
         KeyDown += OnKey;
         ExportButton.Click += async (_, _) => await ExportAsync();
+        PlayButton.Click += (_, _) => Play();
+        StopButton.Click += (_, _) => _player.Stop();
+        _player.MeasureChanged += m => Dispatcher.UIThread.Post(() =>
+            Status(m < 0 ? "playback stopped" : $"playing measure {(_score != null && _score.Parts.Count > 0 && m < _score.Parts[0].Measures.Count ? _score.Parts[0].Measures[m].Number.ToString() : (m + 1).ToString())}"));
+        Closed += (_, _) => _player.Dispose();
         // the open score becomes version A; its choices can come back as corrections of it
         MergeButton.Click += (_, _) => new MergeWindow(() => _engine ??= new RecognitionEngine(), _file, (double)(DpiBox.Value ?? 300),
                                                        _file == null ? null : (edits, summary) => _ = TakeMergeEditsAsync(edits, summary)).Show(this);
@@ -415,6 +420,7 @@ public partial class MainWindow : Window
         {
             var pages = _pages.OrderBy(p => p.Key).Select(p => p.Value.Analysis).ToList();
             var score = MusicAssembler.Build(pages, new MusicAssembler.Options { Title = Path.GetFileNameWithoutExtension(_file), MeasureMap = _measureMap, MeasureStaff = _measureStaff });
+            _score = score;
             _barChecks = score.BarNumbers.Where(b => b.Page == _page).ToList();
             View.BarNumberProblems = _barChecks.Where(b => b.Agrees == false)
                                                .ToDictionary(b => b.Staff, b => $"{b.PrintedSpan} bars since bar {b.Since}, {b.CountedSpan} counted");
@@ -425,6 +431,43 @@ public partial class MainWindow : Window
     }
 
     private Dictionary<Measure, int> _measureStaff = new();
+    /// <summary>The music assembled from the pages recognised so far (for playback).</summary>
+    private Score? _score;
+    private readonly MidiPlayer _player = new();
+
+    /// <summary>
+    /// Plays the music recognised so far: from the selected symbol (its measure, from the symbol's place in its voice),
+    /// else from the first measure of this page.
+    /// </summary>
+    private void Play()
+    {
+        if (_player.Playing) { _player.Stop(); return; }
+        ComputeFits();
+        if (_score == null || _score.Parts.Count == 0) { Status("nothing to play: recognise a page first"); return; }
+        ScoreMeasure? sm = null; int offset = 0;
+        if (_selMeasure != null && _measureMap.TryGetValue(_selMeasure, out var selected))
+        {
+            sm = selected;
+            if (_selSym != null)
+            {
+                // where the selected symbol starts in its voice
+                int staffNo = _measureStaff.GetValueOrDefault(_selMeasure, 1);
+                double sx = _selSym.Kind == SymbolKind.Rest || _selSym.Notes.Count == 0 ? _selSym.Bounds.CenterX : _selSym.Notes.Min(n => n.HeadX);
+                var ev = sm.Events.Where(e => e.Staff == staffNo && !e.Grace).OrderBy(e => Math.Abs(e.X - sx)).FirstOrDefault();
+                if (ev != null) offset = sm.Events.Where(e => e.Voice == ev.Voice && !e.Grace && e.X < ev.X).Sum(e => e.Duration);
+            }
+        }
+        else if (_current != null)
+        {
+            // the first measure of this page
+            var first = _current.Analysis.Staves.SelectMany(st => st.Measures).Where(m => _measureMap.ContainsKey(m)).OrderBy(m => m.Staff.Index).ThenBy(m => m.X0).FirstOrDefault();
+            if (first != null) sm = _measureMap[first];
+        }
+        int index = 0;
+        if (sm != null)
+            foreach (var part in _score.Parts) { int i = part.Measures.IndexOf(sm); if (i >= 0) { index = i; break; } }
+        _player.Play(_score, index, offset, (double)(TempoBox.Value ?? 100));
+    }
 
     /// <summary>What a symbol adds to its measure's total, in quarters ("+0.5 q"), from the assembled score (after the
     /// duration check: dots taken, notes dropped); empty for symbols that take no time.</summary>
@@ -535,6 +578,7 @@ public partial class MainWindow : Window
             case Key.PageDown: await GoToPageAsync(_page + 1); e.Handled = true; break;
             case Key.PageUp: await GoToPageAsync(_page - 1); e.Handled = true; break;
             case Key.Escape: SelectMode.IsChecked = true; e.Handled = true; break;
+            case Key.Space: Play(); e.Handled = true; break;
         }
     }
 
