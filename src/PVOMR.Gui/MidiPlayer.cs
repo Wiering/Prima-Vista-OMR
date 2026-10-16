@@ -30,8 +30,9 @@ public sealed class MidiPlayer : IDisposable
     private readonly record struct Message(double Ms, int Data, int Measure);
 
     /// <summary>Starts playing from measure index <paramref name="fromMeasure"/>, skipping what comes before
-    /// <paramref name="fromOffset"/> (in divisions from the measure's start), at <paramref name="quarterPerMinute"/>.</summary>
-    public void Play(Score score, int fromMeasure, int fromOffset, double quarterPerMinute)
+    /// <paramref name="fromOffset"/> (in divisions from the measure's start), at <paramref name="quarterPerMinute"/>;
+    /// every part on the piano when <paramref name="piano"/> is set.</summary>
+    public void Play(Score score, int fromMeasure, int fromOffset, double quarterPerMinute, bool piano = false)
     {
         Stop();
         var messages = Schedule(score, fromMeasure, fromOffset, quarterPerMinute);
@@ -40,7 +41,7 @@ public sealed class MidiPlayer : IDisposable
         if (_out == IntPtr.Zero && midiOutOpen(out _out, -1, IntPtr.Zero, IntPtr.Zero, 0) != 0) { _out = IntPtr.Zero; return; }
         var cts = new CancellationTokenSource();
         _cts = cts;
-        var programs = score.Parts.Select((p, i) => (channel: Channel(i), program: Math.Clamp((p.Instrument?.Program ?? 1) - 1, 0, 127))).ToList();
+        var programs = score.Parts.Select((p, i) => (channel: Channel(i), program: piano ? 0 : Math.Clamp((p.Instrument?.Program ?? 1) - 1, 0, 127))).ToList();
         Task.Run(() =>
         {
             foreach (var (ch, prog) in programs) midiOutShortMsg(_out, 0xC0 | ch | (prog << 8));

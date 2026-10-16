@@ -85,7 +85,7 @@ public partial class MainWindow : Window
             if (_score != null && _score.Parts.Count > 0 && _score.Parts.Max(p => p.Measures.Count) > end)
             {
                 _playing = _score;
-                _player.Play(_score, end, 0, (double)(TempoBox.Value ?? 100));
+                _player.Play(_score, end, 0, (double)(TempoBox.Value ?? 100), PianoBox.IsChecked == true);
             }
         });
         // the open score becomes version A; its choices can come back as corrections of it
@@ -494,7 +494,7 @@ public partial class MainWindow : Window
         if (sm != null)
             foreach (var part in _score.Parts) { int i = part.Measures.IndexOf(sm); if (i >= 0) { index = i; break; } }
         _playing = _score;
-        _player.Play(_score, index, offset, (double)(TempoBox.Value ?? 100));
+        _player.Play(_score, index, offset, (double)(TempoBox.Value ?? 100), PianoBox.IsChecked == true);
     }
 
     /// <summary>What a symbol adds to its measure's total, in quarters ("+0.5 q"), from the assembled score (after the

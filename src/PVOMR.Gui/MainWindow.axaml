@@ -40,6 +40,7 @@
       <Button Name="StopButton" Classes="tool" Content="■ Stop"/>
       <TextBlock Classes="lbl" Text="♩=" Margin="4,0,2,0"/>
       <NumericUpDown Name="TempoBox" Minimum="20" Maximum="300" Increment="10" Value="100" Width="110" FormatString="0" ToolTip.Tip="Playback tempo, quarter notes per minute"/>
+      <CheckBox Name="PianoBox" Content="Piano" VerticalAlignment="Center" ToolTip.Tip="Play every part on the piano"/>
       <Button Name="ExportButton" Classes="tool" Content="Export MusicXML…"/>
       <Button Name="MergeButton" Classes="tool" Content="Merge versions…" ToolTip.Tip="Compare and merge several versions of the same music (editions, a part and the score)"/>
       <Border Width="1" Background="#808080" Margin="6,2"/>
