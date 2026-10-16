@@ -48,7 +48,7 @@ static class CompareCommand
     }
 
     private static string Where(ComparisonRow r) =>
-        $"bar {r.A?.Number ?? r.B?.Number} (A {(r.A == null ? "-" : $"p{r.A.Page}.{r.A.Line}{(r.A.Fits ? "" : "!")}")}, B {(r.B == null ? "-" : $"p{r.B.Page}.{r.B.Line}{(r.B.Fits ? "" : "!")}")})";
+        $"bar {r.A?.Number ?? r.B?.Number} (A {(r.A == null ? "-" : $"p{r.A.Page}.{r.A.Line}{(r.A.Fits ? "" : "!")}")}, B {(r.B == null ? "-" : $"p{r.B.Page}.{r.B.Line}{(r.B.Fits ? "" : "!")} bar {r.B.Number}")})";
 }
 
 /// <summary>"pvomr merge": several versions of the same music into one, the best version of every bar.</summary>

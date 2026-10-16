@@ -280,6 +280,7 @@ public sealed class SymbolAnalyzer
             DetectHairpinsAndSlurs(syms, staff);
             MarkGraceNotes(syms, staff);
             DropNotesBeforeClef(syms, staff);
+            HeadStepsFromInk(syms, staff);
             foreach (var s in syms.OrderBy(s => s.Bounds.X0))
             {
                 // a beam carried across a bar line: each measure gets the stems on its side
@@ -3547,6 +3548,56 @@ public sealed class SymbolAnalyzer
         st.Heads.RemoveAll(h => h.HeadY < st.Top - (reach + 0.1) * ss || h.HeadY > st.Bottom + (reach + 0.1) * ss);
     }
 
+    private static readonly bool HeadStepInk = Environment.GetEnvironmentVariable("PVOMR_HEADSTEP") != "0";
+    private static readonly bool HeadStepDump = Environment.GetEnvironmentVariable("PVOMR_HEADSTEPDUMP") is "1" or "2";
+    private static readonly bool HeadStepAll = Environment.GetEnvironmentVariable("PVOMR_HEADSTEPDUMP") == "2";
+
+    /// <summary>
+    /// A black head's position comes from matching its shape, which a stem joining it, a ledger line or staff line
+    /// through it and a beam close by can pull half a space off: the head is then read a step too low or high. At the
+    /// end, when everything else has been decided with the head where it was found, the step alone is set from the
+    /// head's own ink (the middle of its vertical runs across the head, away from the stem) where that is clearly a
+    /// step away. The head keeps its place, so dots, voices and stems are not affected.
+    /// </summary>
+    private void HeadStepsFromInk(List<MusicSymbol> syms, Staff staff)
+    {
+        if (!HeadStepInk) return;
+        double ss = staff.Space;
+        var owners = syms.Where(s => s.Kind is SymbolKind.Note or SymbolKind.Chord or SymbolKind.NoteGroup)
+                         .SelectMany(s => s.Children.Count > 0 ? s.Children : new List<MusicSymbol> { s }).ToList();
+        var all = owners.SelectMany(o => o.Notes).ToList();
+        foreach (var o in owners)
+            foreach (var n in o.Notes)
+            {
+                if (n.HeadType != "black" || n.CrossStaff != null) continue;
+                // another head of the same stem a second away shares the ink: left alone
+                if (all.Any(m => m != n && Math.Abs(m.HeadX - n.HeadX) < 1.2 * ss && Math.Abs(m.HeadY - n.HeadY) < 1.3 * ss)) continue;
+                var mids = new List<double>();
+                foreach (double dx in new[] { -0.15, 0.0, 0.15 })
+                {
+                    int x = (int)Math.Round(n.HeadX + dx * ss);
+                    int y0 = (int)Math.Round(n.HeadY);
+                    int y = -1;
+                    for (int d = 0; d <= 0.4 * ss && y < 0; d++) { if (_ns[x, y0 + d]) y = y0 + d; else if (_ns[x, y0 - d]) y = y0 - d; }
+                    if (y < 0) continue;
+                    int top = y, bot = y;
+                    while (_ns[x, top - 1] && y - top < 2 * ss) top--;
+                    while (_ns[x, bot + 1] && bot - y < 2 * ss) bot++;
+                    int len = bot - top + 1;
+                    if (len >= 0.7 * ss && len <= 1.25 * ss) mids.Add((top + bot) / 2.0);
+                }
+                if (HeadStepAll) Console.WriteLine($"HEADSTEP? page {_page.PageNumber} staff {staff.Index + 1} head {n.HeadX:0},{n.HeadY:0} step {n.Step}: mids {string.Join(" ", mids.Select(m => $"{staff.StepAt(n.HeadX, m):0.00}"))}");
+                if (mids.Count < 3 || mids.Max() - mids.Min() > 0.25 * ss) continue;
+                double my = mids.Average();
+                double now = staff.StepAt(n.HeadX, n.HeadY), ink = staff.StepAt(n.HeadX, my);
+                int step = (int)Math.Round(ink);
+                // a step away: the ink centre close to a step position
+                if (Math.Abs(step - n.Step) != 1 || Math.Abs(ink - step) > 0.3) continue;
+                if (HeadStepDump) Console.WriteLine($"HEADSTEP page {_page.PageNumber} staff {staff.Index + 1} head {n.HeadX:0},{n.HeadY:0}: step {n.Step} -> {step} (found {now:0.00}, ink {ink:0.00})");
+                n.Step = step;
+            }
+    }
+
     /// <summary>The vertical centre of a black head from its ink: the run through (cx, near cy) in the staff-less image
     /// on three columns across the head, when the runs have a head's height (null otherwise).</summary>
     // experimental (PVOMR_INKCENTRE=1): corrects some stem-down heads read a step low, but costs fitting measures on
@@ -4280,27 +4331,42 @@ public sealed class SymbolAnalyzer
                 cx0 = ix0; cx1 = ix1; cy0 = iy0; cy1 = iy1;
             }
             int cw = cx1 - cx0 + 1, ch = cy1 - cy0 + 1;
-            if (cw < 0.3 * ss || cw > 1.5 * ss || ch < 1.3 * ss) continue;
-            var crop = new byte[cw * ch];
-            for (int y = 0; y < ch; y++)
-                for (int x = 0; x < cw; x++)
-                    crop[y * cw + x] = keep[(y + cy0) * w + x + cx0];
-            var pr = _clf.Classify(crop, cw, ch, ss);
-            // the same place with the ink of beams and ledger lines left in (only stems taken out): taking those away
-            // can bite into the accidental too; the surer accidental reading of the two counts
-            {
-                var crop2 = new byte[cw * ch];
-                for (int y = 0; y < ch; y++)
-                    for (int x = 0; x < cw; x++)
-                    {
-                        int my = y + cy0, mx = x + cx0, e = (my + wy0 - ey0) * ew + (mx + wx0 - ex0);
-                        if (mask[my * w + mx] != 0 && !vLong[e]) crop2[y * cw + x] = 1;
-                    }
-                var pr2 = _clf.Classify(crop2, cw, ch, ss);
-                double Acc(GlyphClassifier.Prediction p) => p.Label.StartsWith("acc_") ? p.Probability : 0;
-                if (Acc(pr2) > Acc(pr)) { pr = pr2; crop = crop2; }
-            }
-            double top = wy0 + sTop, bot = wy0 + sBot;
+            if (AccInkAt is var (ap3, ast3, ax3) && ap3 == _page.PageNumber && ast3 == staff.Index + 1 && Math.Abs(h.HeadX - ax3) < 80)
+                Console.WriteLine($"ACCINK strokes x {sx0}-{sx1} y {sTop}-{sBot}; crop x {cx0}-{cx1} y {cy0}-{cy1} ({cw}x{ch})");
+            // (a little wider than an accidental: bits of a slur at the sides)
+            if (cw < 0.3 * ss || cw > 1.7 * ss || ch < 1.3 * ss) continue;
+            // the crop is classified in a few versions, the surest accidental reading counts: as cleaned; with the ink
+            // of beams and ledger lines left in (only stems taken out: taking those away can bite into the accidental);
+            // and, only when those find none, with a third or two thirds of a space cut off at the top or bottom (a slur
+            // across the accidental's stem; cut, a natural can look like a sharp)
+            var stemsOnly = new byte[w * hh];
+            for (int y = 0; y < hh; y++)
+                for (int x = 0; x < w; x++)
+                    if (mask[y * w + x] != 0 && !vLong[(y + wy0 - ey0) * ew + (x + wx0 - ex0)]) stemsOnly[y * w + x] = 1;
+            double Acc(GlyphClassifier.Prediction p) => p.Label.StartsWith("acc_") ? p.Probability : 0;
+            GlyphClassifier.Prediction pr = default!; byte[] crop = Array.Empty<byte>(); double top = 0, bot = 0; bool any = false;
+            int t1 = (int)Math.Round(ss / 3), t2 = (int)Math.Round(2 * ss / 3);
+            foreach (var (tt, tb) in new[] { (0, 0), (t1, 0), (t2, 0), (0, t1), (0, t2) })
+                foreach (var src in new[] { keep, stemsOnly })
+                {
+                    if ((tt > 0 || tb > 0) && any && Acc(pr) >= 0.6) break;
+                    int ry0 = cy0 + tt, ry1 = cy1 - tb;
+                    if (ry1 - ry0 + 1 < 1.3 * ss) continue;
+                    int ix0 = int.MaxValue, ix1 = -1, iy0 = int.MaxValue, iy1 = -1;
+                    for (int y = ry0; y <= ry1; y++)
+                        for (int x = cx0; x <= cx1; x++)
+                            if (src[y * w + x] != 0) { ix0 = Math.Min(ix0, x); ix1 = Math.Max(ix1, x); iy0 = Math.Min(iy0, y); iy1 = Math.Max(iy1, y); }
+                    if (ix1 < 0 || iy1 - iy0 + 1 < 1.3 * ss || ix1 - ix0 + 1 < 0.3 * ss) continue;
+                    int vw = ix1 - ix0 + 1, vh = iy1 - iy0 + 1;
+                    var v = new byte[vw * vh];
+                    for (int y = 0; y < vh; y++)
+                        for (int x = 0; x < vw; x++)
+                            v[y * vw + x] = src[(y + iy0) * w + x + ix0];
+                    var p = _clf.Classify(v, vw, vh, ss);
+                    if (any && Acc(p) <= Acc(pr)) continue;
+                    pr = p; crop = v; cw = vw; ch = vh; top = wy0 + iy0; bot = wy0 + iy1; any = true;
+                }
+            if (!any) continue;
             double acy = pr.Label == "acc_flat" ? bot - 0.5 * ss : (top + bot) / 2.0;
             bool ok = pr.Label.StartsWith("acc_") && pr.Probability >= 0.6 && Math.Abs(acy - h.HeadY) <= 0.6 * ss;
             if (AccInkAt is var (ap2, ast2, ax2) && ap2 == _page.PageNumber && ast2 == staff.Index + 1 && Math.Abs(h.HeadX - ax2) < 80 && _lib != null)
@@ -4318,11 +4384,33 @@ public sealed class SymbolAnalyzer
             }
             if (!ok) continue;
             string label = pr.Label;
-            if (label == "acc_sharp" && NaturalStrokes(wx0 + cx0, wy0 + cy0, wx0 + cx1, wy0 + cy1, ss)) label = "acc_natural";
+            // (measured on the cleaned crop: around it are slurs and heads)
+            if (label == "acc_sharp" && NaturalStrokes(crop, cw, ch, ss)) label = "acc_natural";
             h.Accidental = label switch { "acc_sharp" => 1, "acc_flat" => -1, _ => 0 };
             h.AccidentalName = label switch { "acc_sharp" => "accidentalSharp", "acc_flat" => "accidentalFlat", _ => "accidentalNatural" };
             h.AccidentalUnsure = pr.Probability < 0.9;
         }
+    }
+
+    /// <summary>NaturalStrokes on a crop: the left vertical stroke stands clearly higher than the right one at both ends.</summary>
+    private static bool NaturalStrokes(byte[] m, int w, int h, double ss)
+    {
+        var cols = new List<(int x, int top, int bot)>();
+        for (int x = 0; x < w; x++)
+        {
+            int run = 0, best = 0, end = 0;
+            for (int y = 0; y < h; y++) { if (m[y * w + x] != 0) { run++; if (run > best) { best = run; end = y; } } else run = 0; }
+            if (best >= 1.2 * ss) cols.Add((x, end - best + 1, end));
+        }
+        if (cols.Count < 2 || cols[^1].x - cols[0].x < 0.3 * ss) return false;
+        // each stroke where it is longest (in a heavy print a stroke widens at its ends into short columns)
+        double mid = (cols[0].x + cols[^1].x) / 2.0;
+        var l = cols.Where(c => c.x < mid).OrderByDescending(c => c.bot - c.top).FirstOrDefault();
+        var r = cols.Where(c => c.x > mid).OrderByDescending(c => c.bot - c.top).FirstOrDefault();
+        if (l == default || r == default || r.x - l.x < 0.3 * ss) return false;
+        // (a slur joining one end shortens that difference: together they count, each clearly there)
+        double dt = r.top - l.top, db = r.bot - l.bot;
+        return dt >= 0.1 * ss && db >= 0.1 * ss && dt + db >= 0.6 * ss;
     }
 
     private double InkFill(Rect r)
