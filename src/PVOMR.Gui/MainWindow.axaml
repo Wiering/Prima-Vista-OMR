@@ -26,11 +26,11 @@
   <DockPanel>
     <WrapPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="6,6,6,2">
       <Button Name="OpenButton" Classes="tool" Content="Open…"/>
-      <Button Name="PrevButton" Classes="tool" Content="◀"/>
       <TextBlock Classes="lbl" Text="page" Margin="4,0,2,0"/>
-      <NumericUpDown Name="PageBox" Minimum="1" Maximum="1" Value="1" Increment="1" FormatString="0" Width="110"/>
-      <TextBlock Name="PageLabel" VerticalAlignment="Center" MinWidth="50" Text="no file"/>
+      <Button Name="PrevButton" Classes="tool" Content="◀"/>
+      <NumericUpDown Name="PageBox" Minimum="1" Maximum="1" Value="1" Increment="1" FormatString="0" Width="60" ShowButtonSpinner="False" HorizontalContentAlignment="Center"/>
       <Button Name="NextButton" Classes="tool" Content="▶"/>
+      <TextBlock Name="PageLabel" VerticalAlignment="Center" MinWidth="50" Margin="4,0,0,0" Text="no file"/>
       <TextBlock Classes="lbl" Text="DPI" Margin="12,0,4,0"/>
       <NumericUpDown Name="DpiBox" Minimum="100" Maximum="900" Increment="50" Value="300" Width="120" FormatString="0"/>
       <Button Name="RecognizeButton" Classes="tool" Content="Recognise again"/>

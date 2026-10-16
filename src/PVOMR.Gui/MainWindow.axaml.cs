@@ -425,6 +425,30 @@ public partial class MainWindow : Window
     }
 
     private Dictionary<Measure, int> _measureStaff = new();
+
+    /// <summary>What a symbol adds to its measure's total, in quarters ("+0.5 q"), from the assembled score (after the
+    /// duration check: dots taken, notes dropped); empty for symbols that take no time.</summary>
+    private string Contribution(MusicSymbol s, Measure? m)
+    {
+        const string blank = "            ";
+        if (m == null || s.Kind is not (SymbolKind.Note or SymbolKind.Chord or SymbolKind.NoteGroup or SymbolKind.Rest)) return blank;
+        if (!_measureMap.TryGetValue(m, out var sm)) return blank;
+        int staffNo = _measureStaff.GetValueOrDefault(m, 1);
+        static int X(MusicSymbol x) => (int)Math.Round(x.Kind == SymbolKind.Rest || x.Notes.Count == 0 ? x.Bounds.CenterX : x.Notes.Min(n => n.HeadX));
+        var parts = s.Kind == SymbolKind.NoteGroup && s.Children.Count > 0 ? s.Children : new List<MusicSymbol> { s };
+        int total = 0, found = 0; var voices = new SortedSet<int>();
+        foreach (var p in parts)
+        {
+            var ev = sm.Events.FirstOrDefault(e => e.Staff == staffNo && e.IsRest == (p.Kind == SymbolKind.Rest) && Math.Abs(e.X - X(p)) <= 2);
+            if (ev == null) continue;
+            found++; voices.Add(ev.Voice);
+            if (!ev.Grace) total += ev.Duration;
+        }
+        if (found == 0) return "not counted ";
+        string voice = sm.Events.Select(e => e.Voice).Distinct().Count() > 1 ? $" v{string.Join(",", voices)}" : "";
+        return ($"+{Quarters(total)} q{voice}").PadRight(blank.Length);
+    }
+
     private List<BarNumberCheck> _barChecks = new();
 
     /// <summary>The printed bar numbers of this page against the measure count: where they disagree a bar line or a
@@ -571,7 +595,7 @@ public partial class MainWindow : Window
                 _selMeasure = measure ?? (s != null && staff != null ? staff.Measures.FirstOrDefault(m => m.Symbols.Contains(s) || m.Symbols.Any(p => p.Children.Contains(s))) : null);
                 _measureItems = _selMeasure?.Symbols.OrderBy(x => x.Bounds.X0).ToList() ?? new List<MusicSymbol>();
                 double ss = staff?.Space ?? 20;
-                MeasureList.ItemsSource = _measureItems.Select(x => TextReport.Describe(x, ss, false)).ToList();
+                MeasureList.ItemsSource = _measureItems.Select(x => Contribution(x, _selMeasure) + TextReport.Describe(x, ss, false)).ToList();
             }
             MeasureList.SelectedIndex = s != null ? _measureItems.IndexOf(s) : -1;
             MeasureFitText.Text = _selMeasure != null && _measureMap.ContainsKey(_selMeasure)
