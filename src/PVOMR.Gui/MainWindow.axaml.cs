@@ -67,13 +67,11 @@ public partial class MainWindow : Window
             // the sounding measure on the page: its measures in every part, found back through the measure map
             var sounding = m < 0 || _playing == null ? null : _playing.Parts.Where(p => m < p.Measures.Count).Select(p => p.Measures[m]).ToHashSet();
             var onPages = sounding == null ? new List<Measure>() : _measureMap.Where(kv => sounding.Contains(kv.Value)).Select(kv => kv.Key).ToList();
-            int? page = onPages.Select(pm => _pages.Where(p => p.Value.Analysis.Staves.Contains(pm.Staff)).Select(p => (int?)p.Key).FirstOrDefault())
-                               .FirstOrDefault(p => p != null);
+            int? page = sounding?.Select(sm => (int?)sm.Page).FirstOrDefault(p => p > 0);
             string number = m >= 0 && _playing != null && _playing.Parts.Count > 0 && m < _playing.Parts[0].Measures.Count ? _playing.Parts[0].Measures[m].Number.ToString() : (m + 1).ToString();
             Status(m < 0 ? "playback stopped" : page is int pg ? $"playing page {pg}, measure {number}" : $"playing measure {number}");
             // tinted only where they are on the page shown
-            var shown = _current?.Analysis.Staves;
-            View.PlayingMeasures = shown == null ? null : onPages.Where(pm => shown.Contains(pm.Staff)).ToList();
+            View.PlayingMeasures = page == _page ? onPages : null;
             View.InvalidateVisual();
         });
         Closed += (_, _) => _player.Dispose();
