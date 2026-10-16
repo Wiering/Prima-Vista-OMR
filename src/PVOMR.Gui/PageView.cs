@@ -60,6 +60,8 @@ public sealed class PageView : Control
     /// <summary>Duration check per measure (from the assembler); measures that do not fit are tinted.</summary>
     public Dictionary<Measure, PVOMR.Core.Score.MeasureFit>? Fits { get; set; }
     public bool ShowFits { get; set; } = true;
+    /// <summary>The measures sounding during playback (tinted).</summary>
+    public IReadOnlyCollection<Measure>? PlayingMeasures { get; set; }
     /// <summary>Printed bar numbers that disagree with the measure count, by staff index: what the check found.</summary>
     public Dictionary<int, string>? BarNumberProblems { get; set; }
 
@@ -351,6 +353,16 @@ public sealed class PageView : Control
                 OutlinedText(context, "missing here?", new Point(mk.CenterX, mk.Y0 - 4), a.StaffSpace * 0.75, true, Color.FromRgb(220, 0, 0), centre: true, above: true);
             }
             return;
+        }
+        if (PlayingMeasures is { Count: > 0 })
+        {
+            var playing = new SolidColorBrush(Color.FromArgb(50, 40, 140, 255));
+            foreach (var m in PlayingMeasures)
+            {
+                var st = m.Staff;
+                double top = st.TopY(m.X0) - 1.0 * st.Space, bottom = st.BottomY(m.X0) + 1.0 * st.Space;
+                context.FillRectangle(playing, new Avalonia.Rect(m.X0, top, Math.Max(1, m.X1 - m.X0), bottom - top));
+            }
         }
         if (ShowFits && Fits != null)
         {

@@ -63,14 +63,23 @@ public partial class MainWindow : Window
         PlayButton.Click += (_, _) => Play();
         StopButton.Click += (_, _) => _player.Stop();
         _player.MeasureChanged += m => Dispatcher.UIThread.Post(() =>
-            Status(m < 0 ? "playback stopped" : $"playing measure {(_score != null && _score.Parts.Count > 0 && m < _score.Parts[0].Measures.Count ? _score.Parts[0].Measures[m].Number.ToString() : (m + 1).ToString())}"));
+        {
+            Status(m < 0 ? "playback stopped" : $"playing measure {(_playing != null && _playing.Parts.Count > 0 && m < _playing.Parts[0].Measures.Count ? _playing.Parts[0].Measures[m].Number.ToString() : (m + 1).ToString())}");
+            // the sounding measure tinted on the page: its measures in every part, found back through the measure map
+            var sounding = m < 0 || _playing == null ? null : _playing.Parts.Where(p => m < p.Measures.Count).Select(p => p.Measures[m]).ToHashSet();
+            View.PlayingMeasures = sounding == null ? null : _measureMap.Where(kv => sounding.Contains(kv.Value)).Select(kv => kv.Key).ToList();
+            View.InvalidateVisual();
+        });
         Closed += (_, _) => _player.Dispose();
         // at the end of what was recognised when playback started: on with the pages recognised since, if any
         _player.ReachedEnd += end => Dispatcher.UIThread.Post(() =>
         {
             ComputeFits();
             if (_score != null && _score.Parts.Count > 0 && _score.Parts.Max(p => p.Measures.Count) > end)
+            {
+                _playing = _score;
                 _player.Play(_score, end, 0, (double)(TempoBox.Value ?? 100));
+            }
         });
         // the open score becomes version A; its choices can come back as corrections of it
         MergeButton.Click += (_, _) => new MergeWindow(() => _engine ??= new RecognitionEngine(), _file, (double)(DpiBox.Value ?? 300),
@@ -443,6 +452,8 @@ public partial class MainWindow : Window
     /// <summary>The music assembled from the pages recognised so far (for playback).</summary>
     private Score? _score;
     private readonly MidiPlayer _player = new();
+    /// <summary>The score being played (the measure map points into it).</summary>
+    private Score? _playing;
 
     /// <summary>
     /// Plays the music recognised so far: from the selected symbol (its measure, from the symbol's place in its voice),
@@ -475,6 +486,7 @@ public partial class MainWindow : Window
         int index = 0;
         if (sm != null)
             foreach (var part in _score.Parts) { int i = part.Measures.IndexOf(sm); if (i >= 0) { index = i; break; } }
+        _playing = _score;
         _player.Play(_score, index, offset, (double)(TempoBox.Value ?? 100));
     }
 
