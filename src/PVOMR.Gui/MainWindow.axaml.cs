@@ -132,6 +132,8 @@ public partial class MainWindow : Window
     {
         try
         {
+            _player.Stop();
+            _score = null;
             _file = path;
             _pageCount = await Task.Run(() => RecognitionEngine.PageCount(path));
             _pages.Clear();

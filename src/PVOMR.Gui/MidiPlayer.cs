@@ -97,7 +97,8 @@ public sealed class MidiPlayer : IDisposable
                 if (i >= p.Measures.Count) continue;
                 var m = p.Measures[i];
                 foreach (var v in m.Events.Where(e => !e.Grace).GroupBy(e => e.Voice)) length = Math.Max(length, v.Sum(e => e.Duration));
-                if (m.Fit.Expected is int exp) length = Math.Max(length, exp);
+                // (an upbeat, or the part of a measure before or after a repeat sign, lasts as long as its notes)
+                if (m.Fit.Expected is int exp && !m.Implicit) length = Math.Max(length, exp);
             }
             start += Math.Max(length, 1);
         }
