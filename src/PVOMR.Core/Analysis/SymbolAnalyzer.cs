@@ -1471,6 +1471,17 @@ public sealed class SymbolAnalyzer
             if (g == null) continue;
             int flags = g.Children.Where(ch => ch.Flags > 0).Select(ch => ch.Flags).GroupBy(f => f).OrderByDescending(gr => gr.Count()).First().Key;
             bool up = g.Children.Count(ch => ch.StemUp == true) > g.Children.Count / 2;
+            // the beams where its stem stood count (an 8th before two 16ths shares only the first beam), on the line
+            // through the group's stem ends; the group's usual count when nothing is found there
+            var ends = g.Children.Select(ch => ch.Attributes.TryGetValue("stemx", out var v) ? v.Split(',') : null).Where(p => p is { Length: 3 })
+                                 .Select(p => (x: (int.Parse(p![0]) + int.Parse(p[1])) / 2.0, y: (double)int.Parse(p[2]))).OrderBy(e => e.x).ToList();
+            if (ends.Count >= 2 && ends[^1].x > ends[0].x)
+            {
+                double slope = (ends[^1].y - ends[0].y) / (ends[^1].x - ends[0].x);
+                int sx = (int)Math.Round(up ? r.CenterX + 0.5 * ss : r.CenterX - 0.5 * ss);
+                if (BeamsAt(sx, ends[0].y + slope * (sx - ends[0].x), up, ss) is int here && here >= 1 && here <= g.Children.Max(ch => ch.Flags)) flags = here;
+                if (Environment.GetEnvironmentVariable("PVOMR_BEAMDUMP") == "1") Console.WriteLine($"DETACHED head {r.CenterX},{r.CenterY} stem x {sx} beam y {ends[0].y + slope * (sx - ends[0].x):0}: counted {BeamsAt(sx, ends[0].y + slope * (sx - ends[0].x), up, ss)?.ToString() ?? "none"} -> {flags}");
+            }
             var child = new MusicSymbol { Kind = SymbolKind.Note, Name = "note", Bounds = r, Staff = staff, Confidence = 0.6, StemUp = up, Flags = flags };
             child.Duration = flags switch { 1 => "8th", 2 => "16th", 3 => "32nd", _ => "64th" };
             child.Notes.Add(h.Notes[0]);
@@ -1539,6 +1550,7 @@ public sealed class SymbolAnalyzer
                 // the beam must really run over this stem (a quarter right after the group stands under no beam)
                 if (BeamsAt((qs.x0 + qs.x1) / 2, BeamAt((qs.x0 + qs.x1) / 2.0), up, ss) is not int over || over < 1) continue;
                 q.Flags = BeamsAt((qs.x0 + qs.x1) / 2, BeamAt((qs.x0 + qs.x1) / 2.0), up, ss) is int bc and >= 1 ? bc : nearest.Flags;
+                if (Environment.GetEnvironmentVariable("PVOMR_BEAMDUMP") == "1") Console.WriteLine($"QUARTER stem x {(qs.x0 + qs.x1) / 2} beam y {BeamAt((qs.x0 + qs.x1) / 2.0):0}: counted {q.Flags}");
                 q.Duration = q.Flags switch { 1 => "8th", 2 => "16th", 3 => "32nd", _ => "64th" };
                 q.Attributes["beam"] = "stem short of the beam";
                 added.Add(q);
@@ -1568,6 +1580,7 @@ public sealed class SymbolAnalyzer
                 head.Step = (int)Math.Round(staff.StepAt(hx, hy));
                 int sx = (int)Math.Round(up ? hx + 0.5 * ss : hx - 0.5 * ss);
                 int pf = BeamsAt(sx, BeamAt(sx), up, ss) is int pc and >= 1 ? pc : nearest.Flags;
+                if (Environment.GetEnvironmentVariable("PVOMR_BEAMDUMP") == "1") Console.WriteLine($"BEAMEND head {hx:0},{hy:0} stem x {sx} beam y {BeamAt(sx):0}: counted {BeamsAt(sx, BeamAt(sx), up, ss)?.ToString() ?? "none"}, nearest {nearest.Flags}");
                 var note = new MusicSymbol { Kind = SymbolKind.Note, Name = "note", Staff = staff, Bounds = piece.Bounds, Confidence = 0.6, StemUp = up, Flags = pf };
                 note.Duration = note.Flags switch { 1 => "8th", 2 => "16th", 3 => "32nd", _ => "64th" };
                 note.Notes.Add(head);
@@ -1979,7 +1992,8 @@ public sealed class SymbolAnalyzer
                 if (cand.s == null) continue;
                 var q = cand.s;
                 // as many beams as reach this end (an 8th's single beam under a 16th pair's two)
-                int beams = 0, run = 0, xs = last - dir * Math.Max(1, (int)(0.15 * ss));
+                // (counted clear of the joined note's stem, whose ink would join or split the beams there)
+                int beams = 0, run = 0, xs = last - dir * Math.Max(1, (int)Math.Min(0.5 * ss, overhang / 2));
                 double yIn = edge.StemUp == true ? 1 : -1;
                 for (int k = -band; k <= (int)((edge.Flags + 0.5) * 0.9 * ss); k++)
                 {
@@ -1990,6 +2004,7 @@ public sealed class SymbolAnalyzer
                 }
                 if (run >= 0.2 * ss) beams++;
                 q.Flags = Math.Clamp(beams, 1, edge.Flags);
+                if (Environment.GetEnvironmentVariable("PVOMR_BEAMDUMP") == "1") Console.WriteLine($"BEAMJOIN at x {xs} beam y {yb:0}: {beams} beam(s), edge {edge.Flags}");
                 q.Duration = q.Flags switch { 1 => "8th", 2 => "16th", 3 => "32nd", _ => "64th" };
                 q.Attributes["beam"] = "joined at the beam end";
                 syms.Remove(q);
@@ -4517,7 +4532,8 @@ public sealed class SymbolAnalyzer
         // an augmentation dot next to a staff line loses most of its ink to the staff removal and is left as a small
         // unknown or text fragment: such a fragment in the dot position of an undotted note makes it a dot candidate,
         // which the duration check takes only when the measure then adds up
-        var frags = syms.Where(s => s.Kind is SymbolKind.Unknown or SymbolKind.Text && s.Bounds.Width <= 0.6 * ss && s.Bounds.Height <= 0.65 * ss
+        // (a dot still joined to a bit of the line is taller)
+        var frags = syms.Where(s => s.Kind is SymbolKind.Unknown or SymbolKind.Text && s.Bounds.Width <= 0.6 * ss && s.Bounds.Height <= 0.85 * ss
                                     && s.Bounds.Width >= 2 && s.Bounds.Height >= 2).ToList();
         foreach (var f in frags)
         {
