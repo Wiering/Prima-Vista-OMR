@@ -83,8 +83,9 @@ public static class SystemBuilder
             double left = sys.Staves.Min(s => s.Left), right = sys.Staves.Max(s => s.Right);
             double top = sys.Staves.Min(s => s.TopY(s.Left)), bot = sys.Staves.Max(s => s.BottomY(s.Left));
             sys.Bounds = new Rect((int)left, (int)top, (int)right, (int)bot);
-            BuildMeasures(sys);
             DetectBraces(bin, sys, log);
+            DropUnlinkedBarlines(bin, sys, log);
+            BuildMeasures(sys);
         }
         return systems;
     }
@@ -147,6 +148,56 @@ public static class SystemBuilder
             if (!(leftCurve >= 0.4 * ss || leftCurve >= 0.2 * ss && rightDip >= 0.3 * ss)) continue;
             a.BraceToNext = true;
             log.Add($"brace joins staves {a.Index + 1} and {b.Index + 1}");
+        }
+    }
+
+    /// <summary>
+    /// Two staves joined by a brace whose bar lines run through both (a piano's staves): a single line in one of
+    /// them only, with no line in the other staff there, is a long stem (a chord's stem reaching far beyond the staff),
+    /// not a bar line. Only where the linked lines are the rule (at least two, and no fewer than the lone ones).
+    /// </summary>
+    private static void DropUnlinkedBarlines(BinaryImage bin, StaffSystem sys, List<string> log)
+    {
+        // a line through the other staff from its top line to its bottom line (its bar line, missed there)
+        static bool Through(BinaryImage bin, Staff st, double x)
+        {
+            int rows = 0, inked = 0;
+            for (int y = (int)st.TopY(x); y <= (int)st.BottomY(x); y++)
+            {
+                rows++;
+                for (int xx = (int)Math.Round(x) - 2; xx <= (int)Math.Round(x) + 2; xx++)
+                    if (xx >= 0 && xx < bin.Width && y >= 0 && y < bin.Height && bin[xx, y]) { inked++; break; }
+            }
+            return rows > 0 && inked >= 0.9 * rows;
+        }
+        var staves = sys.Staves.OrderBy(st => st.Index).ToList();
+        for (int k = 0; k + 1 < staves.Count; k++)
+        {
+            Staff a = staves[k], b = staves[k + 1];
+            // (a piano's staves, joined by a brace; an orchestra's groups draw their lines staff by staff often enough)
+            if (!a.BraceToNext) continue;
+            double ss = (a.Space + b.Space) / 2;
+            bool Inner(Staff st, Barline l) => l.Kind == BarlineKind.Single && l.X0 > st.Left + 1.5 * ss && l.X1 < st.Right - 1.0 * ss;
+            var linked = a.Barlines.Where(l => l.Kind != BarlineKind.SystemStart && l.X0 > a.Left + 1.5 * ss && l.StaffTo >= b.Index).ToList();
+            var loneA = a.Barlines.Where(l => Inner(a, l) && l.StaffTo < b.Index && !b.Barlines.Any(o => Math.Abs(o.X - l.X) <= 0.8 * ss) && !Through(bin, b, l.X)).ToList();
+            var loneB = b.Barlines.Where(l => Inner(b, l) && !a.Barlines.Any(o => Math.Abs(o.X - l.X) <= 0.8 * ss) && !Through(bin, a, l.X)).ToList();
+            if (linked.Count < 2) continue;
+            // a bar line found in one staff only, running through the other one too: the other staff's line was missed there
+            foreach (var l in b.Barlines.Where(l => Inner(b, l) && !a.Barlines.Any(o => Math.Abs(o.X - l.X) <= 0.8 * ss) && Through(bin, a, l.X)).ToList())
+            {
+                a.Barlines.Add(new Barline { X = l.X, X0 = l.X0, X1 = l.X1, Kind = l.Kind, StaffFrom = a.Index, StaffTo = b.Index });
+                log.Add($"staff {a.Index + 1}: bar line at x={l.X:0} taken from staff {b.Index + 1}, its line runs through both");
+            }
+            foreach (var l in a.Barlines.Where(l => Inner(a, l) && !b.Barlines.Any(o => Math.Abs(o.X - l.X) <= 0.8 * ss) && Through(bin, b, l.X)).ToList())
+            {
+                b.Barlines.Add(new Barline { X = l.X, X0 = l.X0, X1 = l.X1, Kind = l.Kind, StaffFrom = b.Index, StaffTo = b.Index });
+                l.StaffTo = Math.Max(l.StaffTo, b.Index);
+                log.Add($"staff {b.Index + 1}: bar line at x={l.X:0} taken from staff {a.Index + 1}, its line runs through both");
+            }
+            a.Barlines.Sort((p, q) => p.X.CompareTo(q.X)); b.Barlines.Sort((p, q) => p.X.CompareTo(q.X));
+            if (linked.Count < loneA.Count + loneB.Count) continue;
+            foreach (var l in loneA) { a.Barlines.Remove(l); log.Add($"staff {a.Index + 1}: line at x={l.X:0} not through staff {b.Index + 1} like the others: a stem, not a bar line"); }
+            foreach (var l in loneB) { b.Barlines.Remove(l); log.Add($"staff {b.Index + 1}: line at x={l.X:0} not through staff {a.Index + 1} like the others: a stem, not a bar line"); }
         }
     }
 

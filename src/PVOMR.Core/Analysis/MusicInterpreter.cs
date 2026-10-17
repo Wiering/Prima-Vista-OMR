@@ -201,6 +201,9 @@ public static class MusicInterpreter
                 bool plausible = true;
                 var steps = leadingAccidentals.Select(a => a.Step ?? int.MinValue).ToList();
                 if (steps.Any(s => s == int.MinValue)) plausible = false;
+                // a key signature's signs sit in the staff (at most a step outside it); one below or above it is the
+                // accidental of the note that follows
+                if (steps.Any(s => s != int.MinValue && (s < -1 || s > 9))) plausible = false;
                 if (plausible && (mi == 0 || ordered.Any(c => c.Kind == SymbolKind.Clef) || leadingAccidentals.Any(a => a.Attributes.ContainsKey("keychange"))))
                 {
                     int n = leadingAccidentals.Count;

@@ -157,24 +157,29 @@ public static class MusicAssembler
                 }
             }
         }
+        NameParts(score, namesOf, pages);
+        foreach (var part in score.Parts) FinishPart(part, score);
         // printed bar numbers against the count: the measures between two printed numbers must match their difference
         // (a single misread number then marks the two neighbouring checks, a missed or extra bar line the rest)
         // a number out of line with both neighbours is a misreading and is left out; a number below the previous
         // one starts a new movement (numbering restarts), which is no disagreement
+        // (counted by the measures' numbers once the part is finished: an upbeat or the two halves of a measure split
+        // by a repeat sign count as one)
         var nums = score.BarNumbers;
+        var firstPart = score.Parts.Count > 0 ? score.Parts[0].Measures : new List<ScoreMeasure>();
+        int N(BarNumberCheck c) => c.Counted >= 1 && c.Counted <= firstPart.Count ? firstPart[c.Counted - 1].Number : c.Counted;
         var trusted = nums.Where((b, i) => !(i > 0 && i + 1 < nums.Count && nums[i - 1].Printed < nums[i + 1].Printed
                                               && !(nums[i - 1].Printed < b.Printed && b.Printed < nums[i + 1].Printed))).ToList();
         for (int i = 1; i < trusted.Count; i++)
         {
             var a = trusted[i - 1]; var b = trusted[i];
             if (b.Printed <= a.Printed) continue;
-            b.Agrees = b.Printed - a.Printed == b.Counted - a.Counted;
-            b.Since = a.Printed; b.PrintedSpan = b.Printed - a.Printed; b.CountedSpan = b.Counted - a.Counted;
+            int counted = N(b) - N(a);
+            b.Agrees = b.Printed - a.Printed == counted;
+            b.Since = a.Printed; b.PrintedSpan = b.Printed - a.Printed; b.CountedSpan = counted;
             if (b.Agrees == false)
-                score.Warnings.Add($"bar numbers: {b.Printed - a.Printed} measures printed between bar {a.Printed} (page {a.Page}, staff {a.Staff + 1}) and bar {b.Printed} (page {b.Page}, staff {b.Staff + 1}), {b.Counted - a.Counted} counted");
+                score.Warnings.Add($"bar numbers: {b.Printed - a.Printed} measures printed between bar {a.Printed} (page {a.Page}, staff {a.Staff + 1}) and bar {b.Printed} (page {b.Page}, staff {b.Staff + 1}), {counted} counted");
         }
-        NameParts(score, namesOf, pages);
-        foreach (var part in score.Parts) FinishPart(part, score);
         if (options.AssumeFirstTime)
         {
             // measures still without a time signature (before the first one found) are checked against the part's first
@@ -625,6 +630,39 @@ public static class MusicAssembler
                     sm.Warnings.Add($"staff {staffNo} voice {voice.Key}: {take.Count} note(s) without a clear flag or with a flecked head taken as half as long to fit {time}");
                 }
             }
+            if (sum > expected)
+            {
+                // 8ths under a beam as thick as two merged beams: 16ths when exactly that makes the voice fit (the whole
+                // beamed group: its notes share the beam)
+                var thick = evs.Where(e => e.ThickBeam && e.Type == "eighth" && e.Dots == 0 && e.TupletActual == 0).ToList();
+                // (the group's 8ths: where the merged band thins, some of its stems already count two beams)
+                var groups = thick.GroupBy(e => e.GroupId).Where(g => g.Key != 0)
+                                  .Select(g => evs.Where(e => e.GroupId == g.Key && e.Type == "eighth" && e.Dots == 0 && e.TupletActual == 0).ToList())
+                                  .Where(g => !evs.Any(e => e.GroupId == g[0].GroupId && e.Dots > 0)).ToList();
+                List<ScoreEvent>? pick = groups.FirstOrDefault(g => sum - g.Sum(e => e.Duration / 2) == expected);
+                // several groups: the first ones that together make up the surplus
+                for (int n = 2; pick == null && n <= groups.Count; n++)
+                    if (sum - groups.Take(n).Sum(g => g.Sum(e => e.Duration / 2)) == expected) pick = groups.Take(n).SelectMany(g => g).ToList();
+                if (pick != null)
+                {
+                    foreach (var e in pick)
+                    {
+                        e.Type = "16th"; e.Duration /= 2;
+                        if (e.Beams.Length == 1) e.Beams = new[] { e.Beams[0], e.Beams[0] };
+                    }
+                    sum = evs.Sum(e => e.Duration);
+                    sm.Fit.Sums[^1] = (staffNo, voice.Key, sum);
+                    sm.Warnings.Add($"staff {staffNo} voice {voice.Key}: {pick.Count} 8th(s) under a thick beam taken as 16ths to fit {time}");
+                }
+            }
+            // two "whole notes" filling twice the measure: half notes whose stems were not printed or lost (an old print)
+            if (sum == 2 * expected && evs.Count == 2 && evs.All(e => !e.IsRest && e.Type == "whole" && e.Dots == 0 && e.TupletActual == 0 && e.Duration == expected))
+            {
+                foreach (var e in evs) { e.Type = "half"; e.Duration /= 2; }
+                sum = expected;
+                sm.Fit.Sums[^1] = (staffNo, voice.Key, sum);
+                sm.Warnings.Add($"staff {staffNo} voice {voice.Key}: two stemless heads taken as half notes to fit {time}");
+            }
             if (sum == expected) continue;
             if (sum > expected)
             {
@@ -711,6 +749,7 @@ public static class MusicAssembler
         if (!asserted && s.StemUp == null && s.Notes.Count > 0 && s.Notes.All(n => n.HeadType == "black")) ev.StemlessBlack = true;
         if (!asserted && s.Attributes.ContainsKey("flagcand")) ev.StemlessBlack = true;   // a hairline flag may make it an 8th
         if (!asserted && s.Attributes.ContainsKey("hollowdoubt")) ev.HollowDoubt = true;
+        if (!asserted && s.Attributes.ContainsKey("thickbeam")) ev.ThickBeam = true;
         if (s.Attributes.TryGetValue("articulation", out var art) && art == "staccato") ev.Articulations.Add("staccato");
         if (s.Attributes.ContainsKey("dotcand") && ev.Dots == 0 && !ev.IsRest) ev.DotCandidate = true;
         // small notes: grace-note candidates, settled by the measure length in Validate
@@ -1093,7 +1132,9 @@ public static class MusicAssembler
             var runs = new List<List<ScoreMeasure>>();
             foreach (var m in part.Measures)
             {
-                if (runs.Count > 0 && runs[^1][0].Fit.Expected == m.Fit.Expected && runs[^1][0].Page == m.Page && (m.Time == null || m.Time.Length == m.Fit.Expected)) runs[^1].Add(m);
+                // (a final bar line ends a run too: a new movement, its signature perhaps not read)
+                if (runs.Count > 0 && runs[^1][0].Fit.Expected == m.Fit.Expected && runs[^1][0].Page == m.Page && (m.Time == null || m.Time.Length == m.Fit.Expected)
+                    && runs[^1][^1].RightBar != BarStyle.LightHeavy) runs[^1].Add(m);
                 else runs.Add(new List<ScoreMeasure> { m });
             }
             // a replaced signature stays replaced on the following pages, up to the next printed one (their measures were
@@ -1137,8 +1178,10 @@ public static class MusicAssembler
                 // a signature read from the C or cut-C glyph in the signature zone at the start of a staff is reliable; digit
                 // readings, carried values and a C read further along (a smudge at a repeat sign) are questioned
                 var inForceMeasure = part.Measures.LastOrDefault(m => m.Number <= run[0].Number && m.Time != null);
+                // (up to the end of its movement: a final bar line in between starts another one)
+                bool sameMovement = inForceMeasure != null && !part.Measures.Skip(part.Measures.IndexOf(inForceMeasure)).TakeWhile(m => m != run[0]).Any(m => m.RightBar == BarStyle.LightHeavy);
                 if (expected != null && inForceMeasure?.Time?.Symbol != null && inForceMeasure.Time.Length == expected && inForceMeasure.Page == run[0].Page
-                    && inForceMeasure.TimeFromStartGlyph) continue;
+                    && inForceMeasure.TimeFromStartGlyph && sameMovement) continue;
                 var informative = run.Where(m => !(m.Events.Count == 1 && m.Events[0].IsRest && m.Events[0].Type == "whole") && m.Events.Count > 0).ToList();
                 if (informative.Count < 4) continue;
                 var sums = Samples(informative);
@@ -1204,6 +1247,31 @@ public static class MusicAssembler
                     last.Warnings.RemoveAll(w => w.Contains("duration"));
                     last.Fit.Sums.Clear();
                 }
+            }
+        }
+        // a measure split by a repeat sign (or a double bar line): the part before it and the part after it are each
+        // short, together exactly one measure (the upbeat to the repeated section); the second shares the first's number
+        {
+            TimeSpec? time = null;
+            for (int i = 0; i + 1 < part.Measures.Count; i++)
+            {
+                var a = part.Measures[i]; var b = part.Measures[i + 1];
+                if (a.Time != null) time = a.Time;
+                if (time == null || b.Time != null || b.Implicit) continue;
+                bool split = a.RepeatBackward || b.RepeatForward || a.RightBar is BarStyle.LightLight or BarStyle.LightHeavy || b.LeftBar is BarStyle.HeavyLight;
+                if (!split) continue;
+                int Sum(ScoreMeasure m)
+                {
+                    var sums = m.Events.Where(e => !e.Grace).GroupBy(e => (e.Staff, e.Voice)).Select(g => g.Sum(e => e.Duration)).ToList();
+                    return sums.Count == 0 ? 0 : sums.Max();
+                }
+                int sa = Sum(a), sb = Sum(b);
+                if (sa <= 0 || sb <= 0 || sa >= time.Length || sb >= time.Length || sa + sb != time.Length) continue;
+                if (!a.Warnings.Any(w => w.Contains("duration")) && !b.Warnings.Any(w => w.Contains("duration"))) continue;
+                foreach (var m in new[] { a, b }) { m.Warnings.RemoveAll(w => w.Contains("duration")); m.Fit.Sums.Clear(); }
+                b.Implicit = true;
+                for (int k = i + 1; k < part.Measures.Count; k++) part.Measures[k].Number--;
+                i++;
             }
         }
         // barline styles from the detected barline kinds are set by the caller via measure boundaries; defaults: regular

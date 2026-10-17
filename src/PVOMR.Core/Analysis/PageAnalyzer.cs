@@ -15,6 +15,21 @@ public sealed class AnalysisContext
 
 public sealed class PageAnalyzer
 {
+    /// <summary>Ink at the staves' left (or right) ends: five spaces in from the end, from the top to the bottom line.</summary>
+    private static long EndInk(BinaryImage b, List<Staff> staves, bool right)
+    {
+        long ink = 0;
+        foreach (var st in staves)
+        {
+            int w = (int)Math.Round(5 * st.Space);
+            int x0 = right ? (int)st.Right - w : (int)st.Left, x1 = right ? (int)st.Right : (int)st.Left + w;
+            for (int x = Math.Max(0, x0); x <= Math.Min(b.Width - 1, x1); x++)
+                for (int y = Math.Max(0, (int)st.TopY(x)); y <= Math.Min(b.Height - 1, (int)st.BottomY(x)); y++)
+                    if (b[x, y]) ink++;
+        }
+        return ink;
+    }
+
     private readonly AnalysisOptions _opt;
     private readonly GlyphLibrary? _glyphs;
     private readonly GlyphClassifier? _classifier;
@@ -81,6 +96,13 @@ public sealed class PageAnalyzer
             var rot = gray.Rotate90(1);
             var binRot = Bin(rot, dpi);
             var resRot = StaffDetector.Detect(binRot);
+            // which way round: clefs and key signatures crowd the staves' left ends; the right ends hold a bar line
+            if (resRot.Staves.Count >= 2 && EndInk(binRot, resRot.Staves, right: true) > 1.3 * EndInk(binRot, resRot.Staves, right: false))
+            {
+                rot = gray.Rotate90(3);
+                binRot = Bin(rot, dpi);
+                resRot = StaffDetector.Detect(binRot);
+            }
             if (resRot.Staves.Count >= 2)
             {
                 result.Notes.Add($"no staves in the original orientation; {resRot.Staves.Count} found after rotating the page by 90 degrees");
