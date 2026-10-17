@@ -3,7 +3,7 @@ namespace PVOMR.Core.Imaging;
 /// <summary>Image degradations that imitate scan quality: blur, noise, skew, contrast loss, rescaling, ink erosion.</summary>
 public static class Augment
 {
-    /// <summary>Spec: comma separated key=value pairs, e.g. "blur=1.2,noise=0.08,skew=1.5,scale=0.6,contrast=0.6,speckle=0.002,thin=1". Unknown keys are ignored.</summary>
+    /// <summary>Spec: comma separated key=value pairs, e.g. "blur=1.2,noise=0.08,skew=1.5,scale=0.6,contrast=0.6,speckle=0.002,thin=1,holes=0.05,breaks=0.003". Unknown keys are ignored.</summary>
     public static GrayImage Apply(GrayImage img, string spec, int seed = 1)
     {
         var rnd = new Random(seed);
@@ -51,6 +51,39 @@ public static class Augment
                 int x = rnd.Next(r.Width), y = rnd.Next(r.Height);
                 int size = rnd.Next(1, 3);
                 for (int dy = 0; dy < size; dy++) for (int dx = 0; dx < size; dx++) if (x + dx < r.Width && y + dy < r.Height) r[x + dx, y + dy] = 0;
+            }
+            img = r;
+        }
+        // a worn print's ink: white flecks inside the ink (holes = share of the ink pixels hit) and thin white cuts across
+        // strokes and staff lines (breaks = cuts per ink pixel)
+        if (opts.TryGetValue("holes", out double holes) && holes > 0)
+        {
+            var r = img.Clone();
+            var ink = Enumerable.Range(0, r.Data.Length).Where(i => img.Data[i] < 128).ToArray();
+            int count = (int)(ink.Length * holes);
+            for (int k = 0; k < count && ink.Length > 0; k++)
+            {
+                int i = ink[rnd.Next(ink.Length)], x = i % r.Width, y = i / r.Width, size = rnd.Next(1, 4);
+                for (int dy = 0; dy < size; dy++) for (int dx = 0; dx < size; dx++) if (x + dx < r.Width && y + dy < r.Height) r[x + dx, y + dy] = 255;
+            }
+            img = r;
+        }
+        if (opts.TryGetValue("breaks", out double breaks) && breaks > 0)
+        {
+            var r = img.Clone();
+            var ink = Enumerable.Range(0, r.Data.Length).Where(i => img.Data[i] < 128).ToArray();
+            int count = (int)(ink.Length * breaks);
+            for (int k = 0; k < count && ink.Length > 0; k++)
+            {
+                int i = ink[rnd.Next(ink.Length)], x = i % r.Width, y = i / r.Width;
+                bool vertical = rnd.Next(2) == 0;   // a cut across a horizontal stroke runs up and down
+                int len = rnd.Next(4, 9), wid = rnd.Next(1, 3);
+                for (int a = -len / 2; a <= len / 2; a++)
+                    for (int b = 0; b < wid; b++)
+                    {
+                        int xx = vertical ? x + b : x + a, yy = vertical ? y + a : y + b;
+                        if (xx >= 0 && yy >= 0 && xx < r.Width && yy < r.Height) r[xx, yy] = 255;
+                    }
             }
             img = r;
         }

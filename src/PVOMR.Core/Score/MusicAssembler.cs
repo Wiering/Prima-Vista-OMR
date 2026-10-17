@@ -408,6 +408,7 @@ public static class MusicAssembler
             ctx.Time = time;
         }
         else if (ctx.Time == null && time != null) { if (staffNo == 1) sm.Time = time; sm.StaffTimes[staffNo - 1] = time; ctx.Time = time; }
+        else if (own != null && staffNo == 1) sm.TimeRestated = true;
         else if (firstOfPart && ctx.Time == null && staffNo == 1) sm.Warnings.Add("time signature unknown");
 
         // events
@@ -713,6 +714,34 @@ public static class MusicAssembler
                     sm.Warnings.Add($"staff {staffNo} voice {voice.Key}: {pick.Count} note(s) given the rhythm of look-alike groups to fit {time}");
                 }
             }
+            // quarters joined by beams seen only from afar: the run's notes beamed, a run at a time
+            if (sum > expected)
+            {
+                static string? TypeFor(int beams) => beams switch { 1 => "eighth", 2 => "16th", 3 => "32nd", _ => null };
+                var runs = evs.Where(e => e.CoarseChain > 0 && e.Type == "quarter" && e.TupletActual == 0 && !e.Grace && TypeFor(e.CoarseBeamed) != null)
+                              .GroupBy(e => e.CoarseChain).Select(g => g.ToList()).Where(g => g.Count >= 2).ToList();
+                int Delta(List<ScoreEvent> g) => g.Sum(e => DurationOf(TypeFor(e.CoarseBeamed)!, e.Dots) - e.Duration);
+                List<ScoreEvent>? pick = runs.FirstOrDefault(g => sum + Delta(g) == expected);
+                for (int n = 2; pick == null && n <= runs.Count; n++)
+                    if (sum + runs.Take(n).Sum(Delta) == expected) pick = runs.Take(n).SelectMany(g => g).ToList();
+                if (pick != null)
+                {
+                    foreach (var g in pick.GroupBy(e => e.CoarseChain))
+                    {
+                        var list = g.OrderBy(e => e.X).ToList();
+                        for (int k = 0; k < list.Count; k++)
+                        {
+                            var e = list[k];
+                            e.Type = TypeFor(e.CoarseBeamed)!; e.Duration = DurationOf(e.Type, e.Dots);
+                            var st = k == 0 ? BeamState.Begin : k == list.Count - 1 ? BeamState.End : BeamState.Continue;
+                            e.Beams = Enumerable.Repeat(st, e.CoarseBeamed).ToArray();
+                        }
+                    }
+                    sum = evs.Sum(e => e.Duration);
+                    sm.Fit.Sums[^1] = (staffNo, voice.Key, sum);
+                    sm.Warnings.Add($"staff {staffNo} voice {voice.Key}: {pick.Count} quarter(s) beamed by beams seen from afar to fit {time}");
+                }
+            }
             // quarters whose heads are light from afar: half notes, one or all of them, when that makes the measure fit
             if (sum < expected)
             {
@@ -823,6 +852,8 @@ public static class MusicAssembler
         if (!asserted && s.Attributes.ContainsKey("hollowdoubt")) ev.HollowDoubt = true;
         if (!asserted && s.Attributes.ContainsKey("thickbeam")) ev.ThickBeam = true;
         if (!asserted && s.Attributes.ContainsKey("coarsehollow")) ev.CoarseHollow = true;
+        if (!asserted && s.Attributes.TryGetValue("coarsebeamed", out var cbs) && int.TryParse(cbs, out int cbn)
+            && s.Attributes.TryGetValue("coarsechain", out var ccs) && int.TryParse(ccs, out int ccn)) { ev.CoarseBeamed = cbn; ev.CoarseChain = ccn; }
         if (!asserted && s.Attributes.TryGetValue("patternbeams", out var pb) && pb.Split('.') is { Length: 2 } pp && int.TryParse(pp[0], out int pbn) && int.TryParse(pp[1], out int pdn)) ev.Pattern = (pbn, pdn);
         if (!asserted && s.Attributes.TryGetValue("coarsemore", out var cm) && int.TryParse(cm, out int cmn)) ev.CoarseMore = cmn;
         if (!asserted && s.Attributes.TryGetValue("coarseless", out var cl) && int.TryParse(cl, out int cln)) ev.CoarseLess = cln;
@@ -1223,8 +1254,9 @@ public static class MusicAssembler
             foreach (var m in part.Measures)
             {
                 // (a final bar line ends a run too: a new movement, its signature perhaps not read)
+                // (and a signature printed again: what follows it is under it whatever was carried in before)
                 if (runs.Count > 0 && runs[^1][0].Fit.Expected == m.Fit.Expected && runs[^1][0].Page == m.Page && (m.Time == null || m.Time.Length == m.Fit.Expected)
-                    && runs[^1][^1].RightBar != BarStyle.LightHeavy) runs[^1].Add(m);
+                    && runs[^1][^1].RightBar != BarStyle.LightHeavy && !m.TimeRestated) runs[^1].Add(m);
                 else runs.Add(new List<ScoreMeasure> { m });
             }
             // a replaced signature stays replaced on the following pages, up to the next printed one (their measures were
@@ -1254,7 +1286,7 @@ public static class MusicAssembler
             foreach (var run in runs)
             {
                 int? assembled = run[0].Fit.Expected;   // the value carried into this run when the score was assembled
-                if (run.Any(m => m.Time != null)) carriedFix = null;
+                if (run.Any(m => m.Time != null || m.TimeRestated)) carriedFix = null;
                 else if (carriedFix is { } cf && run[0].Fit.Expected == cf.from && Samples(run).Count(x => x == cf.to.Length) > Samples(run).Count(x => x == cf.from))
                 {
                     // ... and the page is still checked against it (a new movement whose signature was not read)

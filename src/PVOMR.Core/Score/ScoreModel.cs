@@ -107,6 +107,9 @@ public sealed class ScoreMeasure
     public int MultiRest { get; set; }
     /// <summary>The time signature was read from a C or cut-C glyph in the signature zone at the start of a staff.</summary>
     public bool TimeFromStartGlyph { get; set; }
+    /// <summary>A time signature printed here repeating the one in force (at assembly): the start of a stretch under
+    /// it, which the sanity check of misread signatures judges on its own.</summary>
+    public bool TimeRestated { get; set; }
     public BarStyle LeftBar { get; set; } = BarStyle.None;
     public BarStyle RightBar { get; set; } = BarStyle.Regular;
     public bool RepeatForward { get; set; }
@@ -178,6 +181,10 @@ public sealed class ScoreEvent
     public int CoarseLess { get; set; }
     /// <summary>A "black" head that is light from afar: a half note when that makes the measure fit.</summary>
     public bool CoarseHollow { get; set; }
+    /// <summary>A stemmed quarter joined to its neighbours by a beam seen only from afar: the beam count, and the run it
+    /// belongs to; the run's notes take that value when it makes the measure fit.</summary>
+    public int CoarseBeamed { get; set; }
+    public int CoarseChain { get; set; }
     /// <summary>The beam count and dots of this note in look-alike groups (the same figure repeated), where they differ:
     /// applied to the group when that makes the measure fit. Null = no other opinion.</summary>
     public (int Beams, int Dots)? Pattern { get; set; }

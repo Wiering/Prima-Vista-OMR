@@ -309,8 +309,7 @@ public sealed class SymbolAnalyzer
                                 && (s.Bounds.Height < 0.65 * staff.Space || s.Bounds.Width < 0.85 * staff.Space));
             HeadStepsFromInk(syms, staff);
             FleckedBlackHeads(syms, staff);
-            CoarseBeams(syms, staff);
-            CoarseHeads(syms, staff);
+            if (UseCoarse) { CoarseBeams(syms, staff); CoarseLooseBeams(syms, staff); CoarseHeads(syms, staff); }
             foreach (var s in syms.OrderBy(s => s.Bounds.X0))
             {
                 // a beam carried across a bar line: each measure gets the stems on its side
@@ -337,8 +336,10 @@ public sealed class SymbolAnalyzer
                 if (m != null) m.Symbols.Add(s);
             }
         }
-        SimilarGroups();
+        if (UseCoarse) SimilarGroups();
     }
+    /// <summary>The second opinions from afar (off with PVOMR_COARSE=0, for comparisons).</summary>
+    private static readonly bool UseCoarse = Environment.GetEnvironmentVariable("PVOMR_COARSE") != "0";
 
     /// <summary>
     /// Beamed groups that look alike from afar (the same number of notes, much the same size, their coarse images
@@ -1857,6 +1858,52 @@ public sealed class SymbolAnalyzer
         }
     }
     private readonly List<double> _beamRuns = new();
+    private int _coarseChain;
+
+    /// <summary>
+    /// Beams broken away from their stems (a worn print) leave the notes as quarters standing side by side. From afar the
+    /// beam is still there: a dark band joining the stems' free ends. Neighbouring stemmed quarters (same direction, a
+    /// few spaces apart) with such a band between them get the beam count it shows ("coarsebeamed") and a common chain
+    /// number, as a second opinion for the duration check.
+    /// </summary>
+    private void CoarseLooseBeams(List<MusicSymbol> syms, Staff staff)
+    {
+        double ss = staff.Space;
+        static (double x, int end)? StemOf(MusicSymbol s) =>
+            s.Attributes.TryGetValue("stemx", out var v) && v.Split(',') is { Length: 3 } p ? ((int.Parse(p[0]) + int.Parse(p[1])) / 2.0, int.Parse(p[2])) : null;
+        var notes = syms.Where(s => s.Kind is SymbolKind.Note or SymbolKind.Chord && s.Flags == 0 && s.StemUp.HasValue && StemOf(s) != null
+                                    && s.Notes.Count > 0 && s.Notes.All(n => n.HeadType == "black"))
+                        .OrderBy(s => StemOf(s)!.Value.x).ToList();
+        double unit = _beamRuns.Count >= 6 ? Math.Clamp(_beamRuns.OrderBy(v => v).ElementAt(_beamRuns.Count / 4), 0.35, 0.9) * ss : 0.5 * ss;
+        int chain = 0; MusicSymbol? last = null;
+        for (int i = 0; i + 1 < notes.Count; i++)
+        {
+            MusicSymbol a = notes[i], b = notes[i + 1];
+            var (ax, ae) = StemOf(a)!.Value; var (bx, be) = StemOf(b)!.Value;
+            if (a.StemUp != b.StemUp || bx - ax < 1.0 * ss || bx - ax > 5.0 * ss) continue;
+            // nothing else between them (a rest or another note breaks a beamed run)
+            if (syms.Any(o => o != a && o != b && o.Kind is SymbolKind.Note or SymbolKind.Chord or SymbolKind.NoteGroup or SymbolKind.Rest
+                              && o.Bounds.CenterX > ax + 0.3 * ss && o.Bounds.CenterX < bx - 0.3 * ss)) continue;
+            double xm = (ax + bx) / 2, ym = (ae + be) / 2.0, slope = (be - ae) / (bx - ax);
+            bool up = a.StemUp == true;
+            double y0 = up ? ym - 0.5 * ss : ym + 0.5 * ss, y1 = up ? ym + 1.6 * ss : ym - 1.6 * ss;
+            double lo = Math.Min(y0, y1), hi = Math.Max(y0, y1), cos = 1 / Math.Sqrt(1 + slope * slope);
+            // a band in the middle and also at a quarter and three quarters of the way: a beam runs the whole width, a
+            // slur crossing or a speck does not
+            double At(double f) => Coarse.ColumnInk(ax + f * (bx - ax), lo + (f - 0.5) * (be - ae), hi + (f - 0.5) * (be - ae)) * cos / unit;
+            double r1 = At(0.25), r = At(0.5), r3 = At(0.75);
+            if (CoarseDump) Console.WriteLine($"COARSELOOSE page {_page.PageNumber} staff {staff.Index + 1} x {xm:0}: r {r1:0.00}/{r:0.00}/{r3:0.00}");
+            if (Math.Min(r, Math.Min(r1, r3)) < 0.7) continue;
+            int n = r < 1.8 ? 1 : r < 2.85 ? 2 : 3;
+            if (last != a) chain = ++_coarseChain;
+            foreach (var c in new[] { a, b })
+            {
+                c.Attributes["coarsebeamed"] = Math.Max(n, c.Attributes.TryGetValue("coarsebeamed", out var pv) ? int.Parse(pv) : 0).ToString();
+                c.Attributes["coarsechain"] = chain.ToString();
+            }
+            last = b;
+        }
+    }
 
     /// <summary>
     /// Black or hollow, seen from afar: the mean ink over a head's middle (a black head's flecks and a hollow head's
@@ -1874,7 +1921,17 @@ public sealed class SymbolAnalyzer
                 if (CoarseDump) Console.WriteLine($"COARSEHEAD page {_page.PageNumber} staff {staff.Index + 1} {n.HeadX:0},{n.HeadY:0} {n.HeadType} dark {dark:0.00}");
                 // a "half" note that is solid from afar: perhaps a quarter (the duration check decides); a "black" head that
                 // is light from afar: perhaps a half note
-                if (s.Kind == SymbolKind.Note && n.HeadType == "half" && dark >= 0.85 && !s.Attributes.ContainsKey("hollowdoubt")) s.Attributes["hollowdoubt"] = $"coarse {dark:0.00}";
+                // (solid enough from afar, a flecked black head is plainly black: decided here; less solid, left to the
+                // duration check)
+                if (n.HeadType == "half" && dark >= 0.86 && s.Notes.All(h => h.HeadType == "half") && s.Attributes.GetValueOrDefault("tremolo") == null)
+                {
+                    foreach (var h in s.Notes) h.HeadType = "black";
+                    if (s.Duration == "half") s.Duration = s.Flags switch { 0 => "quarter", 1 => "8th", 2 => "16th", 3 => "32nd", _ => "64th" };
+                    s.Attributes.Remove("hollowdoubt");
+                    s.Attributes["coarseblack"] = $"{dark:0.00}";
+                    continue;
+                }
+                if (s.Kind == SymbolKind.Note && n.HeadType == "half" && dark >= 0.75 && !s.Attributes.ContainsKey("hollowdoubt")) s.Attributes["hollowdoubt"] = $"coarse {dark:0.00}";
                 if (s.Kind == SymbolKind.Note && n.HeadType == "black" && s.Flags == 0 && s.StemUp != null && dark <= 0.5) s.Attributes["coarsehollow"] = $"{dark:0.00}";
             }
     }
