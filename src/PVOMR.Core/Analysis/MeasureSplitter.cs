@@ -122,6 +122,28 @@ public static class MeasureSplitter
     /// The heavy and thin bars of an old-style C clef look like a (double) bar line: a bar line that runs through a clef
     /// symbol is removed and the measures beside it are joined. Returns the number removed.
     /// </summary>
+    /// <summary>
+    /// A note read in two staves: its heads lie nearer the neighbouring staff (above its top line or below its bottom line,
+    /// on ledger lines) and that staff has the same heads. It belongs there and is dropped here.
+    /// </summary>
+    public static int DropNotesOfNeighbourStaff(PageAnalysis page)
+    {
+        int dropped = 0;
+        static double Dist(Staff st, double x, double y) => Math.Max(0, Math.Max(st.TopY(x) - y, y - st.BottomY(x)));
+        static IEnumerable<Note> Heads(MusicSymbol s) => s.Notes.Concat(s.Children.SelectMany(c => c.Notes));
+        foreach (var a in page.Staves)
+            foreach (var b in page.Staves.Where(o => Math.Abs(o.Index - a.Index) == 1))
+            {
+                double ss = a.Space;
+                var other = b.Measures.SelectMany(m => m.Symbols).Where(s => s.Kind is SymbolKind.Note or SymbolKind.Chord or SymbolKind.NoteGroup).SelectMany(Heads).ToList();
+                foreach (var m in a.Measures)
+                    dropped += m.Symbols.RemoveAll(s => s.Kind is SymbolKind.Note or SymbolKind.Chord && s.Notes.Count > 0 && s.Notes.All(h => h.CrossStaff == null
+                                                        && Dist(b, h.HeadX, h.HeadY) < Dist(a, h.HeadX, h.HeadY)
+                                                        && other.Any(o => Math.Abs(o.HeadX - h.HeadX) <= 0.5 * ss && Math.Abs(o.HeadY - h.HeadY) <= 0.5 * ss)));
+            }
+        return dropped;
+    }
+
     public static int RemoveBarlinesInClefs(PageAnalysis page)
     {
         int removed = 0;

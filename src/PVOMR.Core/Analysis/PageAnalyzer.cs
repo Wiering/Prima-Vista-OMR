@@ -211,6 +211,7 @@ public sealed class PageAnalyzer
         symbolAnalyzer.Run();
         MeasureSplitter.SplitMissedBarlines(result);
         MeasureSplitter.RemoveBarlinesInClefs(result);
+        MeasureSplitter.DropNotesOfNeighbourStaff(result);
         BarNumberReader.FromSymbols(result);
         MultiRests.Detect(result);
 

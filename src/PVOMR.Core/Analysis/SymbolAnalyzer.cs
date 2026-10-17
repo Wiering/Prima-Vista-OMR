@@ -64,7 +64,10 @@ public sealed class SymbolAnalyzer
             case "head_black": case "head_half": case "head_whole":
                 if (prob < 0.6) return false;
                 // head sizes: a whole note is wider but never taller than about 1.3 spaces
-                if (label == "head_whole" ? h > 1.45 || c.Width > 2.1 * ss || c.Width < 1.0 * ss : h > 1.6 || c.Width > 2.0 * ss) return false;
+                // (a whole note on a ledger line takes the line's width: as wide as that when the line runs through its middle)
+                bool ledgered = label == "head_whole" && c.Width > 2.1 * ss && c.Width <= 3.2 * ss && prob >= 0.9
+                                && _ns.HorizontalRunAt((int)c.CenterX, (int)Math.Round(c.CenterY), out _) >= 0.85 * c.Width;
+                if (label == "head_whole" ? h > 1.45 || c.Width > 2.1 * ss && !ledgered || c.Width < 1.0 * ss : h > 1.6 || c.Width > 2.0 * ss) return false;
                 // a head has a head's size: a sliver (the end of a slur) is none
                 if (h < 0.6 || c.Width < 0.8 * ss) return false;
                 // a hollow head on its own (its stem broke away) must be a sure verdict: slur pieces look much like it
@@ -76,6 +79,12 @@ public sealed class SymbolAnalyzer
                 }
                 sym.Kind = SymbolKind.Note; sym.Name = label == "head_black" ? "noteheadBlack" : label == "head_half" ? "noteheadHalf" : "noteheadWhole";
                 PostProcessTemplate(sym, c, staff, false);
+                if (ledgered)
+                {
+                    int hw = (int)Math.Round(0.8 * ss), cxh = (int)Math.Round(c.CenterX);
+                    sym.Bounds = new Rect(cxh - hw, sym.Bounds.Y0, cxh + hw, sym.Bounds.Y1);
+                    foreach (var n in sym.Notes) n.Head = new Rect(cxh - hw, n.Head.Y0, cxh + hw, n.Head.Y1);
+                }
                 return true;
             case "rest_whole": case "rest_half": case "rest_quarter": case "rest_8th": case "rest_16th":
             {
@@ -3048,11 +3057,34 @@ public sealed class SymbolAnalyzer
     {
         double ss = staff.Space;
         // a "3" read as a time signature digit above the staff, away from the signature zone: a tuplet number (over a bracket)
+        // (or right under the beams of a stem-down group, under its middle: in the staff or below it)
+        bool UnderBeams(MusicSymbol d) => syms.Any(g => g.Kind == SymbolKind.NoteGroup && g.Children.Count >= 3 && g.Children.Count(c => c.StemUp == false) > g.Children.Count / 2
+                             && d.Bounds.CenterX >= g.Bounds.X0 + 0.25 * g.Bounds.Width && d.Bounds.CenterX <= g.Bounds.X1 - 0.25 * g.Bounds.Width
+                             && d.Bounds.Y0 - g.Bounds.Y1 >= -0.3 * ss && d.Bounds.Y0 - g.Bounds.Y1 <= 1.5 * ss);
         foreach (var d in syms.Where(s => s.Kind == SymbolKind.TimeSignature && !s.Attributes.ContainsKey("timezone") && s.Name == "timeSig3"
-                                          && s.Bounds.Y1 < staff.TopY(s.Bounds.CenterX) - 0.3 * ss))
+                                          && (s.Bounds.Y1 < staff.TopY(s.Bounds.CenterX) - 0.3 * ss || UnderBeams(s))).ToList())
         {
             d.Kind = SymbolKind.Tuplet; d.Name = "tuplet3"; d.Attributes["tuplet"] = "3";
         }
+        // a 3 cut by a staff line into pieces (read as text) right at the beams of a three-note group, under or over its middle
+        if (_lib != null)
+            foreach (var g in syms.Where(s => s.Kind == SymbolKind.NoteGroup && s.Children.Count == 3 && !s.Attributes.ContainsKey("tuplet")).ToList())
+            {
+                bool down = g.Children.Count(c => c.StemUp == false) >= 2;
+                var piece = syms.FirstOrDefault(t => t.Kind is SymbolKind.Text or SymbolKind.Unknown
+                    && t.Bounds.Width >= 0.4 * ss && t.Bounds.Width <= 1.2 * ss && t.Bounds.Height >= 0.8 * ss && t.Bounds.Height <= 1.6 * ss
+                    && t.Bounds.CenterX >= g.Bounds.X0 + 0.25 * g.Bounds.Width && t.Bounds.CenterX <= g.Bounds.X1 - 0.25 * g.Bounds.Width
+                    && (down ? t.Bounds.Y0 - g.Bounds.Y1 >= -0.3 * ss && t.Bounds.Y0 - g.Bounds.Y1 <= 1.5 * ss
+                             : g.Bounds.Y0 - t.Bounds.Y1 >= -0.3 * ss && g.Bounds.Y0 - t.Bounds.Y1 <= 1.5 * ss));
+                if (piece == null) continue;
+                var r = piece.Bounds;
+                var mask = new byte[r.Width * r.Height];
+                for (int y = 0; y < r.Height; y++) for (int x = 0; x < r.Width; x++) if (_ns[r.X0 + x, r.Y0 + y]) mask[y * r.Width + x] = 1;
+                var m = _lib.Match(mask, r.Width, r.Height, ss, 0.45, t => t.Name is "tuplet3" or "timeSig3");
+                if (m.Count == 0 || m[0].Score < 0.6) continue;
+                piece.Kind = SymbolKind.Tuplet; piece.Name = "tuplet3"; piece.Attributes["tuplet"] = "3"; piece.Confidence = Math.Round(m[0].Score, 2);
+                syms.RemoveAll(u => u != piece && u.Kind == SymbolKind.Unknown && r.Contains((int)u.Bounds.CenterX, (int)u.Bounds.CenterY));
+            }
         foreach (var t in syms.Where(s => s.Kind == SymbolKind.Tuplet).ToList())
         {
             // a digit of the bar number over the system start is no tuplet
@@ -3073,7 +3105,17 @@ public sealed class SymbolAnalyzer
             int count = group.Children.Count;
             // a 3 with a flat top (old engraving) takes the 7 template: over three or six notes, unsure, it is a 3
             if (actual == 7 && count % 3 == 0 && count % 7 != 0 && t.Confidence < 0.85) { actual = 3; digit = "3"; }
-            if (count < actual || count % actual != 0) continue;
+            // (a tuplet over part of the group: as many equal notes right under the digit, of another value than the rest,
+            // as a dotted 8th and three 32nds under a 3)
+            bool partial = false;
+            if (count > actual && count % actual != 0)
+            {
+                var ch = group.Children.OrderBy(c => c.Bounds.CenterX).ToList();
+                int best = Enumerable.Range(0, count - actual + 1).OrderBy(i => Math.Abs(ch.Skip(i).Take(actual).Average(c => c.Bounds.CenterX) - cx)).First();
+                var win = ch.Skip(best).Take(actual).ToList();
+                partial = win.All(c => c.Duration == win[0].Duration && c.Dots == 0) && ch.Except(win).All(c => c.Duration != win[0].Duration);
+            }
+            if (count < actual || count % actual != 0 && !partial) continue;
             bool stemsUp = group.Children.Count(ch => ch.StemUp == true) > group.Children.Count / 2;
             bool above = t.Bounds.CenterY < group.Bounds.CenterY;
             if (stemsUp != above) continue;
@@ -4929,7 +4971,9 @@ public sealed class SymbolAnalyzer
         {
             // a "dot" inside or touching an accidental is a piece of it (the end of a natural's stroke), not a dot
             int pad = (int)Math.Round(0.15 * ss);
-            if (accidentalBoxes.Any(b => d.Bounds.X1 >= b.X0 - pad && d.Bounds.X0 <= b.X1 + pad && d.Bounds.Y1 >= b.Y0 - pad && d.Bounds.Y0 <= b.Y1 + pad)) { syms.Remove(d); continue; }
+            // (a round dot just left of the box, its centre outside it, is the dot of the note before the accidental)
+            if (accidentalBoxes.Any(b => d.Bounds.X1 >= b.X0 - pad && d.Bounds.X0 <= b.X1 + pad && d.Bounds.Y1 >= b.Y0 - pad && d.Bounds.Y0 <= b.Y1 + pad
+                                         && !(d.Bounds.CenterX < b.X0 && Math.Abs(d.Bounds.Width - d.Bounds.Height) <= 0.15 * ss))) { syms.Remove(d); continue; }
             // a dot is round: a sliver (the middle of a natural sign) is none
             double aspect = d.Bounds.Width / (double)Math.Max(1, d.Bounds.Height);
             if (aspect < 0.45 || aspect > 2.2) continue;

@@ -824,6 +824,13 @@ public static class MusicAssembler
             string longT = evs[0].Type == "32nd" ? "16th" : "eighth", shortT = evs[0].Type == "32nd" ? "32nd" : "16th";
             foreach (var e in evs) { e.AltType = e.Dots == 1 ? longT : shortT; e.AltPair = evs[0]; }
         }
+        // an undotted beamed pair of an 8th and a 16th: a tapering or thick beam end credited one note a second beam;
+        // two 8ths when that makes the measure fit
+        else if (group.Name.StartsWith("beamed") && evs.Count == 2 && evs.All(e => e.Dots == 0 && !e.DotCandidate) && evs[0].Type != evs[1].Type
+                 && evs.All(e => e.Type is "eighth" or "16th") && !evs.Any(e => e.TupletActual != 0 || e.Grace || e.TremoloType != null))
+        {
+            foreach (var e in evs) { e.AltType = "eighth"; e.AltPair = evs[0]; }
+        }
         if (group.Name.StartsWith("beamed"))
         {
             int maxLevels = children.Max(c => c.Flags);
@@ -1058,6 +1065,13 @@ public static class MusicAssembler
             double currentCost = Cost(e => second[e]);
             (string name, Func<ScoreEvent, bool> isSecond, double cost) best = ("current", e => second[e], currentCost);
             if (total == L) best = ("single", _ => false, 0);
+            // two bar rests one above the other: each voice resting through the measure
+            else if (events.Count == 2 && events.All(e => e.IsRest && e.Type == "whole") && Math.Abs(events[0].X - events[1].X) < 1.0 * ss
+                     && Math.Abs(events[0].Y - events[1].Y) >= 1.0 * ss)
+            {
+                var lower = events.MaxBy(e => e.Y)!;
+                best = ("two bar rests", e => e == lower, 0);
+            }
             else
                 foreach (var (name, isSecond) in candidates)
                 {
