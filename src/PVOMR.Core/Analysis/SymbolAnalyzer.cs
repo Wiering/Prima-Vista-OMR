@@ -309,6 +309,8 @@ public sealed class SymbolAnalyzer
                                 && (s.Bounds.Height < 0.65 * staff.Space || s.Bounds.Width < 0.85 * staff.Space));
             HeadStepsFromInk(syms, staff);
             FleckedBlackHeads(syms, staff);
+            CoarseBeams(syms, staff);
+            CoarseHeads(syms, staff);
             foreach (var s in syms.OrderBy(s => s.Bounds.X0))
             {
                 // a beam carried across a bar line: each measure gets the stems on its side
@@ -334,6 +336,50 @@ public sealed class SymbolAnalyzer
                 var m = FindMeasure(staff, s);
                 if (m != null) m.Symbols.Add(s);
             }
+        }
+        SimilarGroups();
+    }
+
+    /// <summary>
+    /// Beamed groups that look alike from afar (the same number of notes, much the same size, their coarse images
+    /// matching) are the same figure repeated, and share its rhythm: where most of such a set agree on the notes' beam
+    /// counts and dots and one group was read otherwise, the majority's reading is recorded on it ("patternbeams") as a
+    /// second opinion, which the duration check takes up when it makes the measure add up.
+    /// </summary>
+    private void SimilarGroups()
+    {
+        const int GW = 24, GH = 12;
+        var groups = _page.Staves.SelectMany(st => st.Measures.SelectMany(m => m.Symbols))
+                          .Where(s => s.Kind == SymbolKind.NoteGroup && s.Children.Count >= 2 && s.Children.All(c => c.Flags > 0 && c.Notes.Count > 0)).ToList();
+        if (groups.Count < 3) return;
+        var sig = new Dictionary<MusicSymbol, double[]>();
+        foreach (var g in groups)
+        {
+            var r = g.Bounds;
+            var v = new double[GW * GH];
+            for (int j = 0; j < GH; j++)
+                for (int i = 0; i < GW; i++)
+                    v[j * GW + i] = Coarse.At(r.X0 + (i + 0.5) * r.Width / GW, r.Y0 + (j + 0.5) * r.Height / GH);
+            double mean = v.Average(), norm = Math.Sqrt(v.Sum(x => (x - mean) * (x - mean)));
+            if (norm < 1e-6) continue;
+            sig[g] = v.Select(x => (x - mean) / norm).ToArray();
+        }
+        static string Rhythm(MusicSymbol g) => string.Join(",", g.Children.OrderBy(c => c.Bounds.CenterX).Select(c => $"{c.Flags}.{c.Dots}"));
+        foreach (var g in sig.Keys)
+        {
+            var like = sig.Keys.Where(o => o != g && o.Children.Count == g.Children.Count
+                                           && Math.Abs(o.Bounds.Width - g.Bounds.Width) <= 0.25 * g.Bounds.Width
+                                           && Math.Abs(o.Bounds.Height - g.Bounds.Height) <= 0.3 * g.Bounds.Height
+                                           && sig[o].Zip(sig[g], (x, y) => x * y).Sum() >= 0.85).ToList();
+            if (like.Count < 2) continue;
+            var best = like.GroupBy(Rhythm).OrderByDescending(r => r.Count()).First();
+            string mine = Rhythm(g);
+            if (best.Key == mine || best.Count() < 2 || best.Count() <= like.Count(o => Rhythm(o) == mine)) continue;
+            // the majority's beam counts and dots, note by note
+            var model = best.First().Children.OrderBy(c => c.Bounds.CenterX).ToList();
+            var kids = g.Children.OrderBy(c => c.Bounds.CenterX).ToList();
+            for (int k = 0; k < kids.Count; k++) kids[k].Attributes["patternbeams"] = $"{model[k].Flags}.{model[k].Dots}";
+            if (CoarseDump) Console.WriteLine($"PATTERN page {_page.PageNumber} group at {g.Bounds.X0},{g.Bounds.Y0}: read {mine}, {best.Count()} of {like.Count} look-alikes read {best.Key}");
         }
     }
 
@@ -1734,6 +1780,105 @@ public sealed class SymbolAnalyzer
     /// beam end. A real chord's heads stay clear of the beam (the stem reaches on beyond its last head), so such a head is
     /// dropped when the chord keeps another head well away from it.
     /// </summary>
+    // ------------------------------------------------------------------ the page seen from afar
+
+    private CoarseView? _coarse;
+    /// <summary>The page at about three pixels per staff space (staff lines removed): see <see cref="CoarseView"/>.</summary>
+    private CoarseView Coarse => _coarse ??= MakeCoarse();
+    private CoarseView MakeCoarse()
+    {
+        var c = new CoarseView(_ns, _page.StaffSpace > 0 ? _page.StaffSpace : 20);
+        if (Environment.GetEnvironmentVariable("PVOMR_COARSESAVE") is string dir && dir.Length > 0)
+            ImageIO.SavePng(ImageIO.ToBitmap(c.ToGray()), Path.Combine(dir, $"coarse_p{_page.PageNumber}.png"));
+        return c;
+    }
+    private static readonly bool CoarseDump = Environment.GetEnvironmentVariable("PVOMR_COARSEDUMP") == "1";
+
+    /// <summary>
+    /// The beams between two stems of a group counted from afar: the ink crossed going from the beam line at the stem
+    /// ends towards the heads, midway between the stems, is the beams' combined thickness, whether the print merged them
+    /// into one band or broke them up. (Two beams with the paper between them come to about 1.25 spaces, one to half a
+    /// space; corrected for the beam's slant.) Recorded on the notes ("coarsemore", "coarseless") as a second opinion on
+    /// their beam counts, which the duration check takes up when it makes the measure add up.
+    /// </summary>
+    private void CoarseBeams(List<MusicSymbol> syms, Staff staff)
+    {
+        double ss = staff.Space;
+        static (double x, int end)? StemOf(MusicSymbol s) =>
+            s.Attributes.TryGetValue("stemx", out var v) && v.Split(',') is { Length: 3 } p ? ((int.Parse(p[0]) + int.Parse(p[1])) / 2.0, int.Parse(p[2])) : null;
+        var gaps = new List<(MusicSymbol a, MusicSymbol b, double ink, double slope)>();
+        // what else may lie across the measuring line: heads (another voice's, a chord's) and accidentals
+        var obstacles = syms.Where(s => s.Kind is SymbolKind.Note or SymbolKind.Chord or SymbolKind.NoteGroup).SelectMany(s => s.Notes.Concat(s.Children.SelectMany(c => c.Notes))).Select(n => n.Head)
+                            .Concat(syms.Where(s => s.Kind is SymbolKind.Accidental or SymbolKind.Rest or SymbolKind.Clef).Select(s => s.Bounds)).ToList();
+        foreach (var g in syms.Where(s => s.Kind == SymbolKind.NoteGroup && s.Children.Count >= 2))
+        {
+            var ch = g.Children.Where(c => StemOf(c) != null && c.StemUp.HasValue).OrderBy(c => StemOf(c)!.Value.x).ToList();
+            for (int i = 0; i + 1 < ch.Count; i++)
+            {
+                MusicSymbol a = ch[i], b = ch[i + 1];
+                if (a.StemUp != b.StemUp) continue;
+                var (ax, ae) = StemOf(a)!.Value; var (bx, be) = StemOf(b)!.Value;
+                if (bx - ax < 1.0 * ss) continue;
+                double xm = (ax + bx) / 2, ym = (ae + be) / 2.0, slope = (be - ae) / (bx - ax);
+                bool up = a.StemUp == true;
+                // from just outside the beam line to three spaces in, short of any head
+                double y0 = up ? ym - 0.4 * ss : ym + 0.4 * ss, y1 = up ? ym + 3.0 * ss : ym - 3.0 * ss;
+                var heads = a.Notes.Concat(b.Notes).ToList();
+                if (heads.Count > 0) y1 = up ? Math.Min(y1, heads.Min(h => h.Head.Y0) - 0.2 * ss) : Math.Max(y1, heads.Max(h => h.Head.Y1) + 0.2 * ss);
+                double lo = Math.Min(y0, y1), hi = Math.Max(y0, y1), pad = 0.15 * ss;
+                if (obstacles.Any(o => o.X0 - pad <= xm && o.X1 + pad >= xm && o.Y1 >= lo && o.Y0 <= hi)) continue;
+                double cos = 1 / Math.Sqrt(1 + slope * slope);
+                double ink = Coarse.ColumnInk(xm, Math.Min(y0, y1), Math.Max(y0, y1)) * cos;
+                gaps.Add((a, b, ink, slope));
+                // the solid runs crossed in the detailed image: one beam's thickness where the beams stand apart
+                for (int y = (int)Math.Min(y0, y1), run = 0; y <= (int)Math.Max(y0, y1) + 1; y++)
+                {
+                    if (y <= (int)Math.Max(y0, y1) && _ns[(int)Math.Round(xm), y]) { run++; continue; }
+                    if (run >= 0.25 * ss && run <= 1.0 * ss) _beamRuns.Add(run * cos / ss);
+                    run = 0;
+                }
+            }
+        }
+        // one beam's thickness in this print: the thinner runs seen so far on the page (a heavy print's beams are thick,
+        // and may merge in pairs; then the single beams of 8ths and the beams that stand apart still show it)
+        double unit = _beamRuns.Count >= 6 ? Math.Clamp(_beamRuns.OrderBy(v => v).ElementAt(_beamRuns.Count / 4), 0.35, 0.9) * ss : 0.5 * ss;
+        foreach (var (a, b, ink, _) in gaps)
+        {
+            double r = ink / unit;
+            int n = r < 0.5 ? 0 : r < 1.8 ? 1 : r < 2.85 ? 2 : r < 3.9 ? 3 : 4;
+            int shared = Math.Min(a.Flags, b.Flags);
+            if (CoarseDump) Console.WriteLine($"COARSE page {_page.PageNumber} staff {staff.Index + 1} x {(StemOf(a)!.Value.x + StemOf(b)!.Value.x) / 2:0}: ink {ink / ss:0.00}ss unit {unit / ss:0.00} r {r:0.00} -> {n} beams; detailed {a.Flags}/{b.Flags}{(n != shared ? " DIFFER" : "")}");
+            if (n == 0 || n == shared) continue;
+            // more beams than counted (merged beams): the most any gap of the note shows; fewer (a smudge counted as a
+            // beam): the fewest
+            string key = n > shared ? "coarsemore" : "coarseless";
+            foreach (var c in new[] { a, b })
+                if (!c.Attributes.TryGetValue(key, out var prev) || (n > shared ? int.Parse(prev) < n : int.Parse(prev) > n)) c.Attributes[key] = n.ToString();
+        }
+    }
+    private readonly List<double> _beamRuns = new();
+
+    /// <summary>
+    /// Black or hollow, seen from afar: the mean ink over a head's middle (a black head's flecks and a hollow head's
+    /// broken ring average out). Recorded as a second opinion where it disagrees with the detailed reading.
+    /// </summary>
+    private void CoarseHeads(List<MusicSymbol> syms, Staff staff)
+    {
+        double ss = staff.Space;
+        foreach (var s in syms.Where(s => s.Kind is SymbolKind.Note or SymbolKind.Chord or SymbolKind.NoteGroup))
+            foreach (var n in s.Notes.Concat(s.Children.SelectMany(c => c.Notes)).Distinct())
+            {
+                if (n.HeadType is not ("black" or "half")) continue;
+                double hw = 0.3 * ss, hh = 0.2 * ss;
+                double dark = Coarse.MeanIn(n.HeadX - hw, n.HeadY - hh, n.HeadX + hw, n.HeadY + hh);
+                if (CoarseDump) Console.WriteLine($"COARSEHEAD page {_page.PageNumber} staff {staff.Index + 1} {n.HeadX:0},{n.HeadY:0} {n.HeadType} dark {dark:0.00}");
+                // a "half" note that is solid from afar: perhaps a quarter (the duration check decides); a "black" head that
+                // is light from afar: perhaps a half note
+                if (s.Kind == SymbolKind.Note && n.HeadType == "half" && dark >= 0.85 && !s.Attributes.ContainsKey("hollowdoubt")) s.Attributes["hollowdoubt"] = $"coarse {dark:0.00}";
+                if (s.Kind == SymbolKind.Note && n.HeadType == "black" && s.Flags == 0 && s.StemUp != null && dark <= 0.5) s.Attributes["coarsehollow"] = $"{dark:0.00}";
+            }
+    }
+
     private static void HeadsOnBeams(List<MusicSymbol> syms, Staff staff)
     {
         double ss = staff.Space;

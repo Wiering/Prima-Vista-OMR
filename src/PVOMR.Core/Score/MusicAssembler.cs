@@ -655,6 +655,78 @@ public static class MusicAssembler
                     sm.Warnings.Add($"staff {staffNo} voice {voice.Key}: {pick.Count} 8th(s) under a thick beam taken as 16ths to fit {time}");
                 }
             }
+            // the beam counts seen from afar: the notes of a beamed group re-timed by them, a group at a time (the first
+            // ones that together make the measure add up)
+            if (sum != expected)
+            {
+                bool more = sum > expected;
+                static string? TypeFor(int beams) => beams switch { 1 => "eighth", 2 => "16th", 3 => "32nd", 4 => "64th", _ => null };
+                static int BeamsOf(string t) => t switch { "eighth" => 1, "16th" => 2, "32nd" => 3, "64th" => 4, _ => 0 };
+                var changes = evs.Where(e => e.GroupId != 0 && e.TupletActual == 0 && !e.Grace && BeamsOf(e.Type) > 0
+                                             && (more ? e.CoarseMore > BeamsOf(e.Type) : e.CoarseLess > 0 && e.CoarseLess < BeamsOf(e.Type)))
+                                 .GroupBy(e => e.GroupId)
+                                 .Select(g => g.Select(e => (e, type: TypeFor(more ? e.CoarseMore : e.CoarseLess)!)).Where(c => c.type != null).ToList())
+                                 .Where(g => g.Count > 0).ToList();
+                int Delta(List<(ScoreEvent e, string type)> g) => g.Sum(c => DurationOf(c.type, c.e.Dots) - c.e.Duration);
+                List<(ScoreEvent e, string type)>? pick = null;
+                for (int n = 1; pick == null && n <= changes.Count; n++)
+                    if (sum + changes.Take(n).Sum(Delta) == expected) pick = changes.Take(n).SelectMany(g => g).ToList();
+                pick ??= changes.FirstOrDefault(g => sum + Delta(g) == expected);
+                if (pick != null)
+                {
+                    foreach (var (e, type) in pick)
+                    {
+                        int from = e.Beams.Length, to = BeamsOf(type);
+                        e.Type = type; e.Duration = DurationOf(type, e.Dots);
+                        if (to > from && from > 0) e.Beams = e.Beams.Concat(Enumerable.Repeat(e.Beams[^1], to - from)).ToArray();
+                        else if (to < from) e.Beams = e.Beams.Take(to).ToArray();
+                    }
+                    sum = evs.Sum(e => e.Duration);
+                    sm.Fit.Sums[^1] = (staffNo, voice.Key, sum);
+                    sm.Warnings.Add($"staff {staffNo} voice {voice.Key}: {pick.Count} note(s) re-timed by the beams seen from afar to fit {time}");
+                }
+            }
+            // groups read otherwise than their look-alikes: the look-alikes' rhythm, a group at a time
+            if (sum != expected)
+            {
+                static string? TypeOf(int beams) => beams switch { 1 => "eighth", 2 => "16th", 3 => "32nd", 4 => "64th", _ => null };
+                var alts = evs.Where(e => e.Pattern != null && e.GroupId != 0 && e.TupletActual == 0 && !e.Grace && TypeOf(e.Pattern.Value.Beams) != null)
+                              .GroupBy(e => e.GroupId).Select(g => g.ToList())
+                              .Where(g => evs.Count(e => e.GroupId == g[0].GroupId) == g.Count).ToList();
+                int Delta(List<ScoreEvent> g) => g.Sum(e => DurationOf(TypeOf(e.Pattern!.Value.Beams)!, e.Pattern.Value.Dots) - e.Duration);
+                List<ScoreEvent>? pick = null;
+                for (int n = 1; pick == null && n <= alts.Count; n++)
+                    if (sum + alts.Take(n).Sum(Delta) == expected) pick = alts.Take(n).SelectMany(g => g).ToList();
+                pick ??= alts.FirstOrDefault(g => sum + Delta(g) == expected);
+                if (pick != null)
+                {
+                    foreach (var e in pick)
+                    {
+                        var (beams, dots) = e.Pattern!.Value;
+                        int from = e.Beams.Length;
+                        e.Type = TypeOf(beams)!; e.Dots = dots; e.Duration = DurationOf(e.Type, dots);
+                        if (beams > from && from > 0) e.Beams = e.Beams.Concat(Enumerable.Repeat(e.Beams[^1], beams - from)).ToArray();
+                        else if (beams < from) e.Beams = e.Beams.Take(beams).ToArray();
+                    }
+                    sum = evs.Sum(e => e.Duration);
+                    sm.Fit.Sums[^1] = (staffNo, voice.Key, sum);
+                    sm.Warnings.Add($"staff {staffNo} voice {voice.Key}: {pick.Count} note(s) given the rhythm of look-alike groups to fit {time}");
+                }
+            }
+            // quarters whose heads are light from afar: half notes, one or all of them, when that makes the measure fit
+            if (sum < expected)
+            {
+                var hollow = evs.Where(e => e.CoarseHollow && e.Type == "quarter" && e.TupletActual == 0).ToList();
+                var take = hollow.FirstOrDefault(e => sum + e.Duration == expected) is { } one ? new List<ScoreEvent> { one }
+                         : hollow.Count > 1 && sum + hollow.Sum(e => e.Duration) == expected ? hollow : null;
+                if (take != null)
+                {
+                    foreach (var e in take) { e.Type = "half"; e.Duration *= 2; }
+                    sum = evs.Sum(e => e.Duration);
+                    sm.Fit.Sums[^1] = (staffNo, voice.Key, sum);
+                    sm.Warnings.Add($"staff {staffNo} voice {voice.Key}: {take.Count} quarter(s) with a light head taken as half notes to fit {time}");
+                }
+            }
             // two "whole notes" filling twice the measure: half notes whose stems were not printed or lost (an old print)
             if (sum == 2 * expected && evs.Count == 2 && evs.All(e => !e.IsRest && e.Type == "whole" && e.Dots == 0 && e.TupletActual == 0 && e.Duration == expected))
             {
@@ -750,6 +822,10 @@ public static class MusicAssembler
         if (!asserted && s.Attributes.ContainsKey("flagcand")) ev.StemlessBlack = true;   // a hairline flag may make it an 8th
         if (!asserted && s.Attributes.ContainsKey("hollowdoubt")) ev.HollowDoubt = true;
         if (!asserted && s.Attributes.ContainsKey("thickbeam")) ev.ThickBeam = true;
+        if (!asserted && s.Attributes.ContainsKey("coarsehollow")) ev.CoarseHollow = true;
+        if (!asserted && s.Attributes.TryGetValue("patternbeams", out var pb) && pb.Split('.') is { Length: 2 } pp && int.TryParse(pp[0], out int pbn) && int.TryParse(pp[1], out int pdn)) ev.Pattern = (pbn, pdn);
+        if (!asserted && s.Attributes.TryGetValue("coarsemore", out var cm) && int.TryParse(cm, out int cmn)) ev.CoarseMore = cmn;
+        if (!asserted && s.Attributes.TryGetValue("coarseless", out var cl) && int.TryParse(cl, out int cln)) ev.CoarseLess = cln;
         if (s.Attributes.TryGetValue("articulation", out var art) && art == "staccato") ev.Articulations.Add("staccato");
         if (s.Attributes.ContainsKey("dotcand") && ev.Dots == 0 && !ev.IsRest) ev.DotCandidate = true;
         // small notes: grace-note candidates, settled by the measure length in Validate

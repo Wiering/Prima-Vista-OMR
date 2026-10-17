@@ -172,6 +172,15 @@ public sealed class ScoreEvent
     public bool HollowDoubt { get; set; }
     /// <summary>An 8th whose single beam is as thick as two merged ones: a 16th when that makes the measure fit.</summary>
     public bool ThickBeam { get; set; }
+    /// <summary>The beam count seen from afar (the coarse view) where it differs: more (merged beams) or fewer; applied
+    /// to the note's beamed group when that makes the measure fit. 0 = no other opinion.</summary>
+    public int CoarseMore { get; set; }
+    public int CoarseLess { get; set; }
+    /// <summary>A "black" head that is light from afar: a half note when that makes the measure fit.</summary>
+    public bool CoarseHollow { get; set; }
+    /// <summary>The beam count and dots of this note in look-alike groups (the same figure repeated), where they differ:
+    /// applied to the group when that makes the measure fit. Null = no other opinion.</summary>
+    public (int Beams, int Dots)? Pattern { get; set; }
     /// <summary>Alternative note value for a dotted beamed pair read alike (applied when it makes the measure fit).</summary>
     public string? AltType { get; set; }
     public ScoreEvent? AltPair { get; set; }
