@@ -2196,6 +2196,14 @@ public sealed class SymbolAnalyzer
                                      // a dot or a thin spine only counts when it hugs the stem end (within half a space)
                                      && (c.Kind == SymbolKind.Flag || c.Bounds.Width >= 0.35 * ss || c.Bounds.X0 - stemX1 <= 0.5 * ss))
                          .OrderBy(c => Math.Abs(c.Bounds.X0 - stemX1)).FirstOrDefault();
+            // an old engraving's flag under a stem: a long thin hook that leaves the stem's end (joined to it) and curls up
+            // to the right, so that only its upper, separate part is left, ending above the stem end and further right
+            f ??= n.StemUp == false
+                ? cands.Where(c => c.Kind is SymbolKind.Text or SymbolKind.Unknown && c.Bounds.Height >= 1.5 * ss && c.Bounds.Width <= 0.6 * ss
+                                   && c.Bounds.X0 - stemX1 >= 0.3 * ss && c.Bounds.X0 - stemX1 <= 1.1 * ss
+                                   && freeEndY - c.Bounds.Y1 >= 0 && freeEndY - c.Bounds.Y1 <= 2.0 * ss)
+                       .OrderBy(c => c.Bounds.X0).FirstOrDefault()
+                : null;
             if (f == null) continue;
             n.Flags = f.Kind == SymbolKind.Flag && f.Name.Contains("16th") ? 2 : f.Kind == SymbolKind.Flag && f.Name.Contains("32nd") ? 3 : 1;
             bool hollow = n.Notes.All(h => h.HeadType == "half");
@@ -4350,7 +4358,7 @@ public sealed class SymbolAnalyzer
         double ss = staff.Space;
         var heads = syms.Where(s => s.Kind is SymbolKind.Note or SymbolKind.Chord or SymbolKind.NoteGroup).SelectMany(s => s.Notes.Concat(s.Children.SelectMany(c => c.Notes))).ToList();
         foreach (var t in syms.Where(s => s.Kind is SymbolKind.Text or SymbolKind.Unknown && (!s.Attributes.TryGetValue("glyphs", out var g) || g == "1")
-                                          && s.Bounds.Width >= 0.4 * ss && s.Bounds.Width <= 1.0 * ss && s.Bounds.Height >= 0.4 * ss && s.Bounds.Height <= 1.0 * ss
+                                          && s.Bounds.Width >= 0.4 * ss && s.Bounds.Width <= 1.4 * ss && s.Bounds.Height >= 0.4 * ss && s.Bounds.Height <= 1.4 * ss
                                           && Math.Abs(s.Bounds.Width - s.Bounds.Height) <= 0.3 * ss).ToList())
         {
             var r = t.Bounds;
@@ -4361,7 +4369,9 @@ public sealed class SymbolAnalyzer
                 for (int x = 0; x < w; x++)
                     if (_ns[r.X0 + x, r.Y0 + y]) mask[y * w + x] = 1;
             // an x is open; a solid blob there is a heavy dot (of the note before it)
-            if (mask.Count(v => v != 0) > 0.6 * w * hh) continue;
+            // (a bold x, four heavy corners, is open through its middle: little ink down its centre column or along its centre row)
+            int midCol = Enumerable.Range(0, hh).Count(y => mask[y * w + w / 2] != 0), midRow = Enumerable.Range(0, w).Count(x => mask[hh / 2 * w + x] != 0);
+            if (mask.Count(v => v != 0) > 0.6 * w * hh && midCol > 0.5 * hh && midRow > 0.5 * w) continue;
             var m = _lib.Match(mask, w, hh, ss, 0.4, g => g.Kind == SymbolKind.Accidental);
             if (m.Count == 0 || m[0].Template.Name != "accidentalDoubleSharp" || m[0].Score < 0.55) continue;
             t.Kind = SymbolKind.Accidental; t.Name = "accidentalDoubleSharp"; t.Confidence = Math.Round(m[0].Score, 2);
@@ -4696,6 +4706,8 @@ public sealed class SymbolAnalyzer
             // a dot is round: a sliver (the middle of a natural sign) is none
             double aspect = d.Bounds.Width / (double)Math.Max(1, d.Bounds.Height);
             if (aspect < 0.45 || aspect > 2.2) continue;
+            // nor is a speck thinner than a staff line (the tip of an accent cut off by the line it crosses)
+            if (d.Bounds.Height < 0.2 * ss) continue;
             // the broken-off tip of a tie: the tie's long body starts right after it
             if (TieRightOf(d.Bounds, ss, syms)) { syms.Remove(d); continue; }
             // augmentation dot: right of a head, roughly at head height (in a space); one per head, nearest in height,
@@ -4790,12 +4802,40 @@ public sealed class SymbolAnalyzer
             {
                 // an old-style natural classified as a sharp: its strokes are offset (see NaturalStrokes)
                 if (a.Name == "accidentalSharp" && NaturalStrokes(a.Bounds.X0, a.Bounds.Y0, a.Bounds.X1, a.Bounds.Y1, ss)) a.Name = "accidentalNatural";
+                if (a.Name == "accidentalFlat" && NaturalAsFlat(a.Bounds, cand.note.Head.X0, ss)) a.Name = "accidentalNatural";
                 cand.note.AccidentalName = a.Name;
                 cand.note.AccidentalUnsure = a.Confidence < 0.75;
                 cand.note.Accidental = a.Name switch { "accidentalSharp" => 1, "accidentalFlat" => -1, "accidentalNatural" => 0, "accidentalDoubleSharp" => 2, "accidentalDoubleFlat" => -2, _ => int.MinValue };
                 syms.Remove(a);
             }
         }
+    }
+
+    /// <summary>
+    /// A natural read as a flat (pressed against its head, its right stroke lost in the head's ink): a flat's lowest point is
+    /// its stem, at the left, where the bowl closes; a natural's right stroke reaches lower than its left one.
+    /// </summary>
+    private bool NaturalAsFlat(Rect r, int headX0, double ss)
+    {
+        int x1 = Math.Min(r.X1, headX0 - 2), y1 = (int)Math.Min(_ns.Height - 1, r.Y1 + 0.6 * ss);
+        if (x1 - r.X0 < 4) return false;
+        int third = Math.Max(1, (x1 - r.X0 + 1) / 3);
+        int Bottom(int c0, int c1)
+        {
+            for (int y = y1; y >= r.Y0; y--)
+                for (int x = c0; x <= c1; x++)
+                    if (_ns[x, y]) return y;
+            return -1;
+        }
+        int left = Bottom(r.X0, r.X0 + third - 1), right = Bottom(x1 - third + 1, x1);
+        if (left < 0 || right - left < 0.4 * ss) return false;
+        // ... straight down (a flat's bowl that hangs low curls back to the left)
+        var xs = new List<int>();
+        for (int y = left + 1; y <= right; y++)
+            for (int x = x1 - third + 1; x <= x1; x++)
+                if (_ns[x, y]) { xs.Add(x); break; }
+        // (its own stroke, not ink running in from the left: a curl's ink starts at the third's edge)
+        return xs.Count >= 0.6 * (right - left) && xs.Max() - xs.Min() <= 0.15 * ss && xs.Min() > x1 - third + 1;
     }
 
     private void DetectHairpinsAndSlurs(List<MusicSymbol> syms, Staff staff)
